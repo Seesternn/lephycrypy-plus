@@ -14,6 +14,7 @@
 
 #![cfg_attr(not(test), warn(clippy::missing_errors_doc))]
 
+pub mod fdio;
 pub mod fs;
 pub mod mem;
 pub mod platform;
@@ -21,5 +22,32 @@ pub mod signal;
 pub mod term;
 pub mod vol;
 
-/// Aşama 0 işaret sabiti: crate'in derlendiğini ve bütçe denetiminin çalıştığını doğrular.
+/// Ham G/Ç tanıtıcısı: Unix `RawFd`, Windows `RawHandle`.
+#[cfg(unix)]
+pub type RawIo = std::os::fd::RawFd;
+/// Ham G/Ç tanıtıcısı: Unix `RawFd`, Windows `RawHandle`.
+#[cfg(windows)]
+pub type RawIo = std::os::windows::io::RawHandle;
+
+/// `File`, `Stdin`, `Stdout`, `Stderr` gibi std nesnelerinin ham tanıtıcısına ortak erişim.
+pub trait AsRawIo {
+    /// Ham fd/handle.
+    fn raw_io(&self) -> RawIo;
+}
+
+#[cfg(unix)]
+impl<T: std::os::fd::AsRawFd> AsRawIo for T {
+    fn raw_io(&self) -> RawIo {
+        self.as_raw_fd()
+    }
+}
+
+#[cfg(windows)]
+impl<T: std::os::windows::io::AsRawHandle> AsRawIo for T {
+    fn raw_io(&self) -> RawIo {
+        self.as_raw_handle()
+    }
+}
+
+/// Crate adı (bütçe denetimi için işaret).
 pub const CRATE_NAME: &str = "lephy-sys";

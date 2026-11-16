@@ -4,9 +4,11 @@ Açık kaynaklı, Rust ile yazılmış dosya/klasör şifreleme aracı. Hedef: p
 saklama; adlar ve yapı her zaman şifreli; akışlı işleme; atomik yazma; bellekte sır kalıntılarını
 **en iyi çaba ile** en aza indirme.
 
-> **Durum: aşama 0 (iskelet).** Henüz şifreleme yapmaz. Yol haritası ve tüm tasarım kararları
-> [docs/PLAN.md](docs/PLAN.md)'de; biçim [docs/FORMAT.md](docs/FORMAT.md)'de; sınırlar
-> [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)'de. Bağımsız denetim yapılmamıştır.
+> **Durum: aşama 1 (çekirdek + CLI, tek dosya).** `encrypt`/`decrypt`/`verify`/`info`/`rekey`/
+> `reencrypt`/`cleanup` tek dosya ve stdin için çalışır (`content_type = 0`, dolgusuz). Klasör
+> arşivi ve PADMÉ aşama 2'de. Yol haritası ve tüm tasarım kararları [docs/PLAN.md](docs/PLAN.md)'de;
+> biçim [docs/FORMAT.md](docs/FORMAT.md)'de; sınırlar [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)'de.
+> **Bağımsız denetim yapılmamıştır; üretim verisi için kullanmayın.**
 
 ## Platformlar (R5-08)
 
@@ -26,6 +28,39 @@ MSRV: Rust 1.95.0 (`rust-toolchain.toml` ile sabit).
 | `lephy-core` | kriptografi, biçim, arşiv, pipeline | `#![forbid(unsafe_code)]` |
 | `lephy-cli` | `lephycrypy` komut satırı | `#![forbid(unsafe_code)]` |
 | `lephy-usb` (1.1), `lephy-gui` (1.2) | ertelendi | — |
+
+## Kullanım (aşama 1)
+
+```bash
+lephycrypy encrypt belge.pdf -o a1b2c3d4.lphy
+```
+
+```bash
+lephycrypy decrypt a1b2c3d4.lphy -o belge.pdf
+```
+
+Varsayılanlar: XChaCha20-Poly1305, 1 MiB chunk, Argon2id 512 MiB / 3 / 4. `--alg aes256gcm`,
+`--chunk-size 64k|256k|1m|4m|16m`, `--kdf-memory/--kdf-time/--kdf-parallelism`, `--keyfile`,
+`--force`, `--strict-memory`, `--delete-original`, `--stdout`, `--allow-large-kdf`.
+Betikler için `--password-stdin`, `--password-fd` (Unix) ve `--password-file`; parola **asla**
+argv/env'den alınmaz. `rekey` parolayı değiştirir ama dosya anahtarını korur; gerçek rotasyon
+`reencrypt`.
+
+## Doğrulama durumu
+
+| Ne | Nasıl | Durum |
+|---|---|---|
+| Argon2id, HKDF, XChaCha20-Poly1305, AES-256-GCM, BLAKE3 | resmî KAT'lar (`tests/kat/`, `cargo test -p lephy-core --test kat`) | geçiyor |
+| Biçim vektörleri 1–4, 7, 9, 10, 11 | yalnızca FORMAT.md'den yazılmış Python referansı (`tests/ref/lephy_ref.py`) ile bayt bayt (`--features test-vectors`) | geçiyor |
+| Kanonik son chunk, kesme, fazla bayt, `last` ortada | `pipeline` birim testleri | geçiyor |
+| Yanlış parola/keyfile (3), bozuk başlık/chunk (4), hedef var (7), bütçe (6) | `ops` testleri + CLI çıkış kodları | geçiyor |
+| rekey (FK/chunk sabit, R4-Y2) ve reencrypt | `ops` testi | geçiyor |
+| Kilitli arena, sayfa refcount, hook sıfırlaması | `lephy-sys` testleri (macOS) | geçiyor |
+| Windows kodu | yalnızca çapraz `cargo clippy --target x86_64-pc-windows-msvc`; CI'da çalıştırılacak | derleniyor, test edilmedi |
+| pty sinyal testleri, kanarya taraması, Miri, fuzz | aşama 3 | yok |
+
+Python referansı için: `python3 -m venv .venv && .venv/bin/pip install cryptography argon2-cffi blake3`,
+sonra `.venv/bin/python -I tests/ref/lephy_ref.py vectors tests/kat/vectors`.
 
 ## Derleme
 

@@ -12,6 +12,7 @@ pub mod header;
 pub mod io;
 pub mod kdf;
 pub mod names;
+pub mod ops;
 pub mod pad;
 pub mod password;
 pub mod pipeline;
@@ -23,8 +24,4 @@ pub mod testvec;
 /// reddeder.
 pub const TEST_VECTORS_ENABLED: bool = cfg!(feature = "test-vectors");
 
-/// Biçim sürümü (FORMAT.md › Başlık, ofset 6).
-pub const FORMAT_VERSION: u16 = 1;
-
-/// Başlık boyutu (FORMAT.md): 256 bayt.
-pub const HEADER_LEN: usize = 256;
+pub use header::{HEADER_LEN, VERSION as FORMAT_VERSION};

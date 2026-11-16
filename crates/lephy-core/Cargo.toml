@@ -21,9 +21,27 @@ lephy-sys = { workspace = true }
 zeroize = { workspace = true }
 thiserror = { workspace = true }
 subtle = { workspace = true }
-# Aşama 1'de: chacha20poly1305 0.11, aes-gcm 0.11, aead 0.6, argon2, hkdf 0.13, hmac 0.13,
-# sha2 0.11, digest 0.11, blake3, getrandom, unicode-normalization (hepsi zeroize feature'ları ile;
-# PLAN › Bağımlılıklar). Aşama 2'de: cap-std, tempfile, crossbeam-channel, rayon.
+chacha20poly1305 = { workspace = true }
+aes-gcm = { workspace = true }
+aead = { workspace = true }
+argon2 = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+digest = { workspace = true }
+blake3 = { workspace = true }
+getrandom = { workspace = true }
+unicode-normalization = { workspace = true }
+crossbeam-channel = { workspace = true }
+# Aşama 2'de: cap-std, tempfile. `strength` feature'ı (zxcvbn) açık karar 2 onaylanırsa.
+
+[dev-dependencies]
+hex = "0.4"
+
+# I7 (R5-02): deterministik vektör testleri yalnızca `test-vectors` feature'ı ile derlenir.
+[[test]]
+name = "vectors"
+required-features = ["test-vectors"]
 
 [lints]
 workspace = true

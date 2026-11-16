@@ -1,25 +1,23 @@
 //! Süreç sertleştirme (PLAN › Bellek › Süreç başı; R5-04, R5-06).
 //!
-//! `harden()` sırası:
+//! [`harden`] sırası:
 //! 0. Windows: `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` — clap'ten ve her
 //!    `LoadLibrary`'den önce.
-//! 1. Windows: `SetErrorMode(SEM_NOGPFAULTERRORBOX)` + `WerAddExcludedApplication`
-//!    (ikincisi DOĞRULANMADI; aşama 1).
+//! 1. Windows: `SetErrorMode(SEM_NOGPFAULTERRORBOX)` (`WerAddExcludedApplication` DOĞRULANMADI,
+//!    aşama 3).
 //! 2. Unix: `setrlimit(RLIMIT_CORE, 0)`.
 //! 3. Linux (best-effort): `prctl(PR_SET_DUMPABLE, 0)`.
-//! 4. Panik hook'u (`install_panic_hook`, aşama 1).
-//! 5. clap (çağıranda).
-//! 6. macOS: `ptrace(PT_DENY_ATTACH)` (`deny_debugger`, release ve `--allow-debugger` yoksa; aşama 1).
 //!
-//! Aşama 0'da 0–3 uygulanmıştır; 4 ve 6 aşama 1'de.
+//! Ardından çağıran [`install_panic_hook`] (4), clap (5) ve macOS'ta [`deny_debugger`] (6).
 
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Adım 0–3'ü sırayla uygular. Her adım best-effort'tur; ilk hata döndürülür ama kalan adımlar
 /// yine de denenir (sertleştirme birbirinden bağımsızdır).
 ///
 /// # Errors
-/// Bir OS çağrısı başarısız olursa o çağrının `io::Error`'ı (son hata) döner.
+/// Bir OS çağrısı başarısız olursa o çağrının `io::Error`'ı (ilk hata) döner.
 pub fn harden() -> io::Result<()> {
     let mut first_err: Option<io::Error> = None;
     let mut note = |r: io::Result<()>| {
@@ -72,6 +70,81 @@ pub fn physical_memory_bytes() -> io::Result<u64> {
             "fiziksel RAM sorgusu bu platformda desteklenmiyor",
         ))
     }
+}
+
+/// macOS: `ptrace(PT_DENY_ATTACH)`. Yalnızca caydırıcıdır, güvenlik sınırı değildir. Diğer
+/// platformlarda no-op.
+///
+/// # Errors
+/// `ptrace` hatası.
+pub fn deny_debugger() -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: PT_DENY_ATTACH için pid = 0, addr = NULL, data = 0 belgelenmiş kullanım.
+        let rc = unsafe { libc::ptrace(libc::PT_DENY_ATTACH, 0, core::ptr::null_mut(), 0) };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Panik hook'u (R5-04, açık karar 13: arena → tmp → terminal)
+// ---------------------------------------------------------------------------------------------
+
+static IN_HOOK: AtomicBool = AtomicBool::new(false);
+
+/// Ayırma yapmadan ondalık yazar.
+fn write_num(out: &mut [u8; 20], mut n: usize) -> &[u8] {
+    let mut i = out.len();
+    if n == 0 {
+        i -= 1;
+        out[i] = b'0';
+    }
+    while n > 0 && i > 0 {
+        i -= 1;
+        #[allow(clippy::cast_possible_truncation)]
+        let d = (n % 10) as u8;
+        out[i] = b'0' + d;
+        n /= 10;
+    }
+    &out[i..]
+}
+
+fn hook_body(info: &std::panic::PanicHookInfo<'_>) {
+    if IN_HOOK.swap(true, Ordering::SeqCst) {
+        std::process::abort();
+    }
+    // (1) arena + kayıtlı büyük bölgeler
+    let (arena, regions) = crate::mem::zeroize_all_registered();
+    // (2) tmp kaydı
+    let tmp = crate::fs::tmp_unlink_all_in_hook();
+    // (3) terminal
+    crate::term::restore_if_raw();
+    // Ham stderr satırı (ayırma yok).
+    let err = std::io::stderr();
+    let mut buf = [0u8; 20];
+    let _ = crate::term::write_all_raw(&err, b"\nlephycrypy: i\xc3\xa7 hata (panik); arena=");
+    let _ = crate::term::write_all_raw(&err, if arena > 0 { b"0" } else { b"-" });
+    let _ = crate::term::write_all_raw(&err, b" b\xc3\xb6lge=");
+    let _ = crate::term::write_all_raw(&err, write_num(&mut buf, regions));
+    let _ = crate::term::write_all_raw(&err, b" tmp=");
+    let _ = crate::term::write_all_raw(&err, write_num(&mut buf, tmp));
+    if let Some(loc) = info.location() {
+        let _ = crate::term::write_all_raw(&err, b" konum=");
+        let _ = crate::term::write_all_raw(&err, loc.file().as_bytes());
+        let _ = crate::term::write_all_raw(&err, b":");
+        let _ = crate::term::write_all_raw(&err, write_num(&mut buf, loc.line() as usize));
+    }
+    let _ = crate::term::write_all_raw(&err, b"\n");
+    IN_HOOK.store(false, Ordering::SeqCst);
+}
+
+/// Panik hook'unu kurar. `main`'in ilk satırında, hiçbir sır oluşmadan çağrılır. `panic=abort`
+/// altında hook döndükten sonra çalışma zamanı abort eder; Drop'lar çalışmaz.
+pub fn install_panic_hook() {
+    std::panic::set_hook(Box::new(hook_body));
 }
 
 #[cfg(unix)]
@@ -170,7 +243,7 @@ mod windows {
         }
     }
 
-    /// Adım 1: çökme iletişim kutusunu kapat. (`WerAddExcludedApplication` aşama 1'de, DOĞRULANMADI.)
+    /// Adım 1: çökme iletişim kutusunu kapat.
     pub(super) fn disable_error_dialogs() {
         // SAFETY: SetErrorMode yalnızca bir bayrak alır; önceki modu döndürür, hata üretmez.
         let _prev = unsafe { SetErrorMode(SEM_NOGPFAULTERRORBOX) };
@@ -216,5 +289,12 @@ mod tests {
     #[cfg_attr(miri, ignore = "FFI; Miri'de çalışmaz (PLAN I3)")]
     fn harden_succeeds() {
         harden().expect("harden");
+    }
+
+    #[test]
+    fn write_num_formats() {
+        let mut b = [0u8; 20];
+        assert_eq!(write_num(&mut b, 0), b"0");
+        assert_eq!(write_num(&mut b, 1234), b"1234");
     }
 }

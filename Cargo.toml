@@ -18,10 +18,24 @@ publish = false
 [workspace.dependencies]
 lephy-sys = { path = "crates/lephy-sys" }
 lephy-core = { path = "crates/lephy-core" }
-zeroize = { version = "1", default-features = false }
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
 thiserror = "2"
 subtle = { version = "2", default-features = false }
 clap = { version = "4", features = ["derive"] }
+# Kripto (PLAN › Bağımlılıklar; zeroize kenarları R5-03). Tümü RustCrypto 0.11/0.6 kuşağı.
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["zeroize"] }
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "zeroize"] }
+aead = { version = "0.6", default-features = false }
+argon2 = { version = "0.6", default-features = false, features = ["zeroize"] }
+hkdf = { version = "0.13", default-features = false }
+hmac = { version = "0.13", default-features = false, features = ["zeroize"] }
+sha2 = { version = "0.11", default-features = false, features = ["zeroize"] }
+digest = { version = "0.11", default-features = false, features = ["zeroize"] }
+# `pure`: C/asm arka ucu yok (cc crate'i ve C derleyici bagimliligi kalkar; yalnizca kucuk girdiler hash'lenir).
+blake3 = { version = "1.8", default-features = false, features = ["zeroize", "pure"] }
+getrandom = { version = "0.4", default-features = false }
+unicode-normalization = { version = "0.1", default-features = false }
+crossbeam-channel = { version = "0.5", default-features = false, features = ["std"] }
 
 # R5-01: unsafe yalnızca lephy-sys'te. lephy-sys kendi [lints] tablosunu kullanır,
 # `workspace = true` yazmaz; diğer tüm crate'ler bu tabloyu devralır.
@@ -31,6 +45,8 @@ missing_docs = "warn"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
+similar_names = "allow"
+many_single_char_names = "allow"
 disallowed_methods = "deny"
 disallowed_types = "deny"
 unwrap_used = "warn"

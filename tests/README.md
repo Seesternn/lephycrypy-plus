@@ -1,7 +1,11 @@
 # tests/
 
-- `kat/` — resmî bilinen-cevap testleri (Argon2id RFC 9106, HKDF RFC 5869, XChaCha20-Poly1305,
-  AES-256-GCM CAVP, BLAKE3) ve deterministik vektör testleri (`required-features = ["test-vectors"]`). Aşama 1.
-- `ref/` — Python referans uygulaması (cryptography + argon2-cffi + blake3); **yalnızca
-  docs/FORMAT.md okunarak yazılır** (PR'da beyan). Aşama 1.
+- `kat/` — resmî bilinen-cevap verileri: `argon2id_rfc9106.txt`, `hkdf_rfc5869.txt`,
+  `xchacha20poly1305_draft03.txt`, `aes256gcm_cavp_subset.txt` (NIST CAVP, pyca aynası),
+  `blake3_test_vectors.json` (resmî). Test: `crates/lephy-core/tests/kat.rs`.
+  `kat/vectors/` — Python referansının ürettiği FORMAT.md vektörleri (`v1..v9.lphy`, `vectors.json`);
+  test: `crates/lephy-core/tests/vectors.rs` (`required-features = ["test-vectors"]`).
+- `ref/lephy_ref.py` — Python referans uygulaması (cryptography + argon2-cffi + blake3; HChaCha20 elle);
+  **yalnızca docs/FORMAT.md okunarak yazılmıştır**. `selftest` draft-xchacha vektörlerini doğrular,
+  `vectors <dizin>` vektörleri üretir.
 - `regress/` — fuzz ile bulunan girdilerin regresyon testleri. Aşama 3.
