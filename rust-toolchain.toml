@@ -1,0 +1,4 @@
+# I4: sabit toolchain. MSRV README'de. Miri işi ci.yml'de ayrı tarihli nightly kullanır.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]

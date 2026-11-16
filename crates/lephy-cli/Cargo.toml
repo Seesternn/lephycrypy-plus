@@ -1,0 +1,21 @@
+[package]
+name = "lephy-cli"
+description = "lephycrypy+ komut satırı (#![forbid(unsafe_code)])"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "lephycrypy"
+path = "src/main.rs"
+
+[dependencies]
+lephy-core = { workspace = true }
+lephy-sys = { workspace = true }
+clap = { workspace = true }
+
+[lints]
+workspace = true

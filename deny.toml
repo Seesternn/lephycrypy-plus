@@ -1,0 +1,69 @@
+# cargo-deny yapılandırması (PLAN R5-07, açık karar 20)
+
+[graph]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+]
+all-features = false
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+]
+confidence-threshold = 0.9
+
+[advisories]
+version = 2
+yanked = "deny"
+unmaintained = "all"
+ignore = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+highlight = "all"
+deny = [
+    # Kaldırılan bağımlılıklar (PLAN › Depo yapısı)
+    { crate = "memsec", reason = "tüm API unsafe, seyrek bakım; lephy-sys/mem.rs" },
+    { crate = "sysinfo", reason = "büyük; lephy-sys/vol.rs ve platform.rs" },
+    { crate = "secrecy", reason = "R5-17: tek sır türü SecretBytes/SecretBox" },
+    { crate = "signal-hook", reason = "R5-12: SA_RESTART koyar; lephy-sys/signal.rs" },
+    { crate = "signal-hook-registry", reason = "R5-12: SA_RESTART koyar; lephy-sys/signal.rs" },
+    { crate = "ctrlc", reason = "R5-12: lephy-sys/signal.rs" },
+    # Araç ağa çıkmaz (açık karar 20)
+    { crate = "openssl", reason = "ağ/TLS yok" },
+    { crate = "openssl-sys", reason = "ağ/TLS yok" },
+    { crate = "ring", reason = "ağ/TLS yok" },
+    { crate = "native-tls", reason = "ağ/TLS yok" },
+    # Eski kuşak RustCrypto: zeroize feature'ı yok (R5-03)
+    { crate = "hkdf:<0.13", reason = "R5-03: zeroize için hkdf ≥ 0.13" },
+    { crate = "hmac:<0.13", reason = "R5-03: zeroize için hmac ≥ 0.13" },
+    { crate = "sha2:<0.11", reason = "R5-03: zeroize için sha2 ≥ 0.11" },
+    # Bağımlılık bütçesi: yalnızca listelenen wrapper'lar doğrudan bağımlı olabilir
+    { crate = "libc", wrappers = ["lephy-sys"], reason = "R5-01: unsafe/FFI yalnızca lephy-sys" },
+    { crate = "windows-sys", wrappers = ["lephy-sys"], reason = "R5-01: unsafe/FFI yalnızca lephy-sys" },
+    { crate = "egui", wrappers = ["lephy-gui"], reason = "GUI yalnızca lephy-gui (1.2)" },
+    { crate = "eframe", wrappers = ["lephy-gui"], reason = "GUI yalnızca lephy-gui (1.2)" },
+    { crate = "winit", wrappers = ["eframe"], reason = "GUI yalnızca lephy-gui (1.2)" },
+    { crate = "plist", wrappers = ["lephy-usb"], reason = "USB yalnızca lephy-usb (1.1)" },
+    { crate = "rand_chacha", wrappers = ["lephy-usb"], reason = "USB yalnızca lephy-usb (1.1)" },
+]
+skip = []
+skip-tree = []

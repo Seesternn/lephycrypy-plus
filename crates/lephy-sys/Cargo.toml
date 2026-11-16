@@ -1,0 +1,46 @@
+[package]
+name = "lephy-sys"
+description = "lephycrypy+ tek unsafe/FFI crate'i: bellek kilitleme, süreç sertleştirme, dosya sistemi, birim, terminal, sinyal (PLAN R5-01)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# Bağımlılık bütçesi (R5-01): yalnızca libc (unix), windows-sys (windows), zeroize.
+# Başka bir bağımlılık PLAN değişikliği gerektirir; CI `cargo tree -p lephy-sys --depth 1` ile denetler.
+[dependencies]
+zeroize = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Memory",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Console",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+]
+# "Win32_System_Ioctl" yalnızca vol.rs (1.1) ile eklenir.
+
+# R5-01: workspace tablosu `unsafe_code = "forbid"` içerir; bu crate kendi tablosunu kullanır.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(miri)"] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+disallowed_methods = "deny"
+disallowed_types = "deny"
+unwrap_used = "warn"
+expect_used = "warn"

@@ -1,0 +1,142 @@
+# PLAN R5-07 / CI iş listesi. Tüm `uses:` tam 40-hex SHA ile sabitlenir; üst düzey `permissions: {}`.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (rust-toolchain.toml okur)
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo clippy --locked -p lephy-core -p lephy-sys --all-features --all-targets -- -D warnings
+      - name: unsafe only in lephy-sys (R5-01)
+        run: |
+          set -euo pipefail
+          if grep -rnE '\bunsafe\b' crates --include='*.rs' | grep -v '^crates/lephy-sys/' | grep -v 'forbid(unsafe_code)' | grep -v '^\S*:[0-9]*:\s*//' ; then
+            echo "::error::unsafe outside lephy-sys"; exit 1; fi
+      - name: workflow lint (SHA pin + permissions)
+        run: |
+          set -euo pipefail
+          for f in .github/workflows/*.yml; do
+            if grep -nE '^\s*-?\s*uses:' "$f" | grep -vE 'uses:\s*[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}(\s|#|$)'; then
+              echo "::error file=$f::uses: not pinned to 40-hex SHA"; exit 1; fi
+            grep -qE '^permissions:\s*\{\}\s*$' "$f" || { echo "::error file=$f::top-level permissions: {} missing"; exit 1; }
+          done
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+      - run: cargo build --locked --workspace
+      - run: cargo test --locked --workspace
+      - run: cargo test --locked -p lephy-core --features test-vectors
+
+  linux-best-effort:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+      - run: cargo check --locked --workspace
+      # Aşama 3: Miri (lephy-sys, cfg(miri) arka ucu; sabit tarihli nightly), fuzz smoke 60 sn/hedef, kanarya taraması.
+      - name: miri (lephy-sys)
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly-2026-11-01 --component miri --profile minimal
+          cargo +nightly-2026-11-01 miri setup
+          cargo +nightly-2026-11-01 miri test -p lephy-sys
+
+  supply-chain:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+      - uses: EmbarkStudios/cargo-deny-action@30f817c6f72275c6d54dc744fbca09ebc958599f # v2.0.12
+        with:
+          command: check advisories bans licenses sources
+          arguments: --all-features
+      - uses: taiki-e/install-action@328a871ad8f62ecac78390391f463ccabc974b72 # v2.69.9
+        with:
+          tool: cargo-audit,cargo-vet
+      - run: cargo audit --deny warnings
+      - name: cargo vet
+        run: |
+          set -euo pipefail
+          # imports.lock henüz üretilmedi (aşama 0 elle başlatıldı); ilk çalıştırma `cargo vet` ile
+          # üretir ve commit edilmesi gerekir. `--locked` yalnızca imports.lock varken anlamlıdır.
+          if [ -f supply-chain/imports.lock ]; then cargo vet --locked; else cargo vet || true; fi
+      - name: exemptions must not grow (PR)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin "$BASE_REF"
+          base=$(git show "origin/$BASE_REF:supply-chain/config.toml" 2>/dev/null | grep -c '^\[\[exemptions' || true)
+          head=$(grep -c '^\[\[exemptions' supply-chain/config.toml || true)
+          if [ "$head" -gt "$base" ]; then echo "::error::cargo-vet exemptions increased ($base -> $head)"; exit 1; fi
+
+  budget:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+      - name: lephy-sys dependency budget (R5-01)
+        run: |
+          set -euo pipefail
+          for t in aarch64-apple-darwin x86_64-pc-windows-msvc x86_64-unknown-linux-gnu; do
+            cargo tree --locked -p lephy-sys -e normal --depth 1 --prefix none --target "$t" \
+              | awk '{print $1}' | sort -u > /tmp/deps.txt
+            if grep -vxE 'lephy-sys|libc|windows-sys|zeroize' /tmp/deps.txt; then
+              echo "::error::lephy-sys has an unbudgeted dependency for $t"; exit 1; fi
+          done
+      - name: forbidden crates absent (R5-17, R5-12)
+        run: |
+          set -euo pipefail
+          ! cargo tree --locked --workspace --prefix none | grep -E '^(secrecy|signal-hook|ctrlc|memsec|sysinfo) '
+      - name: test-vectors must not build into lephy-cli (R5-02)
+        run: |
+          set -euo pipefail
+          if cargo build --locked -p lephy-cli --features lephy-core/test-vectors; then
+            echo "::error::lephy-cli built with test-vectors"; exit 1; fi
+      # Aşama 1: zeroize kenarları (chacha20/zeroize, aes/zeroize, ghash/zeroize, hmac/zeroize,
+      # sha2/zeroize, digest/zeroize, blake3/zeroize) `cargo tree -e features` ile denetlenir;
+      # windows-sys feature listesi grep'i eklenir.

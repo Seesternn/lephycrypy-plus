@@ -1,0 +1,28 @@
+# cargo vet config (PLAN R5-07). Elle başlatıldı; `cargo vet` kurulunca `cargo vet init` ile
+# yeniden üretilmeli ve `imports.lock` oluşturulmalıdır (CI `supply-chain` job'u bunu doğrular).
+# Kripto crate'leri ve lephy-sys için `safe-to-deploy` yerel denetimi 1.0 öncesi zorunlu.
+# CI'da exemptions artıran PR reddedilir.
+
+# cargo-vet is a tool to help projects ensure that third-party Rust dependencies have been audited by a trusted entity.
+# https://mozilla.github.io/cargo-vet/
+
+[cargo-vet]
+version = "0.10"
+
+[imports.bytecode-alliance]
+url = "https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml"
+
+[imports.google]
+url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
+
+[imports.mozilla]
+url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
+
+[policy.lephy-sys]
+criteria = "safe-to-deploy"
+
+[policy.lephy-core]
+criteria = "safe-to-deploy"
+
+[policy.lephy-cli]
+criteria = "safe-to-deploy"

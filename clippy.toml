@@ -1,0 +1,12 @@
+# R5-03 / E3: sır yolunda sıfırlanmayan tamponlar yasak (clippy disallowed_types).
+disallowed-types = [
+    { path = "std::io::BufReader", reason = "iç tampon sıfırlanmaz; sır yolunda havuz tamponu kullanılır (PLAN E3)" },
+    { path = "std::io::BufWriter", reason = "iç tampon sıfırlanmaz; sır yolunda havuz tamponu kullanılır (PLAN E3)" },
+    { path = "std::io::Stdout", reason = "LineWriter sıfırlanmaz; --stdout için lephy_sys ham fd yazımı (PLAN B2)" },
+    { path = "std::io::StdoutLock", reason = "LineWriter sıfırlanmaz; --stdout için lephy_sys ham fd yazımı (PLAN B2)" },
+]
+# Aşama 1'de eklenecek: aead::Aead::encrypt/decrypt (Vec dönen), blake3::keyed_hash (PLAN R5-03).
+disallowed-methods = [
+    { path = "std::env::var", reason = "parola/sır env'den asla okunmaz (PLAN D3)" },
+    { path = "std::env::var_os", reason = "parola/sır env'den asla okunmaz (PLAN D3); bulut kökü tespiti lephy_sys::fs üzerinden" },
+]

@@ -1,0 +1,29 @@
+[package]
+name = "lephy-core"
+description = "lephycrypy+ çekirdeği: kriptografi, biçim, arşiv, pipeline (#![forbid(unsafe_code)])"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Açık karar 2: zxcvbn parola gücü; sıfırlanmayan parola kopyaları bırakır, varsayılan kapalı.
+strength = []
+# R5-02: sabit salt/nonce/FK enjeksiyonu + işaret dizgesi. YALNIZCA testler için;
+# lephy-cli/lephy-gui bu feature ile derlenmeyi `const` iddiasıyla reddeder.
+test-vectors = []
+
+[dependencies]
+lephy-sys = { workspace = true }
+zeroize = { workspace = true }
+thiserror = { workspace = true }
+subtle = { workspace = true }
+# Aşama 1'de: chacha20poly1305 0.11, aes-gcm 0.11, aead 0.6, argon2, hkdf 0.13, hmac 0.13,
+# sha2 0.11, digest 0.11, blake3, getrandom, unicode-normalization (hepsi zeroize feature'ları ile;
+# PLAN › Bağımlılıklar). Aşama 2'de: cap-std, tempfile, crossbeam-channel, rayon.
+
+[lints]
+workspace = true

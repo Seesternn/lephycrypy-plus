@@ -1,0 +1,13 @@
+# PLAN R5-07: yalnızca PR açar; auto-merge workflow'u yoktur. Cargo.lock commit edilir;
+# `cargo update` yalnızca Dependabot PR'ı ile.
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

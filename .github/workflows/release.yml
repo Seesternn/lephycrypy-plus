@@ -1,0 +1,120 @@
+# PLAN R5-06 / R4-D7: tekrarlanabilir derleme imza ÖNCESİ iki bağımsız runner'da; fark varsa sürüm durur.
+# İmza (macOS Developer ID + notarization; Windows Authenticode açık karar 18/19) aşama 3'te eklenir.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        attempt: [a, b]
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-14
+            target: x86_64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          targets: ${{ matrix.target }}
+      - name: build (reproducible, unsigned)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export RUSTFLAGS="--remap-path-prefix=$PWD=/src --remap-path-prefix=$HOME=/home"
+          cargo build --locked --release --target "${{ matrix.target }}" -p lephy-cli
+          mkdir -p out
+          bin=target/${{ matrix.target }}/release/lephycrypy
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          cp "$bin" out/
+          (cd out && shasum -a 256 * > "SHA256SUMS-${{ matrix.target }}-${{ matrix.attempt }}.txt")
+          if grep -q "LPHY-TEST-VECTORS-BUILD" "$bin"; then echo "::error::test-vectors marker in release binary"; exit 1; fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: build-${{ matrix.target }}-${{ matrix.attempt }}
+          path: out/
+
+  compare:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts
+      - name: hashes must match across runners
+        run: |
+          set -euo pipefail
+          for t in aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc; do
+            a=$(awk '{print $1}' "artifacts/build-$t-a/SHA256SUMS-$t-a.txt")
+            b=$(awk '{print $1}' "artifacts/build-$t-b/SHA256SUMS-$t-b.txt")
+            echo "$t: a=$a b=$b"
+            [ "$a" = "$b" ] || { echo "::error::non-reproducible build for $t"; exit 1; }
+          done
+          mkdir -p dist
+          for t in aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc; do
+            cp artifacts/build-$t-a/lephycrypy* "dist/" 2>/dev/null || true
+            for f in artifacts/build-$t-a/lephycrypy*; do mv "dist/$(basename "$f")" "dist/lephycrypy-$t${f##*lephycrypy}"; done
+          done
+          (cd dist && sha256sum * > SHA256SUMS-unsigned.txt)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-unsigned
+          path: dist/
+
+  sbom:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+      - uses: taiki-e/install-action@328a871ad8f62ecac78390391f463ccabc974b72 # v2.69.9
+        with:
+          tool: cargo-cyclonedx
+      - run: cargo cyclonedx --locked --all --format json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom
+          path: "**/*.cdx.json"
+
+  # sign-macos / sign-windows: aşama 3, açık karar 17/18/19 (imza bakımcı makinesinde, öneri b).
+
+  publish:
+    needs: [compare, sbom]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts
+      - uses: softprops/action-gh-release@72f2c25fcb47643c292f7107632f7a47c1df5cd8 # v2.3.2
+        with:
+          draft: true
+          files: |
+            artifacts/dist-unsigned/*
+            artifacts/sbom/**/*.cdx.json
+          body: |
+            Taslak sürüm. SHA256SUMS-unsigned.txt tekrarlanabilir imzasız ikililerindir; imzalı
+            ikililer ve SHA256SUMS.txt + .minisig bakımcı tarafından elle eklenir (PLAN R5-06).
