@@ -52,7 +52,8 @@ struct Cli {
 #[derive(Args, Clone)]
 struct PasswordArgs {
     /// Parolayı stdin'den EOF'a kadar oku (stdin terminal olamaz; giriş de stdin olamaz).
-    #[arg(long, conflicts_with_all = ["password_fd", "password_file"])]
+    #[cfg_attr(unix, arg(long, conflicts_with_all = ["password_fd", "password_file"]))]
+    #[cfg_attr(not(unix), arg(long, conflicts_with = "password_file"))]
     password_stdin: bool,
     /// Parolayı verilen dosya tanıtıcısından oku (yalnızca Unix).
     #[cfg(unix)]

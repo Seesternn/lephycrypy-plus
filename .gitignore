@@ -4,5 +4,6 @@
 /fuzz/corpus
 /fuzz/artifacts
 *.lphy
+!/tests/kat/vectors/*.lphy
 .lphy-tmp-*
 .DS_Store
