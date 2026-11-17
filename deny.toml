@@ -78,8 +78,10 @@ deny = [
     { crate = "egui", wrappers = ["lephy-gui"], reason = "GUI yalnızca lephy-gui (1.2)" },
     { crate = "eframe", wrappers = ["lephy-gui"], reason = "GUI yalnızca lephy-gui (1.2)" },
     { crate = "winit", wrappers = ["eframe"], reason = "GUI yalnızca lephy-gui (1.2)" },
-    { crate = "plist", wrappers = ["lephy-usb"], reason = "USB yalnızca lephy-usb (1.1)" },
-    { crate = "rand_chacha", wrappers = ["lephy-usb"], reason = "USB yalnızca lephy-usb (1.1)" },
+    # USB (1.1): plist zinciri yerine lephy-usb/plist_lite; rand_chacha yerine chacha20 anahtar
+    # akışı (denetlenmemiş crate sayısını büyütmemek, R5-07).
+    { crate = "plist", reason = "lephy-usb kendi küçük ayrıştırıcısını kullanır (plist_lite)" },
+    { crate = "rand_chacha", reason = "doldurma chacha20 anahtar akışıyla yapılır" },
 ]
 # Kaçınılmaz çift sürümler (yalnızca Windows hedefinde; cap-std zinciri eski windows-sys'leri
 # çeker). Yukarı akış güncellendiğinde kaldırılır; yeni çift sürüm yine "deny" ile yakalanır.

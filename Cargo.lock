@@ -521,6 +521,7 @@ dependencies = [
  "clap",
  "lephy-core",
  "lephy-sys",
+ "lephy-usb",
 ]
 
 [[package]]
@@ -554,6 +555,19 @@ version = "0.0.1"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
+name = "lephy-usb"
+version = "0.0.1"
+dependencies = [
+ "blake3",
+ "cap-std",
+ "chacha20",
+ "getrandom",
+ "lephy-core",
+ "lephy-sys",
  "zeroize",
 ]
 

@@ -1,0 +1,22 @@
+[package]
+name = "lephy-usb"
+description = "lephycrypy+ USB: yalnızca çıkarılabilir USB ortamını temizle ve şifreli dosyayı yaz (1.1; #![forbid(unsafe_code)])"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+lephy-core = { workspace = true }
+lephy-sys = { workspace = true }
+cap-std = { workspace = true }
+blake3 = { workspace = true }
+getrandom = { workspace = true }
+zeroize = { workspace = true }
+# Boş alan doldurma: ChaCha20 anahtar akışı (ağaçta zaten var; rand_chacha + ppv-lite86 + zerocopy yerine).
+chacha20 = { version = "0.10", default-features = false, features = ["cipher", "zeroize"] }
+
+[lints]
+workspace = true

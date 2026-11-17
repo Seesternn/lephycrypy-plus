@@ -290,6 +290,37 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Yalnızca çıkarılabilir USB ortamı: temizle ve şifreli `.lphy` dosyasını yaz (1.1).
+    Usb {
+        #[command(subcommand)]
+        cmd: UsbCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum UsbCmd {
+    /// Aday USB birimlerini ve uygunluklarını listeler (salt okunur).
+    List,
+    /// USB birimini temizler (ya da biçimlendirir) ve yalnızca verilen `.lphy` dosyasını yazar.
+    Write {
+        /// Yazılacak `.lphy` dosyası (yalnızca geçerli şifreli dosyalar kabul edilir).
+        source: PathBuf,
+        /// Hedef birimin bağlama noktası / sürücü kökü (`usb list` ile görün).
+        #[arg(long, value_name = "YOL")]
+        target: PathBuf,
+        /// Silme yerine exFAT biçimlendir (Windows'ta yönetici oturumu gerekir).
+        #[arg(long)]
+        format: bool,
+        /// Silmeden sonra boş alanı rastgele veriyle doldur (fiziksel silme garantisi değildir).
+        #[arg(long)]
+        fill_free_space: bool,
+        /// Betik onayı: birim etiketi aynen.
+        #[arg(long, value_name = "ETİKET", requires = "confirm_size_gib")]
+        confirm_label: Option<String>,
+        /// Betik onayı: boyut, GiB tam sayı (`floor(bayt / 2^30)`).
+        #[arg(long, value_name = "GiB", requires = "confirm_label")]
+        confirm_size_gib: Option<u64>,
+    },
 }
 
 fn main() -> ProcessExit {
@@ -792,6 +823,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             log(&format!("{n} bayt yeniden şifrelendi"));
             Ok(())
         }
+        Command::Usb { cmd } => run_usb(cmd, log),
         Command::Cleanup { dir, yes } => {
             let stale = lephy_core::io::scan_stale(dir)?;
             if stale.is_empty() {
@@ -816,6 +848,121 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             }
             let n = lephy_core::io::cleanup(&stale)?;
             println!("{n} silindi");
+            Ok(())
+        }
+    }
+}
+
+fn prompt_line(q: &str) -> Result<String> {
+    let stdin = std::io::stdin();
+    if !lephy_sys::term::is_tty(&stdin) {
+        return Err(Error::Cancelled(
+            "onay gerekli: --confirm-label ve --confirm-size-gib verin".into(),
+        ));
+    }
+    eprint!("{q}");
+    let mut line = String::new();
+    stdin.read_line(&mut line)?;
+    Ok(line.trim_end_matches(['\r', '\n']).to_string())
+}
+
+fn run_usb(cmd: &UsbCmd, log: &mut dyn FnMut(&str)) -> Result<()> {
+    let platform = lephy_usb::native();
+    match cmd {
+        UsbCmd::List => {
+            let devs = platform.list()?;
+            if devs.is_empty() {
+                println!("bağlı aday USB birimi yok");
+            }
+            for d in devs {
+                let verdict = match d.eligibility(platform.require_serial()) {
+                    Ok(()) => "uygun".to_string(),
+                    Err(why) => format!("UYGUN DEĞİL: {why}"),
+                };
+                println!(
+                    "{}  etiket={}  {} GiB  {}  veriyolu={}  ürün={}  → {verdict}",
+                    disp(&d.mount),
+                    escape_display(&d.label),
+                    d.size_gib(),
+                    d.fs_type,
+                    d.bus,
+                    escape_display(&d.product)
+                );
+            }
+            Ok(())
+        }
+        UsbCmd::Write {
+            source,
+            target,
+            format,
+            fill_free_space,
+            confirm_label,
+            confirm_size_gib,
+        } => {
+            lephy_usb::engine::check_source(source)?;
+            let (dev, dry) = lephy_usb::engine::prepare(platform.as_ref(), target)?;
+            println!(
+                "HEDEF: {}  etiket={}  {} GiB  {}  ürün={}",
+                disp(&dev.mount),
+                escape_display(&dev.label),
+                dev.size_gib(),
+                dev.fs_type,
+                escape_display(&dev.product)
+            );
+            if *format {
+                println!("İŞLEM: birim exFAT olarak BİÇİMLENDİRİLECEK; tüm içerik kaybolur.");
+            } else {
+                println!(
+                    "SİLİNECEK: {} dosya, {} dizin, {} bayt. İlk {} yol:",
+                    dry.files,
+                    dry.dirs,
+                    dry.bytes,
+                    dry.first.len()
+                );
+                for p in &dry.first {
+                    println!("  {p}");
+                }
+            }
+            eprintln!(
+                "uyarı: FAT/exFAT eski dizin girişleri, NTFS resident dosyalar ve wear-leveling nedeniyle \
+                 fiziksel silme garantisi yoktur; --format da denetleyici düzeyinde garanti vermez"
+            );
+            let confirm = if let (Some(l), Some(g)) = (confirm_label, confirm_size_gib) {
+                lephy_usb::Confirm {
+                    label: l.clone(),
+                    size_gib: *g,
+                }
+            } else {
+                let label = prompt_line("Onay için birim etiketini aynen yazın: ")?;
+                let gib = prompt_line("Onay için boyutu GiB olarak (tam sayı) yazın: ")?;
+                let size_gib = gib
+                    .trim()
+                    .parse::<u64>()
+                    .map_err(|_| Error::Cancelled("boyut tam sayı değil".into()))?;
+                lephy_usb::Confirm { label, size_gib }
+            };
+            let req = lephy_usb::WriteRequest {
+                source: source.clone(),
+                confirm,
+                format: *format,
+                fill: *fill_free_space,
+                fill_opts: None,
+            };
+            let mut say = |m: &str| eprintln!("{m}");
+            let rep = lephy_usb::engine::execute(platform.as_ref(), &dev, dry, &req, &mut say)?;
+            println!(
+                "yazıldı: {} ({} bayt, BLAKE3 {}) — {}",
+                disp(&rep.written),
+                rep.bytes,
+                &rep.blake3[..16],
+                rep.verification
+            );
+            if rep.verification == lephy_usb::Verification::FromCache {
+                eprintln!(
+                    "uyarı: birim yeniden bağlanamadı; geri okuma işletim sistemi önbelleğinden yapılmış olabilir"
+                );
+            }
+            log(&format!("adımlar: {}", rep.steps.join(" → ")));
             Ok(())
         }
     }
@@ -855,6 +1002,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn usb_confirm_flags_must_come_together() {
+        let r = Cli::try_parse_from([
+            "lephycrypy",
+            "usb",
+            "write",
+            "a.lphy",
+            "--target",
+            "/x",
+            "--confirm-label",
+            "L",
+        ]);
+        assert!(r.is_err());
+        let r = Cli::try_parse_from([
+            "lephycrypy",
+            "usb",
+            "write",
+            "a.lphy",
+            "--target",
+            "/x",
+            "--confirm-label",
+            "L",
+            "--confirm-size-gib",
+            "8",
+        ]);
+        assert!(r.is_ok());
     }
 
     #[test]

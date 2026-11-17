@@ -4,6 +4,7 @@ members = [
     "crates/lephy-sys",
     "crates/lephy-core",
     "crates/lephy-cli",
+    "crates/lephy-usb",
 ]
 # fuzz/ kendi workspace'idir (cargo-fuzz, nightly); ana grafiğe ve cargo-deny'ye girmez.
 exclude = ["fuzz"]
@@ -20,6 +21,7 @@ publish = false
 [workspace.dependencies]
 lephy-sys = { path = "crates/lephy-sys" }
 lephy-core = { path = "crates/lephy-core" }
+lephy-usb = { path = "crates/lephy-usb" }
 zeroize = { version = "1", default-features = false, features = ["alloc"] }
 thiserror = "2"
 subtle = { version = "2", default-features = false }
