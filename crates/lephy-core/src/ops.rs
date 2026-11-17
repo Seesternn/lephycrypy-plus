@@ -750,6 +750,8 @@ pub fn rekey(
     w.file().write_all(&nu.bytes)?;
     f.seek(SeekFrom::Start(HEADER_LEN as u64))?;
     copy_rest(&mut f, w.file())?;
+    // Windows açık bir dosyanın üzerine yeniden adlandırmaya izin vermez: kaynak önce kapanır.
+    drop(f);
     w.commit(true)?;
     log(
         "uyarı: eski parola ve eski dosyanın başlık kopyasına sahip biri bu dosyayı hâlâ açabilir; gerçek rotasyon için `reencrypt`",
