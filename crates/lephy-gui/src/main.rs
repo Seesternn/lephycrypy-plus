@@ -73,6 +73,8 @@ fn main() -> ExitCode {
             Ok(app::boxed())
         }),
     );
+    // Son güvence: hâlâ kayıtlı yarım tmp dosyası varsa sil.
+    let _ = lephy_sys::fs::tmp_unlink_all_in_hook();
     lephy_sys::signal::mark_cleanup_done();
     match r {
         Ok(()) if lephy_sys::signal::interrupted() => ExitCode::from(130),

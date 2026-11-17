@@ -2,6 +2,8 @@
 //! Görsel dil `theme.rs`'de; ikonlar resim değil, birkaç çizgiyle çizilir.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
@@ -54,6 +56,10 @@ pub struct App {
     job: Option<Receiver<JobResult>>,
     /// Kesinti "İptal" düğmesinden mi geldi (sinyal değil → pencere kapanmaz).
     cancel_requested: bool,
+    /// Pencere iş sürerken kapatılmak istendi: iş durunca kapanır.
+    close_after_job: bool,
+    /// İşin tahmini toplam akış baytı (0: bilinmiyor).
+    total: Arc<AtomicU64>,
 }
 
 impl Default for App {
@@ -72,6 +78,8 @@ impl Default for App {
             error: None,
             job: None,
             cancel_requested: false,
+            close_after_job: false,
+            total: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -159,7 +167,14 @@ impl App {
         self.confirm.clear();
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx2 = ctx.clone();
+        self.total.store(0, Ordering::Relaxed);
+        lephy_core::pipeline::reset_progress();
+        let total = Arc::clone(&self.total);
         std::thread::spawn(move || {
+            total.store(
+                logic::estimate_total(job.mode, &job.input),
+                Ordering::Relaxed,
+            );
             let r = logic::run(job).map_err(|e| logic::describe_error(&e));
             let _ = tx.send(r);
             ctx2.request_repaint();
@@ -199,8 +214,19 @@ impl App {
 
     /// SIGINT/SIGTERM/Ctrl+C: boştaysa pencereyi kapat; iş sürüyorsa iş önce durur (tmp
     /// temizlenir), sonra kapanır. Boşta sinyali fark etmek için düzenli yeniden çizim.
-    fn handle_signal(&self, ctx: &egui::Context) {
+    fn handle_signal(&mut self, ctx: &egui::Context) {
         if lephy_sys::signal::interrupted() && !self.running() && !self.cancel_requested {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        // Pencere kapatma isteği iş sürerken gelirse: iş iptal edilir, yarım dosya silinir,
+        // pencere ancak sonra kapanır.
+        if self.running() && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.close_after_job = true;
+            self.cancel_requested = true;
+            lephy_sys::signal::request_interrupt();
+        }
+        if self.close_after_job && !self.running() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         ctx.request_repaint_after(Duration::from_millis(400));
@@ -615,28 +641,50 @@ impl App {
             Mode::Encrypt => "Şifreleniyor",
             Mode::Decrypt => "Şifre çözülüyor",
         };
+        let total = self.total.load(Ordering::Relaxed);
+        let done = lephy_core::pipeline::progress();
+        #[allow(clippy::cast_precision_loss)]
+        let frac = (total > 0 && done > 0).then(|| (done as f32 / total as f32).clamp(0.0, 0.99));
+        let (title, sub) = match frac {
+            Some(f) => (
+                format!("{verb}… %{}", (f * 100.0).floor()),
+                format!(
+                    "{} / {}",
+                    logic::human_size(done.min(total)),
+                    logic::human_size(total)
+                ),
+            ),
+            None => (
+                format!("{verb}…"),
+                "Parolanın anahtara dönüştürülmesi birkaç saniye sürer.".to_string(),
+            ),
+        };
         ui.label(
-            RichText::new(format!("{verb}…"))
+            RichText::new(title)
                 .font(fonts::semibold(16.5))
                 .color(pal.ink),
         );
-        ui.label(
-            RichText::new("Parolanın anahtara dönüştürülmesi birkaç saniye sürer.")
-                .color(pal.muted)
-                .size(13.0),
-        );
+        ui.label(RichText::new(sub).color(pal.muted).size(13.0));
         ui.add_space(12.0);
         let (track, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
         let p = ui.painter_at(track);
         p.rect_filled(track, 2.0, pal.line);
-        let seg = track.width() * 0.28;
-        let t = (since.elapsed().as_secs_f32() % 1.6) / 1.6;
-        let x = track.left() - seg + (track.width() + seg) * t;
-        p.rect_filled(
-            Rect::from_min_size(pos2(x, track.top()), vec2(seg, track.height())),
-            2.0,
-            pal.accent,
-        );
+        if let Some(f) = frac {
+            p.rect_filled(
+                Rect::from_min_size(track.min, vec2(track.width() * f, track.height())),
+                2.0,
+                pal.accent,
+            );
+        } else {
+            let seg = track.width() * 0.28;
+            let t = (since.elapsed().as_secs_f32() % 1.6) / 1.6;
+            let x = track.left() - seg + (track.width() + seg) * t;
+            p.rect_filled(
+                Rect::from_min_size(pos2(x, track.top()), vec2(seg, track.height())),
+                2.0,
+                pal.accent,
+            );
+        }
         ui.ctx().request_repaint_after(Duration::from_millis(16));
         ui.add_space(12.0);
         ui.horizontal(|ui| {

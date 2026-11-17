@@ -174,6 +174,37 @@ pub fn run(job: Job) -> Result<Outcome> {
     }
 }
 
+/// İlerleme yüzdesi için tahmini toplam akış baytı: şifrelemede kaynak dosyaların toplam
+/// boyutu (symlink izlenmez), çözmede başlık sonrası dosya boyutu. Bilinmiyorsa 0.
+#[must_use]
+pub fn estimate_total(mode: Mode, input: &Path) -> u64 {
+    fn walk(p: &Path, depth: u32, acc: &mut u64) {
+        let Ok(md) = std::fs::symlink_metadata(p) else {
+            return;
+        };
+        if md.is_file() {
+            *acc = acc.saturating_add(md.len());
+        } else if md.is_dir()
+            && depth < 256
+            && let Ok(rd) = std::fs::read_dir(p)
+        {
+            for e in rd.flatten() {
+                walk(&e.path(), depth + 1, acc);
+            }
+        }
+    }
+    match mode {
+        Mode::Decrypt => input
+            .metadata()
+            .map_or(0, |m| m.len().saturating_sub(HEADER_LEN as u64)),
+        Mode::Encrypt => {
+            let mut acc = 0;
+            walk(input, 0, &mut acc);
+            acc
+        }
+    }
+}
+
 /// Kullanıcıya gösterilecek hata metni: ne oldu ve ne yapılabilir.
 #[must_use]
 pub fn describe_error(e: &Error) -> String {
@@ -342,6 +373,12 @@ mod tests {
         };
         run(job).unwrap();
         assert_eq!(detect_mode(&d.join("x.lphy")), Mode::Decrypt);
+        assert_eq!(
+            estimate_total(Mode::Encrypt, &d),
+            5 + std::fs::metadata(d.join("x.lphy")).unwrap().len()
+        );
+        assert!(estimate_total(Mode::Decrypt, &d.join("x.lphy")) > 0);
+        assert!(lephy_core::pipeline::progress() > 0, "hat ilerleme saymalı");
         assert_eq!(
             default_output(&d.join("x.lphy"), Mode::Decrypt),
             d.join("x")

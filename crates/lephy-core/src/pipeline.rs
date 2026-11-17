@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 use lephy_sys::mem::LargeSecretBuf;
@@ -30,6 +30,21 @@ use zeroize::Zeroize;
 use crate::cipher::{SharedCipher, TAG_LEN};
 use crate::error::{Error, Result};
 use crate::stream::{open_chunk, seal_chunk};
+
+/// Süreç genelinde hattın okuduğu akış baytı. Yalnızca ilerleme göstergesi içindir; aynı anda
+/// birden çok hat çalışırsa toplamı gösterir.
+static PROGRESS: AtomicU64 = AtomicU64::new(0);
+
+/// İlerleme sayacını sıfırlar.
+pub fn reset_progress() {
+    PROGRESS.store(0, Ordering::Relaxed);
+}
+
+/// Son sıfırlamadan bu yana hattın okuduğu bayt.
+#[must_use]
+pub fn progress() -> u64 {
+    PROGRESS.load(Ordering::Relaxed)
+}
 
 /// Hat parametreleri.
 pub struct StreamParams<'a> {
@@ -111,7 +126,10 @@ fn read_full(r: &mut dyn Read, dest: &mut [u8], shared: &Shared) -> Result<usize
     while n < dest.len() {
         match r.read(&mut dest[n..]) {
             Ok(0) => break,
-            Ok(k) => n += k,
+            Ok(k) => {
+                n += k;
+                PROGRESS.fetch_add(k as u64, Ordering::Relaxed);
+            }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
                 shared.check()?;
             }
