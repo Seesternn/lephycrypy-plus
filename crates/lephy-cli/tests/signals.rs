@@ -233,10 +233,13 @@ fn double_sigint_during_kdf_exits_immediately() {
             "in.bin",
             "-o",
             "out.lphy",
+            // Az bellek, çok yineleme: KDF uzun sürer ama büyük bellek ayırma/kilitleme
+            // (sinyal teslimini geciktiren uzun çekirdek çağrısı) küçük CI makinelerinde ölçümü
+            // bozmaz.
             "--kdf-memory",
-            "1024",
+            "128",
             "--kdf-time",
-            "8",
+            "60",
             "--kdf-parallelism",
             "1",
             "--password-file",
