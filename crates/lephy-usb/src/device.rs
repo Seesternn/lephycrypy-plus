@@ -1,4 +1,4 @@
-//! Aygıt modeli, uygunluk (PLAN USB 0a) ve kimlik (0c).
+//! Aygıt modeli, uygunluk ve kimlik.
 
 use std::path::PathBuf;
 
@@ -20,7 +20,7 @@ impl std::fmt::Display for Bus {
     }
 }
 
-/// Bir adımdan önce yeniden okunan kimlik (0c).
+/// Bir adımdan önce yeniden okunan kimlik.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
     /// Fiziksel disk: macOS `MediaName|DiskUUID|ParentWholeDisk`; Windows `DeviceNumber|Seri`.
@@ -74,7 +74,7 @@ impl Device {
         self.size_bytes >> 30
     }
 
-    /// Uygunluk (0a). Bypass yoktur. `require_serial`: Windows'ta açık karar 16.
+    /// Uygunluk. Bypass yoktur. `require_serial`: Windows.ta zorunlu.
     ///
     /// # Errors
     /// Reddetme nedeni (çağıran kod 1'e çevirir).
@@ -95,7 +95,7 @@ impl Device {
             return Err("sistem/boot/Time Machine birimi".into());
         }
         if require_serial && self.serial.as_deref().is_none_or(|s| s.trim().is_empty()) {
-            return Err("seri numarası boş (açık karar 16)".into());
+            return Err("seri numarası boş".into());
         }
         if self.size_bytes == 0 {
             return Err("boyut okunamadı".into());

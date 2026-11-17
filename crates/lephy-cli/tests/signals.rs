@@ -1,12 +1,12 @@
-//! Sinyal testleri (PLAN F, R5-12) — yalnızca Unix. Windows `CTRL_BREAK_EVENT` testi Windows
-//! CI'da ayrı adımdır (aşama 3'te yazılmadı; bkz. README doğrulama tablosu).
+//! Sinyal testleri — yalnızca Unix. Windows `CTRL_BREAK_EVENT` testi Windows
+//! CI'da ayrı adımdır (henüz yazılmadı).
 //!
 //! 1. Parola isteminde SIGINT (pty): yankı geri açılır, çıkış kodu 130.
 //! 2. Akış ortasında SIGINT/SIGTERM (bitmeyen stdin): çıkış 130, tmp kalmaz, gecikme küçük.
 //! 3. KDF sırasında çift SIGINT: ikinci sinyalde hemen `_exit(130)`.
 //!
 //! pty için `python3` (stdlib `pty`/`termios`) kullanılır: lephy-cli `unsafe` içeremez ve libc'ye
-//! doğrudan bağımlı olamaz (R5-01, deny.toml).
+//! doğrudan bağımlı olamaz (deny.toml).
 
 #![cfg(unix)]
 #![allow(

@@ -1,6 +1,6 @@
 //! Platform arka uçları: aygıt listeleme/tanımlama, yeniden bağlama, biçimlendirme.
 //!
-//! Harici araçlar (R5-06) yalnızca **mutlak yol** ve **argüman dizisi** ile çağrılır; kabuk,
+//! Harici araçlar yalnızca **mutlak yol** ve **argüman dizisi** ile çağrılır; kabuk,
 //! PATH ve ortam genişletmesi kullanılmaz. macOS: `/usr/sbin/diskutil`. Windows:
 //! `<GetSystemDirectoryW>\WindowsPowerShell\v1.0\powershell.exe`; değişken değerler komut dizgisine
 //! değil, alt sürecin ortamına konur (enjeksiyon yok). `WinVerifyTrust` ile araç imza denetimi
@@ -36,10 +36,10 @@ pub trait Platform {
     /// exFAT olarak biçimlendir (etiket korunur).
     ///
     /// # Errors
-    /// Araç hatası, yetki yok (açık karar 5).
+    /// Araç hatası, yetki yok.
     fn format(&self, dev: &Device, label: &str) -> Result<()>;
 
-    /// Seri numarası zorunlu mu (Windows: açık karar 16; macOS: `diskutil` seri vermez).
+    /// Seri numarası zorunlu mu (Windows: evet; macOS: `diskutil` seri vermez).
     fn require_serial(&self) -> bool;
 }
 
@@ -79,7 +79,7 @@ pub fn native() -> Box<dyn Platform> {
     }
 }
 
-/// Desteklenmeyen platform (Linux best-effort: açık karar 11, `usb` desteklenmez).
+/// Desteklenmeyen platform (Linux best-effort: `usb` desteklenmez).
 pub struct Unsupported;
 
 fn unsupported() -> Error {
@@ -427,7 +427,7 @@ mod win {
         fn format(&self, dev: &Device, label: &str) -> Result<()> {
             if !lephy_sys::vol::is_elevated() {
                 return Err(Error::Environment(
-                    "--format yönetici (yükseltilmiş) oturum gerektirir (açık karar 5): \
+                    "--format yönetici (yükseltilmiş) oturum gerektirir: \
                      PowerShell'i \"Yönetici olarak çalıştır\" ile açıp komutu yeniden deneyin"
                         .into(),
                 ));

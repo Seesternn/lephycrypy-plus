@@ -1,4 +1,4 @@
-//! AEAD soyutlaması (PLAN › STREAM, R5-03).
+//! AEAD soyutlaması.
 //!
 //! Yalnızca yerinde/ayrık-tag API'si kullanılır (`AeadInOut::*_inout_detached`); `Vec` döndüren
 //! `Aead::encrypt/decrypt` clippy `disallowed-methods` ile yasaktır. AEAD struct'ı
@@ -158,7 +158,7 @@ fn nonce_a(nonce: &[u8]) -> Result<aead::Nonce<Aes256Gcm>> {
     Ok(arr.into())
 }
 
-/// `SharedCipher: !Clone` (R5-03). Derleme zamanı iddiası (autoref özelleştirme kalıbı:
+/// `SharedCipher: !Clone`. Derleme zamanı iddiası (autoref özelleştirme kalıbı:
 /// `Clone` uygulanırsa `some_item` belirsizleşir ve derleme hatası verir).
 const _: () = {
     trait AmbiguousIfClone<A> {

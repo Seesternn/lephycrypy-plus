@@ -1,4 +1,4 @@
-//! Anahtar türetme (FORMAT.md › Anahtar türetme; R4-Y1, R4-O1, R4-D6, R5-09).
+//! Anahtar türetme (FORMAT.md › Anahtar türetme).
 //!
 //! ```text
 //! argon2_out     = Argon2id(P=pwd_nfc, S=salt, p, T=32, m=m_kib, t, v=0x13, K=ε, X=ε, y=2)
@@ -112,7 +112,7 @@ impl KdfParams {
         Ok(())
     }
 
-    /// Şifreleme politikası: minimum 64 MiB (R4-D6).
+    /// Şifreleme politikası: minimum 64 MiB.
     ///
     /// # Errors
     /// `Error::Environment`.
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn hkdf_rfc5869_a1_sha256_shape_holds_for_sha512_pipeline() {
-        // RFC 5869 Ek A yalnızca SHA-256/SHA-1 verir; SHA-512 için Python çapraz kontrol (I1).
+        // RFC 5869 Ek A yalnızca SHA-256/SHA-1 verir; SHA-512 için Python çapraz kontrol.
         // Burada determinizm ve salt/info duyarlılığı denetlenir.
         let mut a = [0u8; 32];
         let mut b = [0u8; 32];

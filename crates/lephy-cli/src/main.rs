@@ -1,15 +1,15 @@
-//! `lephycrypy` komut satırı (aşama 2: dosya/klasör arşivi, PADMÉ, ham akış).
+//! `lephycrypy` komut satırı.
 //!
-//! Çıkış kodları PLAN › Çıkış kodu tablosu; kod 2 yalnızca clap. Parola argv/env'den asla
-//! okunmaz (D3). Süreç başı: `harden()` → panik hook'u → sinyal işleyici → clap →
+//! Çıkış kodları README › Çıkış kodları; kod 2 yalnızca clap. Parola argv/env'den asla
+//! okunmaz. Süreç başı: `harden()` → panik hook'u → sinyal işleyici → clap →
 //! (macOS release) `PT_DENY_ATTACH`.
 
 #![forbid(unsafe_code)]
 
-// R5-02: `test-vectors` feature'ı ile derlenen bir çekirdek ikiliye asla giremez.
+// `test-vectors` feature'ı ile derlenen bir çekirdek ikiliye asla giremez.
 const _: () = assert!(
     !lephy_core::TEST_VECTORS_ENABLED,
-    "lephy-cli, lephy-core/test-vectors feature'ı ile derlenemez (PLAN R5-02)"
+    "lephy-cli, lephy-core/test-vectors feature'ı ile derlenemez"
 );
 
 use std::path::{Path, PathBuf};
@@ -324,7 +324,7 @@ enum UsbCmd {
 }
 
 fn main() -> ProcessExit {
-    // Hiçbir sır oluşmadan: sertleştirme, panik hook'u, sinyal işleyici (PLAN › Süreç başı).
+    // Hiçbir sır oluşmadan: sertleştirme, panik hook'u, sinyal işleyici.
     if let Err(e) = lephy_sys::platform::harden() {
         eprintln!("uyarı: süreç sertleştirme kısmen başarısız: {e}");
     }
@@ -408,7 +408,7 @@ fn new_source_of(n: &NewPasswordArgs) -> Source {
     Source::Tty
 }
 
-/// Parolayı okur, NFC'ye çevirir; `confirm` ile terminalde iki kez sorar (D2).
+/// Parolayı okur, NFC'ye çevirir; `confirm` ile terminalde iki kez sorar.
 fn read_password(
     source: &Source,
     prompt: &str,
@@ -470,7 +470,7 @@ fn print_report(rep: &Report, log: &mut dyn FnMut(&str)) {
     ));
 }
 
-/// Bulut senkron klasörü denetimi (R5-05): onay ya da `--allow-cloud-dir`; non-tty → kod 5.
+/// Bulut senkron klasörü denetimi: onay ya da `--allow-cloud-dir`; non-tty → kod 5.
 fn cloud_check(target: &Path, allow: bool) -> Result<()> {
     if allow {
         return Ok(());

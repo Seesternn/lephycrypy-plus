@@ -1,6 +1,6 @@
 [package]
 name = "lephy-sys"
-description = "lephycrypy+ tek unsafe/FFI crate'i: bellek kilitleme, süreç sertleştirme, dosya sistemi, birim, terminal, sinyal (PLAN R5-01)"
+description = "lephycrypy+ tek unsafe/FFI crate'i: bellek kilitleme, süreç sertleştirme, dosya sistemi, birim, terminal, sinyal"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,8 +8,8 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
-# Bağımlılık bütçesi (R5-01): yalnızca libc (unix), windows-sys (windows), zeroize.
-# Başka bir bağımlılık PLAN değişikliği gerektirir; CI `cargo tree -p lephy-sys --depth 1` ile denetler.
+# Bağımlılık bütçesi: yalnızca libc (unix), windows-sys (windows), zeroize.
+# Başka bir bağımlılık tasarım değişikliği gerektirir; CI `cargo tree -p lephy-sys --depth 1` ile denetler.
 [dependencies]
 zeroize = { workspace = true }
 
@@ -29,10 +29,10 @@ features = [
     "Win32_System_Threading",
     "Win32_System_IO",
     "Win32_System_Ioctl",   # vol.rs (USB 1.1): STORAGE_DEVICE_DESCRIPTOR, aygıt numarası
-    "Win32_Security",       # vol.rs: TokenElevation (açık karar 5)
+    "Win32_Security",       # vol.rs: TokenElevation
 ]
 
-# R5-01: workspace tablosu `unsafe_code = "forbid"` içerir; bu crate kendi tablosunu kullanır.
+# workspace tablosu `unsafe_code = "forbid"` içerir; bu crate kendi tablosunu kullanır.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "warn"

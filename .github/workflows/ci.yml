@@ -1,4 +1,4 @@
-# PLAN R5-07 / CI iş listesi. Tüm `uses:` tam 40-hex SHA ile sabitlenir; üst düzey `permissions: {}`.
+# CI. Tüm `uses:` tam 40-hex SHA ile sabitlenir; üst düzey `permissions: {}`.
 name: ci
 
 on:
@@ -27,7 +27,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo clippy --locked -p lephy-core -p lephy-sys --all-features --all-targets -- -D warnings
-      - name: unsafe only in lephy-sys (R5-01)
+      - name: unsafe only in lephy-sys
         run: |
           set -euo pipefail
           # Anahtar sözcük kullanımı ve lint gevşetme aranır; dizge içindeki "unsafe"
@@ -60,7 +60,7 @@ jobs:
       # Unix'te sinyal/pty testleri (crates/lephy-cli/tests/signals.rs) ve fuzz regresyonları dahil.
       - run: cargo test --locked --workspace
       - run: cargo test --locked -p lephy-core --features test-vectors
-      - name: panic hook (R5-04, fault-injection + release/panic=abort)
+      - name: panic hook (fault-injection + release/panic=abort)
         if: runner.os == 'macOS'
         run: bash tests/fault/panic_hook.sh
 
@@ -74,7 +74,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
       - run: cargo check --locked --workspace
-      - name: kanarya taraması (R5-03, I9; /proc/self/mem)
+      - name: kanarya taraması (/proc/self/mem)
         run: cargo test --locked -p lephy-core --features test-vectors --test canary -- --nocapture
       - name: miri (lephy-sys, cfg(miri) arka ucu)
         run: |
@@ -85,7 +85,7 @@ jobs:
       - uses: taiki-e/install-action@328a871ad8f62ecac78390391f463ccabc974b72 # v2.69.9
         with:
           tool: cargo-fuzz
-      - name: fuzz smoke (I8, R5-14; 60 sn/hedef)
+      - name: fuzz smoke (60 sn/hedef)
         working-directory: fuzz
         run: |
           set -euo pipefail
@@ -142,7 +142,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
-      - name: lephy-sys dependency budget (R5-01)
+      - name: lephy-sys dependency budget
         run: |
           set -euo pipefail
           for t in aarch64-apple-darwin x86_64-pc-windows-msvc x86_64-unknown-linux-gnu; do
@@ -151,18 +151,18 @@ jobs:
             if grep -vxE 'lephy-sys|libc|windows-sys|zeroize' /tmp/deps.txt; then
               echo "::error::lephy-sys has an unbudgeted dependency for $t"; exit 1; fi
           done
-      - name: forbidden crates absent (R5-17, R5-12)
+      - name: forbidden crates absent
         run: |
           set -euo pipefail
           ! cargo tree --locked --workspace --prefix none | grep -E '^(secrecy|signal-hook|ctrlc|memsec|sysinfo) '
-      - name: test-vectors must not build into lephy-cli / lephy-gui (R5-02)
+      - name: test-vectors must not build into lephy-cli / lephy-gui
         run: |
           set -euo pipefail
           for p in lephy-cli lephy-gui; do
             if cargo build --locked -p "$p" --features lephy-core/test-vectors; then
               echo "::error::$p built with test-vectors"; exit 1; fi
           done
-      - name: zeroize kenarları mevcut, Vec döndüren AEAD ve test feature'ları yok (R4-O4, R5-02/03/04)
+      - name: zeroize kenarları mevcut, Vec döndüren AEAD ve test feature'ları yok
         run: |
           set -euo pipefail
           cargo tree --locked -p lephy-cli -e features --prefix none --target all > /tmp/feat.txt

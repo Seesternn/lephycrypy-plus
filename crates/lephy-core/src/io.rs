@@ -1,4 +1,4 @@
-//! Atomik yazma ve tmp yönetimi (PLAN F1–F5, R4-Y3, R4-D5, R5-04, R5-05).
+//! Atomik yazma ve tmp yönetimi.
 //!
 //! - Tmp adı `.lphy-tmp-<16 hex>` (macOS'ta `.noindex` sonekli; Windows'ta
 //!   `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED`), hedef dizinde, `create_new`, 0600.

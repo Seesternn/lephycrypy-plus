@@ -1,4 +1,4 @@
-//! Maskeli parola alanı (PLAN › GUI): metin doğrudan kilitli `SecretBytes` tamponuna yazılır
+//! Maskeli parola alanı: metin doğrudan kilitli `SecretBytes` tamponuna yazılır
 //! (≤ 1024 B, büyütme yok); ekranda yalnızca `•` çizilir; pano (kopyala/kes/yapıştır) yok sayılır;
 //! AccessKit rolü `PasswordInput`, değer boş. egui/winit'in `Event::Text` kopyaları ve IME
 //! kompozisyonu arena dışındadır (THREAT-MODEL › Bellek); sıfırlayan global ayırıcı bunları

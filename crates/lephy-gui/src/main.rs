@@ -1,14 +1,14 @@
 //! `lephycrypy-gui` — masaüstü arayüzü (1.2). `#![forbid(unsafe_code)]`.
 //!
 //! Süreç başı CLI ile aynıdır: sertleştirme → panik hook'u → sinyal işleyici. Ek olarak sıfırlayan
-//! global ayırıcı açıktır (açık karar 14). Yollar argv'ye gitmez: uygulama argümansız başlar.
+//! global ayırıcı açıktır. Yollar argv'ye gitmez: uygulama argümansız başlar.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 const _: () = assert!(
     !lephy_core::TEST_VECTORS_ENABLED,
-    "lephy-gui, lephy-core/test-vectors feature'ı ile derlenemez (PLAN R5-02)"
+    "lephy-gui, lephy-core/test-vectors feature'ı ile derlenemez"
 );
 
 #[cfg(any(target_os = "macos", windows))]

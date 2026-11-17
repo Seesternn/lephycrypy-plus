@@ -1,4 +1,4 @@
-//! Fuzz regresyonları (PLAN I8): `tests/regress/<hedef>/*` altındaki her girdi, fuzz hedefiyle
+//! Fuzz regresyonları: `tests/regress/<hedef>/*` altındaki her girdi, fuzz hedefiyle
 //! aynı mantıkla (`fuzz/fuzz_targets/logic.rs`) yeniden oynatılır. Panik = test hatası.
 //! Ayrıca `fuzz/seeds/` girdileri de oynatılır (fuzz kurulu olmasa da mantık sınanır).
 

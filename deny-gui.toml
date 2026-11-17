@@ -15,7 +15,7 @@ targets = [
 ]
 all-features = false
 # accesskit_unix (zbus, async-process, signal-hook-registry …) yalnızca Linux/BSD kenarıdır;
-# lephy-gui Linux'ta eframe'e bağlanmaz (açık karar 11b). cargo-deny hedef birleşimi bu kenarı
+# lephy-gui Linux'ta eframe'e bağlanmaz. cargo-deny hedef birleşimi bu kenarı
 # yine de ekler (yanlış pozitif); bu yüzden grafikten çıkarılır.
 exclude = ["accesskit_unix"]
 
@@ -53,20 +53,20 @@ highlight = "all"
 deny = [
     { crate = "memsec", reason = "lephy-sys/mem.rs" },
     { crate = "sysinfo", reason = "lephy-sys" },
-    { crate = "secrecy", reason = "R5-17" },
+    { crate = "secrecy", reason = "tek sÄ±r tÃ¼rÃ¼ SecretBytes/SecretBox" },
     { crate = "openssl", reason = "ağ/TLS yok" },
     { crate = "openssl-sys", reason = "ağ/TLS yok" },
     { crate = "ring", reason = "ağ/TLS yok" },
     { crate = "native-tls", reason = "ağ/TLS yok" },
-    { crate = "hkdf:<0.13", reason = "R5-03" },
-    { crate = "hmac:<0.13", reason = "R5-03" },
-    { crate = "sha2:<0.11", reason = "R5-03" },
+    { crate = "hkdf:<0.13", reason = "zeroize desteÄi olmayan eski sÃ¼rÃ¼m" },
+    { crate = "hmac:<0.13", reason = "zeroize desteÄi olmayan eski sÃ¼rÃ¼m" },
+    { crate = "sha2:<0.11", reason = "zeroize desteÄi olmayan eski sÃ¼rÃ¼m" },
     { crate = "plist", reason = "lephy-usb/plist_lite" },
     { crate = "rand_chacha", reason = "chacha20 anahtar akışı" },
-    { crate = "ctrlc", reason = "R5-12" },
+    { crate = "ctrlc", reason = "SA_RESTART koyar; lephy-sys/signal.rs" },
     # GUI'nin varsayılan özellikleri bilinçli olarak kapalı: wgpu (büyük grafik yığını),
     # pano (clipboard: parola sızıntısı riski), kalıcılık (ron/serde).
-    { crate = "wgpu", reason = "glow arka ucu seçildi (PLAN › GUI)" },
-    { crate = "arboard", reason = "pano kapalı (PLAN › GUI)" },
-    { crate = "ron", reason = "persistence kapalı (PLAN › GUI)" },
+    { crate = "wgpu", reason = "glow arka ucu seçildi" },
+    { crate = "arboard", reason = "pano kapalı" },
+    { crate = "ron", reason = "persistence kapalı" },
 ]

@@ -1,4 +1,4 @@
-//! Çerçeveli arşiv konteyneri (PLAN › Arşiv; C1–C8, R4-Y3/Y4/Y5, R5-11; FORMAT.md › Arşiv).
+//! Çerçeveli arşiv konteyneri (FORMAT.md › Arşiv).
 //!
 //! Giriş: `[u8 tür 0/1/2/255][u16 LE yol_len][yol NFC, '/'][u32 LE mode][i64 LE mtime]`;
 //! dosya/symlink verisi `[u32 LE len][bytes]…[u32 0]` (symlink: tek çerçeve). END: tür 255,
@@ -7,10 +7,10 @@
 //! - [`ArchiveWriter`]: `Read` adaptörü; kaynak ağacı özyinelemesiz (açık yığın) ve sıralı
 //!   (bayt sırası) dolaşır; symlink takip edilmez, hedefi ham saklanır; FIFO/soket/aygıt
 //!   atlanır ve raporlanır (`--strict` → 4). Çerçeve verisi ≤ 1 MiB'lık sıfırlanan ara
-//!   tampondan akar (PLAN'daki "ayrı çerçeve tamponu yok" ifadesinden bilinçli, küçük sapma).
+//!   tampondan akar (küçük sapma).
 //! - [`Extractor`]: `Write` adaptörü; cap-std kök handle'ı (`Dir`) ile tüm yol çözümlemesi
 //!   handle'a göre, symlink takip edilmez; dosyalar `create_new` 0600, dizinler `create_dir`;
-//!   yinelenen (NFC + katlama) → 4 (`--rename-conflicts` ile `_2`); Windows ad kuralları (C7);
+//!   yinelenen (NFC + katlama) → 4 (`--rename-conflicts` ile `_2`); Windows ad kuralları;
 //!   symlink'ler END'den sonra politikaya göre; mode/mtime en sonda derinden yüzeye.
 
 use std::collections::HashSet;
@@ -426,7 +426,7 @@ impl<R: Read> Read for ArchivePadReader<R> {
 // Çıkarıcı
 // ---------------------------------------------------------------------------------------------
 
-/// Symlink kurma politikası (R5-11).
+/// Symlink kurma politikası.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SymlinkPolicy {
     /// Hiç kurma (varsayılan).

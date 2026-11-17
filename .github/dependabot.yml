@@ -1,4 +1,4 @@
-# PLAN R5-07: yalnızca PR açar; auto-merge workflow'u yoktur. Cargo.lock commit edilir;
+# Dependabot yalnızca PR açar; auto-merge workflow'u yoktur. Cargo.lock commit edilir;
 # `cargo update` yalnızca Dependabot PR'ı ile.
 version: 2
 updates:

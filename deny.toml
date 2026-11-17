@@ -1,4 +1,4 @@
-# cargo-deny yapılandırması — SIKI kademe (PLAN R5-07, açık karar 20): çekirdek, CLI, USB.
+# cargo-deny yapılandırması — SIKI kademe: çekirdek, CLI, USB.
 # Çalıştırma: `cargo deny --all-features --exclude lephy-gui check`
 # GUI (egui/eframe zinciri, ~400 crate) ayrı ve gevşek kademede denetlenir: deny-gui.toml.
 
@@ -44,23 +44,23 @@ wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
 deny = [
-    # Kaldırılan bağımlılıklar (PLAN › Depo yapısı)
+    # Kaldırılan bağımlılıklar
     { crate = "memsec", reason = "tüm API unsafe, seyrek bakım; lephy-sys/mem.rs" },
     { crate = "sysinfo", reason = "büyük; lephy-sys/vol.rs ve platform.rs" },
-    { crate = "secrecy", reason = "R5-17: tek sır türü SecretBytes/SecretBox" },
-    { crate = "signal-hook", reason = "R5-12: SA_RESTART koyar; lephy-sys/signal.rs" },
-    { crate = "signal-hook-registry", reason = "R5-12: SA_RESTART koyar; lephy-sys/signal.rs" },
-    { crate = "ctrlc", reason = "R5-12: lephy-sys/signal.rs" },
-    # Araç ağa çıkmaz (açık karar 20)
+    { crate = "secrecy", reason = "tek sır türü SecretBytes/SecretBox" },
+    { crate = "signal-hook", reason = "SA_RESTART koyar; lephy-sys/signal.rs" },
+    { crate = "signal-hook-registry", reason = "SA_RESTART koyar; lephy-sys/signal.rs" },
+    { crate = "ctrlc", reason = "lephy-sys/signal.rs" },
+    # Araç ağa çıkmaz
     { crate = "openssl", reason = "ağ/TLS yok" },
     { crate = "openssl-sys", reason = "ağ/TLS yok" },
     { crate = "ring", reason = "ağ/TLS yok" },
     { crate = "native-tls", reason = "ağ/TLS yok" },
-    # Eski kuşak RustCrypto: zeroize feature'ı yok (R5-03)
-    { crate = "hkdf:<0.13", reason = "R5-03: zeroize için hkdf ≥ 0.13" },
-    { crate = "hmac:<0.13", reason = "R5-03: zeroize için hmac ≥ 0.13" },
-    { crate = "sha2:<0.11", reason = "R5-03: zeroize için sha2 ≥ 0.11" },
-    # FFI bütçesi (R5-01): iç crate'lerden yalnızca lephy-sys libc/windows-sys'e doğrudan
+    # Eski kuşak RustCrypto: zeroize feature'ı yok
+    { crate = "hkdf:<0.13", reason = "zeroize için hkdf ≥ 0.13" },
+    { crate = "hmac:<0.13", reason = "zeroize için hmac ≥ 0.13" },
+    { crate = "sha2:<0.11", reason = "zeroize için sha2 ≥ 0.11" },
+    # FFI bütçesi: iç crate'lerden yalnızca lephy-sys libc/windows-sys'e doğrudan
     # bağımlı olabilir. Üçüncü taraf wrapper'lar tek tek incelenmiş izin listesidir; yeni bir
     # crate doğrudan FFI'ya bağlanırsa bu kontrol kırmızı yanar ve inceleme ister.
     { crate = "libc", wrappers = [
@@ -69,20 +69,20 @@ deny = [
         "rustix",        # cap-std (Unix sistem çağrıları)
         "errno",         # rustix
         "cpufeatures",   # RustCrypto CPU özellik tespiti (AES-NI/ARMv8)
-    ], reason = "R5-01: unsafe/FFI iç crate'lerde yalnızca lephy-sys" },
+    ], reason = "unsafe/FFI iç crate'lerde yalnızca lephy-sys" },
     { crate = "windows-sys", wrappers = [
         "lephy-sys",
         "rustix", "errno",                       # cap-std zinciri
         "cap-primitives", "fs-set-times", "io-extras", "winx",
         "anstyle-wincon", "anstyle-query",       # clap renkli çıktı (Windows konsol)
-    ], reason = "R5-01: unsafe/FFI iç crate'lerde yalnızca lephy-sys" },
+    ], reason = "unsafe/FFI iç crate'lerde yalnızca lephy-sys" },
     # GUI bağımlılıkları çekirdeğe sızamaz: bu yapılandırma `--exclude lephy-gui` ile çalışır
     # (lephy-gui ayrı, gevşek kademe: deny-gui.toml). Çekirdek/CLI/USB'de hiçbiri bulunmamalı.
     { crate = "egui", reason = "GUI yalnızca lephy-gui (1.2; deny-gui.toml)" },
     { crate = "eframe", reason = "GUI yalnızca lephy-gui (1.2; deny-gui.toml)" },
     { crate = "winit", reason = "GUI yalnızca lephy-gui (1.2; deny-gui.toml)" },
     # USB (1.1): plist zinciri yerine lephy-usb/plist_lite; rand_chacha yerine chacha20 anahtar
-    # akışı (denetlenmemiş crate sayısını büyütmemek, R5-07).
+    # akışı (denetlenmemiş crate sayısını büyütmemek).
     { crate = "plist", reason = "lephy-usb kendi küçük ayrıştırıcısını kullanır (plist_lite)" },
     { crate = "rand_chacha", reason = "doldurma chacha20 anahtar akışıyla yapılır" },
 ]

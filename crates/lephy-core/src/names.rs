@@ -1,4 +1,4 @@
-//! Ad işleme (PLAN C3, C6, C7, R4-Y5, R5-11; FORMAT.md › Arşiv sınırları).
+//! Ad işleme (FORMAT.md › Arşiv sınırları).
 //!
 //! - Arşiv yolu: UTF-8, NFC, `/` ayırıcı; `..`, boş bileşen, `/` ile başlama, `\`, NUL, sürücü
 //!   harfi yasak; bileşen ≤ 255 B, yol ≤ 4096 B, derinlik ≤ 256.
@@ -6,10 +6,10 @@
 //!   `char::to_lowercase` (Unicode tam küçük harf eşlemesi) ile yapılır; CaseFolding.txt C+S ile
 //!   farkı küçük özel durumlardır (ß, son sigma) ve yalnızca uyarı kalitesini etkiler
 //!   (DOĞRULANMADI: tam eşdeğerlik). U+0130/U+0131 FS'ye bırakılır.
-//! - Windows ad kuralları (C7): `: * ? " < > |`, kontrol karakterleri, sonda nokta/boşluk,
+//! - Windows ad kuralları: `: * ? " < > |`, kontrol karakterleri, sonda nokta/boşluk,
 //!   ayrılmış adlar (CON PRN AUX NUL COM1–9 LPT1–9 COM¹²³ CONIN$ CONOUT$), ADS → `_`.
-//! - Görüntüleme kaçışlaması (C6): kontrol, ANSI, bidi, format karakterleri `\u{…}`.
-//! - Symlink hedefi sınıflandırması (R5-11): `/` ile başlıyor, `\` içeriyor, `[A-Za-z]:` ile
+//! - Görüntüleme kaçışlaması: kontrol, ANSI, bidi, format karakterleri `\u{…}`.
+//! - Symlink hedefi sınıflandırması: `/` ile başlıyor, `\` içeriyor, `[A-Za-z]:` ile
 //!   başlıyor ya da bir bileşeni `..` ise **güvensiz**.
 
 use std::path::{Component, Path};
@@ -92,7 +92,7 @@ fn is_drive_prefixed(s: &str) -> bool {
     b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
 }
 
-/// Yinelenen-yol anahtarı: `BLAKE3(NFC + küçük harf)` ilk 16 B (R4-Y4).
+/// Yinelenen-yol anahtarı: `BLAKE3(NFC + küçük harf)` ilk 16 B.
 #[must_use]
 pub fn fold_key(path: &str) -> [u8; 16] {
     let folded: String = path.nfc().flat_map(char::to_lowercase).collect();
@@ -175,7 +175,7 @@ pub fn windows_sanitize(component: &str) -> (String, bool) {
     (s, changed)
 }
 
-/// Görüntüleme kaçışlaması (C6): kontrol, ANSI (`\x1b`), bidi (U+202A–202E, U+2066–2069),
+/// Görüntüleme kaçışlaması: kontrol, ANSI (`\x1b`), bidi (U+202A–202E, U+2066–2069),
 /// zero-width/format karakterleri `\u{…}`.
 #[must_use]
 pub fn escape_display(s: &str) -> String {
@@ -203,7 +203,7 @@ pub enum SymlinkClass {
     Unsafe,
 }
 
-/// Hedefi sınıflandırır (R5-11).
+/// Hedefi sınıflandırır.
 #[must_use]
 pub fn classify_symlink_target(target: &[u8]) -> SymlinkClass {
     if target.first() == Some(&b'/') || target.contains(&b'\\') {

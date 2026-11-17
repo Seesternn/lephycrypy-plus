@@ -75,7 +75,7 @@ chunk_aad      = BLAKE3(header[0..13] || header[64..88])
 
 ## Parola
 
-UTF-8 → NFC = `pwd_nfc`. Kaynak fd/stdin/dosya ise NFC'den önce sondaki tek `\n` veya `\r\n` kırpılır; terminalde kırpma yok. Ham parola ≤ 1024 B. Biçim, parola uzunluğu için kural koymaz; okuyucu her uzunluğu kabul eder. Minimum uzunluk (8 Unicode scalar value, NFC sonrası) yalnızca şifreleme politikasıdır (PLAN → KDF politikası).
+UTF-8 → NFC = `pwd_nfc`. Kaynak fd/stdin/dosya ise NFC'den önce sondaki tek `\n` veya `\r\n` kırpılır; terminalde kırpma yok. Ham parola ≤ 1024 B. Biçim, parola uzunluğu için kural koymaz; okuyucu her uzunluğu kabul eder. Minimum uzunluk (8 Unicode scalar value, NFC sonrası) yalnızca şifreleme politikasıdır (CLI politikası).
 
 ## Çözme sırası ve hatalar
 

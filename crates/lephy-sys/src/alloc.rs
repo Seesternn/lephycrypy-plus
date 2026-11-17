@@ -1,4 +1,4 @@
-//! Sıfırlayan global ayırıcı (açık karar 14; öneri: GUI'de açık, CLI'de ölçüm sonrası).
+//! Sıfırlayan global ayırıcı (CLI'de ölçüm sonrası).
 //!
 //! `dealloc` ve `realloc`'ta serbest bırakılan bölge `zeroize` (volatile) ile sıfırlanır, sonra
 //! sistem ayırıcısına verilir. Kapsar: egui/winit olay metinleri (`Event::Text`), clap

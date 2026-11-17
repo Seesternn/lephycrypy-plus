@@ -1,4 +1,4 @@
-//! Sinyal işleme (PLAN F4, R5-12).
+//! Sinyal işleme.
 //!
 //! Unix: SIGINT/SIGTERM/SIGHUP için doğrudan `sigaction`, **`SA_RESTART` olmadan**; işleyici
 //! yalnızca [`INTERRUPTED`] bayrağını kaldırır ve self-pipe'a 1 bayt yazar (async-signal-safe).
@@ -129,7 +129,7 @@ mod imp {
             // SAFETY: `sa_mask` geçerli, yazılabilir sigset_t.
             unsafe { libc::sigemptyset(&raw mut sa.sa_mask) };
             sa.sa_sigaction = handler as extern "C" fn(libc::c_int) as libc::sighandler_t;
-            sa.sa_flags = 0; // SA_RESTART bilinçli olarak YOK (R5-12)
+            sa.sa_flags = 0; // SA_RESTART bilinçli olarak YOK
             // SAFETY: `sa` tam başlatılmış; `oldact` NULL; `sig` geçerli sinyal numarası.
             if unsafe { libc::sigaction(sig, &raw const sa, core::ptr::null_mut()) } != 0 {
                 return Err(io::Error::last_os_error());

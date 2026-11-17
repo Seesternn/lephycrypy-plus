@@ -1,4 +1,4 @@
-//! Hata türleri ↔ çıkış kodları (PLAN › Çıkış kodu tablosu; R4-O3, R5-10).
+//! Hata türleri ↔ çıkış kodları.
 
 use std::fmt;
 

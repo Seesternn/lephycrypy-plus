@@ -1,4 +1,4 @@
-//! Tek pencere arayüzü (PLAN › GUI): sürükle-bırak, maskeli parola, şifrele/çöz.
+//! Tek pencere arayüzü: sürükle-bırak, maskeli parola, şifrele/çöz.
 //! Görsel dil: sistem yazı tipi, nötr gri/beyaz, tek vurgu rengi, animasyon yok, ikon yerine metin.
 
 use std::path::{Path, PathBuf};
@@ -136,7 +136,7 @@ impl App {
         }
     }
 
-    /// SIGINT/SIGTERM/Ctrl+C (R5-12): boştaysa pencereyi kapat; iş sürüyorsa iş önce durur
+    /// SIGINT/SIGTERM/Ctrl+C: boştaysa pencereyi kapat; iş sürüyorsa iş önce durur
     /// (tmp temizlenir), sonra kapanır. Boşta sinyali fark etmek için düzenli yeniden çizim.
     fn handle_signal(&self, ctx: &egui::Context) {
         if lephy_sys::signal::interrupted() && !self.running() && !self.cancel_requested {

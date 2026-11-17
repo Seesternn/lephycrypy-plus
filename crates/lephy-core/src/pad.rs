@@ -1,4 +1,4 @@
-//! PADMÉ dolgu (PLAN B3, R4-O5; FORMAT.md › PADMÉ).
+//! PADMÉ dolgu (FORMAT.md › PADMÉ).
 //!
 //! `P(L)`: `E = floor(log2 L)`, `S = floor(log2 E) + 1`, `z = E − S`, `m = 2^z − 1`,
 //! `P(L) = (L + m) & !m` (L < 2 → L).

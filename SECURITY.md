@@ -12,7 +12,7 @@ lephycrypy+ henüz bağımsız kriptografik denetimden geçmemiştir (bkz. docs/
 ## Kapsam
 
 - Biçim (docs/FORMAT.md) ve anahtar türetme hataları
-- Bellekte sır kalıntısı iddiaları (docs/PLAN.md › Sır envanteri'nde "Evet" olarak işaretlenmiş satırlar)
+- Bellekte sır kalıntısı iddiaları
 - Arşiv çıkarma (zip-slip, symlink, yinelenen ad) ve atomik yazma ihlalleri
 - Tedarik zinciri (deny.toml, supply-chain/)
 
@@ -23,4 +23,4 @@ Kapsam dışı: docs/THREAT-MODEL.md'de açıkça "kapsam dışı" veya "önlem 
 
 | Sürüm | Destek |
 |---|---|
-| 0.x (aşama 0–3) | yalnızca geliştirme; destek yok |
+| 0.x | yalnızca geliştirme; destek yok |

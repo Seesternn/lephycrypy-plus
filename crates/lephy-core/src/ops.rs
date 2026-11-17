@@ -1,7 +1,7 @@
 //! Üst düzey işlemler: başlık kurma/açma, `encrypt`, `decrypt`, `verify`, `info`, `rekey`,
-//! `reencrypt` (PLAN › Kriptografik tasarım, Rekey ve reencrypt, Çözme sırası, Arşiv).
+//! `reencrypt` (Rekey ve reencrypt; Çözme sırası; Arşiv).
 //!
-//! Aşama 2: dosya ve klasörler arşiv (`content_type = 1`, varsayılan PADMÉ); stdin ve `--raw`
+//! Dosya ve klasörler arşiv (`content_type = 1`, varsayılan PADMÉ); stdin ve `--raw`
 //! ham akış (`content_type = 0`, isteğe bağlı PADMÉ). Çıkarma tmp dizinine (cap-std kök handle)
 //! ve sonunda noclobber rename; tek üst düzey dosyalı arşivde dosya doğrudan hedefe taşınır.
 
@@ -310,7 +310,7 @@ pub fn encrypt(
     entropy: &mut dyn Entropy,
     log: &mut dyn FnMut(&str),
 ) -> Result<EncryptReport> {
-    // Kaynak/hedef ilişkisi (C8).
+    // Kaynak/hedef ilişkisi.
     let (content_type, padded) = match input {
         Input::Path(p) => {
             if output_inside_source(p, output) {

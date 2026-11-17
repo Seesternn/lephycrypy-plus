@@ -1,10 +1,10 @@
-//! Birim ve fiziksel disk kimliği (PLAN › USB 1.1; R5-15). `lephy-usb` kullanır.
+//! Birim ve fiziksel disk kimliği. `lephy-usb` kullanır.
 //!
 //! - [`device_id`]: yolun bulunduğu birimin kimliği (Unix `st_dev`; Windows birim seri no).
 //!   Kök handle açıldıktan sonra her adımda yeniden okunur; değişirse hedef değişmiştir.
 //! - [`open_nocache`]: macOS `F_NOCACHE` ile açma (geri okuma; mevcut sayfaları boşaltmaz —
 //!   DOĞRULANMADI); diğer platformlarda düz açma.
-//! - [`is_elevated`]: Unix `geteuid() == 0`; Windows `TokenElevation` (açık karar 5: `--format`
+//! - [`is_elevated`]: Unix `geteuid() == 0`; Windows `TokenElevation` (`--format`
 //!   yalnızca yükseltilmiş oturumda).
 //! - macOS: [`mount_source`] (`statfs.f_mntfromname`, ör. `/dev/disk4s1`).
 //! - Windows: [`win::volume_info`] (`GetDriveTypeW`, `GetVolumeInformationW`,
@@ -152,7 +152,7 @@ pub mod win {
         pub bus_type: i32,
         /// `STORAGE_DEVICE_DESCRIPTOR.RemovableMedia`.
         pub removable_media: bool,
-        /// Aygıt seri numarası (boş olabilir — açık karar 16: reddedilir).
+        /// Aygıt seri numarası (boş olabilir — Windows.ta reddedilir).
         pub serial: String,
         /// Üretici + ürün.
         pub product: String,
@@ -174,7 +174,7 @@ pub mod win {
     }
 
     /// `GetSystemDirectoryW` (ör. `C:\Windows\System32`). Harici araçlar bu mutlak yoldan
-    /// çağrılır (R5-06), PATH kullanılmaz.
+    /// çağrılır, PATH kullanılmaz.
     ///
     /// # Errors
     /// G/Ç hatası.

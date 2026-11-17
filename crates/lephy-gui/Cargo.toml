@@ -13,16 +13,16 @@ name = "lephycrypy-gui"
 path = "src/main.rs"
 
 [features]
-# R5-04 panik hook testi için (CLI ile aynı); dağıtımda asla açılmaz.
+# panik hook testi için (CLI ile aynı); dağıtımda asla açılmaz.
 fault-injection = ["lephy-core/fault-injection"]
 
 [dependencies]
 lephy-core = { workspace = true }
 lephy-sys = { workspace = true }
 
-# PLAN › GUI: persistence kapalı, pano (clipboard) kapalı, gömülü yazı tipleri (default_fonts:
+# persistence kapalı, pano (clipboard) kapalı, gömülü yazı tipleri (default_fonts:
 # Ubuntu/UFL + emoji/OFL) kapalı — sistem yazı tipi çalışma anında yüklenir. glow (OpenGL):
-# wgpu'dan çok daha küçük bağımlılık ağacı. Linux'ta GUI yoktur (açık karar 11b; wayland/x11
+# wgpu'dan çok daha küçük bağımlılık ağacı. Linux'ta GUI yoktur (wayland/x11
 # sistem kütüphaneleri gerektirir): ikili "desteklenmiyor" der.
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 eframe = { version = "0.37", default-features = false, features = ["glow", "accesskit"] }

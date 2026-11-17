@@ -1,4 +1,4 @@
-//! Terminal: yankısız parola okuma ve ham fd yazımı (PLAN D3, R5-12, R5-13).
+//! Terminal: yankısız parola okuma ve ham fd yazımı.
 //!
 //! - [`RawModeGuard`]: yankı ve satır tamponlamasını kapatır (`ECHO`/`ICANON`; `ISIG` açık kalır
 //!   ki Ctrl+C sinyal olarak gelsin), özgün modu `static` kayda alır; Drop ve panik hook'u
@@ -217,7 +217,7 @@ mod imp {
     pub(super) fn set_noecho(fd: RawIo, saved: &Saved) -> io::Result<()> {
         let mut t = saved.termios;
         t.c_lflag &= !(libc::ECHO | libc::ECHONL | libc::ICANON);
-        // ISIG açık kalır: Ctrl+C sinyal olarak gelir (R5-12).
+        // ISIG açık kalır: Ctrl+C sinyal olarak gelir.
         t.c_cc[libc::VMIN] = 1;
         t.c_cc[libc::VTIME] = 0;
         // SAFETY: `t` geçerli termios; TCSANOW hemen uygular.

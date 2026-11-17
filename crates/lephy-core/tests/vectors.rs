@@ -1,6 +1,6 @@
 //! FORMAT.md test vektörleri: Rust çıktısı, yalnızca FORMAT.md'den yazılmış Python referansının
 //! (`tests/ref/lephy_ref.py`) ürettiği `tests/kat/vectors/*.lphy` ile bayt bayt eşit olmalıdır
-//! (PLAN I1, I7, R5-02). `cargo test -p lephy-core --features test-vectors`.
+//!. `cargo test -p lephy-core --features test-vectors`.
 
 #![allow(
     clippy::unwrap_used,

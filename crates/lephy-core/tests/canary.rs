@@ -1,4 +1,4 @@
-//! Kanarya taraması (PLAN R5-03, I9) — yalnızca Linux (`/proc/self/maps` + `/proc/self/mem`),
+//! Kanarya taraması — yalnızca Linux (`/proc/self/maps` + `/proc/self/mem`),
 //! `test-vectors` feature'ı ile. Yöntemin sağlamlığı DOĞRULANMADI (plan); sonuçlar raporlanır.
 //!
 //! Bilinen parola ve FK, hiçbir bitişik literal ya da heap kopyası bırakmadan çalışma anında

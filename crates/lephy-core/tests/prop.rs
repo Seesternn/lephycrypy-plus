@@ -1,4 +1,4 @@
-//! Özellik tabanlı testler (PLAN I2): STREAM sınırları, bozulma/kesme tespiti, PADMÉ, arşiv
+//! Özellik tabanlı testler: STREAM sınırları, bozulma/kesme tespiti, PADMÉ, arşiv
 //! round-trip (boş dizin, Unicode/NFD ad), ayrıştırıcıların panik yokluğu.
 //!
 //! Vaka sayıları CI süresi için küçüktür; `PROPTEST_CASES` ile artırılabilir.

@@ -1,4 +1,4 @@
-//! 256 baytlık başlık (FORMAT.md › Başlık; R4-O2, R5-09).
+//! 256 baytlık başlık (FORMAT.md › Başlık).
 //!
 //! `parse` sırası: sabit alanlar → reserved (ofs 12, 15, 28..32, 192..224) sıfır → bilinmeyen
 //! bayrak bitleri → nonce kuyrukları (AES) → KDF biçim sınırları; ihlal →
@@ -27,7 +27,7 @@ pub enum ContentType {
     /// Ham akış (tek dosya/stdin).
     #[default]
     Raw = 0,
-    /// Arşiv (aşama 2).
+    /// Arşiv.
     Archive = 1,
 }
 
@@ -164,7 +164,7 @@ impl Header {
         stream_nonce_prefix.copy_from_slice(&b[64..88]);
         let mut wrap_nonce = [0u8; 24];
         wrap_nonce.copy_from_slice(&b[88..112]);
-        // Nonce kuyruk kuralı (R4-O2).
+        // Nonce kuyruk kuralı.
         if stream_nonce_prefix[alg.prefix_len()..]
             .iter()
             .any(|&x| x != 0)
@@ -204,7 +204,7 @@ pub fn chunk_aad(b: &[u8; HEADER_LEN]) -> [u8; 32] {
     *h.finalize().as_bytes()
 }
 
-/// Yeni başlık için şifreleyicinin ürettiği değişken alanlar (aşama 1 `ops`).
+/// Yeni başlık için şifreleyicinin ürettiği değişken alanlar.
 #[derive(Debug, Clone, Copy)]
 pub struct NewHeaderParams {
     /// Algoritma.

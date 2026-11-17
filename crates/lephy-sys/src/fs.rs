@@ -1,7 +1,7 @@
-//! Dosya sistemi FFI (PLAN F1, F2, F5, R4-O6, R4-O7, R5-04, R5-05).
+//! Dosya sistemi FFI.
 //!
-//! Aşama 1 alt kümesi: noclobber/replace rename, dizin fsync, boş alan / FS türü,
-//! `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED`, panik hook'u için tmp kaydı. Aşama 2: symlink
+//! noclobber/replace rename, dizin fsync, boş alan / FS türü,
+//! `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED`, panik hook'u için tmp kaydı. Symlink
 //! (`CreateSymbolicLinkW`), bulut kökleri, `FILE_SHARE_DELETE`/`FileDispositionInfo`.
 
 use std::io;
@@ -38,7 +38,7 @@ impl std::error::Error for NoclobberError {}
 /// Hedef varsa başarısız olan atomik rename (macOS `renamex_np(RENAME_EXCL)`, Linux
 /// `renameat2(RENAME_NOREPLACE)`, Windows `MoveFileExW` + `MOVEFILE_WRITE_THROUGH`).
 /// Windows'ta `ACCESS_DENIED`/`SHARING_VIOLATION` için 10 ms'den başlayan üstel geri çekilme,
-/// ≤ 2 s (R4-O7).
+/// ≤ 2 s.
 ///
 /// # Errors
 /// [`NoclobberError`].
@@ -55,7 +55,7 @@ pub fn rename_replace(from: &Path, to: &Path) -> io::Result<()> {
     imp::rename_replace(from, to)
 }
 
-/// Dizin girdisini kalıcılaştırır: Unix dizin fd + Apple `F_FULLFSYNC`; Windows'ta no-op (F5).
+/// Dizin girdisini kalıcılaştırır: Unix dizin fd + Apple `F_FULLFSYNC`; Windows'ta no-op.
 ///
 /// # Errors
 /// G/Ç hatası.
@@ -63,7 +63,7 @@ pub fn fsync_dir(dir: &Path) -> io::Result<()> {
     imp::fsync_dir(dir)
 }
 
-/// Windows: `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED` (0x2000) koyar; diğerlerinde no-op (R5-05).
+/// Windows: `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED` (0x2000) koyar; diğerlerinde no-op.
 ///
 /// # Errors
 /// G/Ç hatası.
@@ -96,7 +96,7 @@ pub fn is_fat(path: &Path) -> io::Result<bool> {
     Ok(t == "msdos" || t == "fat" || t == "fat32" || t == "fat16" || t == "vfat")
 }
 
-/// Windows'ta `MoveFileExW` için geri çekilmeli tekrar (R4-O7). Unix'te tek deneme.
+/// Windows'ta `MoveFileExW` için geri çekilmeli tekrar. Unix'te tek deneme.
 #[allow(dead_code)]
 fn retry_sharing<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     let start = Instant::now();
@@ -455,7 +455,7 @@ mod imp {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Bulut senkron kökleri (R5-05) — sezgisel liste, tek yer
+// Bulut senkron kökleri — sezgisel liste, tek yer
 // ---------------------------------------------------------------------------------------------
 
 /// Bilinen bulut senkron kökleri (var olanlar): macOS `~/Library/Mobile Documents`,

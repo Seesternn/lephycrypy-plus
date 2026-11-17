@@ -1,4 +1,4 @@
-//! Parola ve keyfile okuma, politika (PLAN D2, D3, R4-D2, R4-D6, R5-12, R5-13, açık karar 12).
+//! Parola ve keyfile okuma, politika.
 //!
 //! - Ham parola ≤ [`MAX_RAW_LEN`] B, kilitli `SecretBytes` (kapasite sabit, büyütme yok).
 //! - Kaynaklar: terminal (`/dev/tty` / `CONIN$`, yankısız, kırpma yok), stdin, fd (yalnızca Unix),
@@ -22,7 +22,7 @@ pub const MAX_RAW_LEN: usize = 1024;
 pub const MIN_SCALARS: usize = 8;
 /// Keyfile alt sınırı.
 pub const KEYFILE_MIN: u64 = 32;
-/// Keyfile üst sınırı (açık karar 15).
+/// Keyfile üst sınırı.
 pub const KEYFILE_MAX: u64 = 1024 * 1024;
 
 /// Parola kaynağı.
@@ -199,7 +199,7 @@ fn check_file_source(path: &Path) {
     }
 }
 
-/// Windows'ta uzak pipe reddi (R5-13). Unix'te her yol kabul.
+/// Windows'ta uzak pipe reddi. Unix'te her yol kabul.
 ///
 /// # Errors
 /// `\\<host>\pipe\…` → kod 1.

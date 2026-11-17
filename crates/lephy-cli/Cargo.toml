@@ -13,7 +13,7 @@ name = "lephycrypy"
 path = "src/main.rs"
 
 [features]
-# R5-04 panik hook testi (tests/fault/panic_hook.sh). Dağıtım derlemesinde asla açılmaz.
+# panik hook testi (tests/fault/panic_hook.sh). Dağıtım derlemesinde asla açılmaz.
 fault-injection = ["lephy-core/fault-injection"]
 
 [dependencies]

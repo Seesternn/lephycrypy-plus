@@ -1,10 +1,9 @@
-//! Süreç sertleştirme (PLAN › Bellek › Süreç başı; R5-04, R5-06).
+//! Süreç sertleştirme.
 //!
 //! [`harden`] sırası:
 //! 0. Windows: `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` — clap'ten ve her
 //!    `LoadLibrary`'den önce.
-//! 1. Windows: `SetErrorMode(SEM_NOGPFAULTERRORBOX)` (`WerAddExcludedApplication` DOĞRULANMADI,
-//!    aşama 3).
+//! 1. Windows: `SetErrorMode(SEM_NOGPFAULTERRORBOX)` (`WerAddExcludedApplication` doğrulanmadı).
 //! 2. Unix: `setrlimit(RLIMIT_CORE, 0)`.
 //! 3. Linux (best-effort): `prctl(PR_SET_DUMPABLE, 0)`.
 //!
@@ -46,7 +45,7 @@ pub fn harden() -> io::Result<()> {
     }
 }
 
-/// Toplam fiziksel RAM (bayt). KDF `m > %75 × RAM` denetimi için (PLAN › KDF politikası).
+/// Toplam fiziksel RAM (bayt). KDF `m > %75 × RAM` denetimi için.
 ///
 /// # Errors
 /// OS sorgusu başarısız olursa `io::Error`.
@@ -90,7 +89,7 @@ pub fn deny_debugger() -> io::Result<()> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Panik hook'u (R5-04, açık karar 13: arena → tmp → terminal)
+// Panik hook'u
 // ---------------------------------------------------------------------------------------------
 
 static IN_HOOK: AtomicBool = AtomicBool::new(false);
@@ -278,7 +277,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg_attr(miri, ignore = "FFI; Miri'de çalışmaz (PLAN I3)")]
+    #[cfg_attr(miri, ignore = "FFI; Miri'de çalışmaz")]
     fn physical_memory_is_plausible() {
         let bytes = physical_memory_bytes().expect("RAM sorgusu");
         // 256 MiB'tan küçük bir makine beklenmez; taşma/sıfır hatasını yakalar.
@@ -286,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "FFI; Miri'de çalışmaz (PLAN I3)")]
+    #[cfg_attr(miri, ignore = "FFI; Miri'de çalışmaz")]
     fn harden_succeeds() {
         harden().expect("harden");
     }

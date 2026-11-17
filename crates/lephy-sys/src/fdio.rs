@@ -1,7 +1,7 @@
-//! Devralınan fd sahipliği (`--password-fd`, yalnızca Unix; PLAN D3).
+//! Devralınan fd sahipliği (`--password-fd`; yalnızca Unix).
 
 /// `fd`'yi doğrular (`fcntl(F_GETFD)`) ve sahipliğini `File` olarak devralır; `File` düşünce fd
-/// kapanır. Geçersiz fd → `None`. Windows'ta yoktur (devralınan handle reddedildi, R5-13).
+/// kapanır. Geçersiz fd → `None`. Windows'ta yoktur (devralınan handle reddedildi).
 #[cfg(unix)]
 #[must_use]
 pub fn file_from_raw_fd(fd: i32) -> Option<std::fs::File> {

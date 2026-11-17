@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""lephycrypy+ v1 Python referans uygulaması (PLAN I1).
+"""lephycrypy+ v1 Python referans uygulaması.
 
 YALNIZCA docs/FORMAT.md okunarak yazılmıştır; Rust koduna bakılmamıştır. Amaç: Rust çıktısıyla
-bayt bayt karşılaştırılacak test vektörleri üretmek (tests/kat/vectors/). Aşama 1 kapsamı:
-content_type=0, dolgusuz. Arşiv ve PADMÉ aşama 2'de eklenecek.
+bayt bayt karşılaştırılacak test vektörleri üretmek (tests/kat/vectors/). Kapsam:
+content_type=0, dolgusuz. Arşiv ve PADMÉ dahil değildir.
 
 Bağımlılıklar: cryptography, argon2-cffi, blake3. XChaCha20-Poly1305 `cryptography`'de yoktur;
 HChaCha20 burada elle uygulanır ve draft-irtf-cfrg-xchacha-03 §2.2.1 vektörüyle doğrulanır.

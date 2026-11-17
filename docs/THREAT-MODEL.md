@@ -22,7 +22,7 @@ rotasyon `reencrypt`.
 ## Bellek
 Panikte Drop'lar çalışmaz (`panic=abort`); panik hook'u (1) arenayı ve kayıtlı büyük bölgeleri
 sıfırlar, (2) tmp'leri siler, (3) terminali geri yükler, sonra abort eder (core dump kapalı).
-Sır envanterinden (PLAN) kilitlenmeyen/sıfırlanmayanlar:
+Sır envanterinden kilitlenmeyen/sıfırlanmayanlar:
 - Unicode normalleştirme yineleyicisinin iç tamponları; Argon2 H0/Blake2b iç durumu (DOĞRULANMADI).
 - AEAD çağrısı başına işçi yığınındaki durumlar (ChaCha20 akış durumu, XChaCha alt anahtarı,
   Poly1305 tek kullanımlık anahtarı, GHASH kopyası, tag maskesi); Poly1305 için zeroize yok;
@@ -91,7 +91,7 @@ fiziksel garanti yok; `--format` denetleyici düzeyinde garanti vermez; geri oku
 yapılamadıysa "önbellekten doğrulandı"; is_removable tutarsız; harici USB SSD/HDD ("Fixed")
 desteklenmez; kimlik yeniden doğrulaması ile çağrı arasında TOCTOU penceresi kalır;
 sistem/boot/Time Machine dışlanır.
-- macOS `diskutil` seri numarası vermez: seri zorunluluğu (açık karar 16) yalnızca Windows'ta.
+- macOS `diskutil` seri numarası vermez: seri zorunluluğu yalnızca Windows'ta.
   macOS fiziksel kimliği `MediaName|DiskUUID|ParentWholeDisk` + boyut + `st_dev`'dir.
 - Windows'ta yeniden bağlama (`FSCTL_DISMOUNT_VOLUME`) uygulanmadı: geri okuma her zaman
   "önbellekten doğrulandı" etiketi alır.

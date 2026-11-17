@@ -1,4 +1,4 @@
-//! USB işlem motoru (PLAN › USB 0a–6; R5-15).
+//! USB işlem motoru.
 //!
 //! Akış: [`prepare`] (taze tanım → uygunluk → kuru çalıştırma) → kullanıcı onayı (etiket **ve**
 //! GiB) → [`execute`]: her adımdan önce fiziksel/birim kimliği yeniden okunur; fark → kod 5 ve
@@ -225,7 +225,7 @@ pub fn fill_free_space(root: &Path, opts: FillOptions) -> Result<u64> {
     result.map(|()| total)
 }
 
-/// Kullanıcı onayı (0b): etiket aynen **ve** GiB tam sayı.
+/// Kullanıcı onayı: etiket aynen **ve** GiB tam sayı.
 #[derive(Debug, Clone)]
 pub struct Confirm {
     /// Yazılan etiket.

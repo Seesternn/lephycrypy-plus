@@ -1,5 +1,5 @@
-# PLAN R5-06 / R4-D7: tekrarlanabilir derleme imza ÖNCESİ iki bağımsız runner'da; fark varsa sürüm durur.
-# İmza (macOS Developer ID + notarization; Windows Authenticode açık karar 18/19) aşama 3'te eklenir.
+# Tekrarlanabilir derleme imza ÖNCESİ iki bağımsız runner'da; fark varsa sürüm durur.
+# İmza (macOS Developer ID + notarization; Windows Authenticode) henüz eklenmedi.
 name: release
 
 on:
@@ -101,7 +101,7 @@ jobs:
           name: sbom
           path: "**/*.cdx.json"
 
-  # sign-macos / sign-windows: aşama 3, açık karar 17/18/19 (imza bakımcı makinesinde, öneri b).
+  # sign-macos / sign-windows: imza bakımcı makinesinde atılır.
 
   publish:
     needs: [compare, sbom]
@@ -120,4 +120,4 @@ jobs:
             artifacts/sbom/**/*.cdx.json
           body: |
             Taslak sürüm. SHA256SUMS-unsigned.txt tekrarlanabilir imzasız ikililerindir; imzalı
-            ikililer ve SHA256SUMS.txt + .minisig bakımcı tarafından elle eklenir (PLAN R5-06).
+            ikililer ve SHA256SUMS.txt + .minisig bakımcı tarafından elle eklenir.

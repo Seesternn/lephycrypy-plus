@@ -1,4 +1,4 @@
-//! Kilitli bellek (PLAN E1, R4-Y6, R5-03, R5-17).
+//! Kilitli bellek.
 //!
 //! - **Arena:** süreç başına tek, sabit boyutlu (`ARENA_PAGES` sayfa), sayfa hizalı bölge;
 //!   büyümez, yer değiştirmez. Taban/uzunluk `static` atomiklerde tutulur ki panik hook'u kilit
@@ -14,7 +14,7 @@
 //!   kaydedilir.
 //! - [`zeroize_all_registered`]: panik hook'unun (1) adımı.
 //!
-//! `cfg(miri)`: OS çağrıları yerine `std::alloc` + no-op kilit (PLAN I3).
+//! `cfg(miri)`: OS çağrıları yerine `std::alloc` + no-op kilit.
 
 use core::fmt;
 use core::ops::{Deref, DerefMut};
@@ -27,7 +27,7 @@ use zeroize::Zeroize;
 
 /// Arena ayırma birimi (bayt). Tüm slot'lar bu hizada başlar.
 const UNIT: usize = 64;
-/// Arena sayfa sayısı (PLAN E1: 16 sayfa; macOS arm64'te 16 KiB sayfa → 256 KiB).
+/// Arena sayfa sayısı (macOS arm64'te 16 KiB sayfa → 256 KiB).
 const ARENA_PAGES: usize = 16;
 /// Hook için kayıtlı büyük bölge sayısı.
 const MAX_REGIONS: usize = 16;
@@ -248,7 +248,7 @@ mod os {
 
 #[cfg(miri)]
 mod os {
-    //! Miri arka ucu (PLAN I3): `std::alloc` + no-op kilit. Hizalama/sınır aritmetiği ve
+    //! Miri arka ucu: `std::alloc` + no-op kilit. Hizalama/sınır aritmetiği ve
     //! zeroize-sonra-dealloc buradan denetlenir.
     use super::MemError;
     use core::ptr::NonNull;
@@ -493,7 +493,7 @@ pub fn last_lock_error() -> Option<String> {
 // SecretBytes
 // ---------------------------------------------------------------------------------------------
 
-/// Kilitli arenada sabit kapasiteli bayt tamponu. Tek sır türü (R5-17).
+/// Kilitli arenada sabit kapasiteli bayt tamponu. Tek sır türü.
 pub struct SecretBytes {
     ptr: NonNull<u8>,
     cap: usize,
@@ -847,7 +847,7 @@ impl<T: Copy> fmt::Debug for LargeSecretBuf<T> {
 // Panik hook'u desteği
 // ---------------------------------------------------------------------------------------------
 
-/// Arenayı ve kayıtlı tüm büyük bölgeleri sıfırlar. Panik hook'unun (1) adımı (PLAN R5-04).
+/// Arenayı ve kayıtlı tüm büyük bölgeleri sıfırlar. Panik hook'unun (1) adımı.
 /// Kilit almaz, ayırma yapmaz. `(arena_bayt, bölge_sayısı)` döner.
 ///
 /// Diğer iş parçacıkları bu sırada hâlâ çalışıyor olabilir; abort hemen ardından geldiği için
@@ -919,7 +919,7 @@ mod tests {
 
     #[test]
     fn page_refcount_keeps_page_locked_until_last_drop() {
-        // R4-Y6: aynı sayfada iki sır, biri düşünce sayfa kilitli kalır. Diğer testler aynı
+        // aynı sayfada iki sır, biri düşünce sayfa kilitli kalır. Diğer testler aynı
         // arenayı paylaştığından yalnızca "b yaşarken sayfa kilitli ve refs ≥ 1" denetlenir;
         // tam sayaç eşitliği `page_span`/`alloc` mantığıyla aşağıdaki tek-iş-parçacıklı
         // `refcount_arithmetic` testinde doğrulanır.

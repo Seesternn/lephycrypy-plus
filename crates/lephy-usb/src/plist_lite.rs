@@ -1,8 +1,8 @@
 //! `diskutil -plist` çıktısı için küçük XML plist ayrıştırıcısı.
 //!
-//! `plist` crate'i yerine (PLAN'dan bilinçli sapma): yalnızca `dict`, `array`, `key`, `string`,
+//! `plist` crate'i yerine: yalnızca `dict`, `array`, `key`, `string`,
 //! `integer`, `true`, `false` gerekir; `plist` zinciri 15+ denetlenmemiş crate getiriyordu
-//! (cargo-vet istisnalarını büyütmemek, R5-07). Girdi `/usr/sbin/diskutil` çıktısıdır. Derinlik
+//! (cargo-vet istisnalarını büyütmemek). Girdi `/usr/sbin/diskutil` çıktısıdır. Derinlik
 //! sınırlıdır (64); tanınmayan öğeler (`real`, `date`, `data`) [`Value::Other`] olarak atlanır.
 //! Varlıklar: `&amp; &lt; &gt; &quot; &apos; &#N; &#xH;`.
 

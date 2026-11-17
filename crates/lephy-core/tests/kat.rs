@@ -1,4 +1,4 @@
-//! Resmî bilinen-cevap testleri (PLAN R4-O1/O11, I1). Veri dosyaları `tests/kat/` (depo kökü).
+//! Resmî bilinen-cevap testleri. Veri dosyaları `tests/kat/` (depo kökü).
 //!
 //! - Argon2id: RFC 9106 §5.3 (m=32 KiB; biçim sınırı dışında olduğundan argon2 crate'i doğrudan)
 //! - HKDF: RFC 5869 Ek A (SHA-256; SHA-512 için Python çapraz kontrol, `vectors.rs`)

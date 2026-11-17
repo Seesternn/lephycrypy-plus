@@ -1,4 +1,4 @@
-//! Deterministik test vektörü enjeksiyonu (PLAN R5-02, I7).
+//! Deterministik test vektörü enjeksiyonu.
 //!
 //! Yalnızca `test-vectors` cargo feature'ı ile derlenir. `cfg(test)` **kullanılmaz** (tests/
 //! entegrasyon testleri `cfg(test)` görmez). İkililer bu feature'ı `const` iddiasıyla reddeder;
@@ -15,7 +15,7 @@ use crate::cipher::AlgId;
 use crate::entropy::Entropy;
 use crate::error::{Error, Result};
 
-/// İşaret dizgesi: release ikilisinde bulunmamalı (R5-02 doğrulaması).
+/// İşaret dizgesi: release ikilisinde bulunmamalı.
 pub const MARKER: &str = "LPHY-TEST-VECTORS-BUILD";
 
 /// Sırayla sabit tamponlar veren kaynak; her `fill` bir sonraki tamponu tüketir ve uzunluk

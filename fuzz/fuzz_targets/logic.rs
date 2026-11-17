@@ -1,4 +1,4 @@
-//! Fuzz hedeflerinin mantığı (PLAN I8, R5-14). Hem `fuzz_targets/*.rs` (libFuzzer) hem de
+//! Fuzz hedeflerinin mantığı. Hem `fuzz_targets/*.rs` (libFuzzer) hem de
 //! `crates/lephy-core/tests/regress.rs` (her `cargo test`te `tests/regress/<hedef>/*` girdilerini
 //! yeniden oynatır) bu dosyayı `#[path]` ile içerir.
 

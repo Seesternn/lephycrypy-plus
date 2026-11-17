@@ -1,5 +1,5 @@
 #!/bin/bash
-# R5-04 panik hook testi: `fault-injection` + release (panic=abort) derlemesi, pipeline ortasında
+# panik hook testi: `fault-injection` + release (panic=abort) derlemesi, pipeline ortasında
 # (4. chunk) panikler. Beklenen: hook çalışır ("arena=0" satırı), tmp silinir, süreç SIGABRT ile
 # biter (kabukta 134), terminal yankısı açık kalır (pty'de), hedef dosya oluşmaz.
 # Kullanım: tests/fault/panic_hook.sh   (macOS/Linux; python3 gerekir)

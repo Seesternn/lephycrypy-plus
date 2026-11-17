@@ -4,22 +4,17 @@ Açık kaynaklı, Rust ile yazılmış dosya/klasör şifreleme aracı. Hedef: p
 saklama; adlar ve yapı her zaman şifreli; akışlı işleme; atomik yazma; bellekte sır kalıntılarını
 **en iyi çaba ile** en aza indirme.
 
-> **Durum: 1.0 öncesi; 1.1 (USB) ve 1.2 (GUI) kodu da hazır.** Dosya ve klasörler adları/yapısı
-> gizli bir arşiv olarak şifrelenir (varsayılan PADMÉ); stdin ve `--raw` ham akıştır. `usb`
-> komutları yalnızca çıkarılabilir USB belleği temizleyip şifreli dosyayı yazar; `lephycrypy-gui`
-> sürükle-bırak arayüzüdür (macOS/Windows). 1.0 için kalanlar: kripto crate'lerinin yerel
-> cargo-vet denetimi, imzalama/notarization (açık karar 17–19), CI'ın gerçek runner'larda ilk
-> koşusu ve bağımsız inceleme. USB yolu gerçek bir USB bellekle hiç denenmedi. Yol haritası ve tüm tasarım kararları [docs/PLAN.md](docs/PLAN.md)'de;
-> biçim [docs/FORMAT.md](docs/FORMAT.md)'de; sınırlar [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)'de.
-> **Bağımsız denetim yapılmamıştır; üretim verisi için kullanmayın.**
+> **Durum: 1.0 öncesi.** Bağımsız bir güvenlik denetiminden geçmemiştir; önemli verileriniz için
+> tek yedek olarak kullanmayın. Biçim [docs/FORMAT.md](docs/FORMAT.md)'de, güvenlik sınırları
+> [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)'de anlatılır.
 
-## Platformlar (R5-08)
+## Platformlar
 
 | Platform | Durum |
 |---|---|
-| macOS (aarch64, x86_64) | desteklenir; CI'da tam test; imzalı/notarize ikili (1.0) |
-| Windows (x86_64) | desteklenir; CI'da tam test; Authenticode açık karar (PLAN › 18) |
-| Linux | derlenir, **best-effort**: test edilmez, ikili yayımlanmaz; CI'da yalnızca check/clippy/Miri/fuzz/kanarya; `usb` ve GUI desteklenmez |
+| macOS (aarch64, x86_64) | desteklenir |
+| Windows (x86_64) | desteklenir |
+| Linux | derlenir, en iyi çaba; `usb` ve GUI yok |
 
 MSRV: Rust 1.95.0 (`rust-toolchain.toml` ile sabit).
 
@@ -30,8 +25,8 @@ MSRV: Rust 1.95.0 (`rust-toolchain.toml` ile sabit).
 | `lephy-sys` | tek FFI/unsafe crate: bellek kilitleme, süreç sertleştirme, dosya sistemi, birim, terminal, sinyal | evet, her blokta `// SAFETY:` |
 | `lephy-core` | kriptografi, biçim, arşiv, pipeline | `#![forbid(unsafe_code)]` |
 | `lephy-cli` | `lephycrypy` komut satırı | `#![forbid(unsafe_code)]` |
-| `lephy-usb` (1.1) | yalnızca çıkarılabilir USB: uygunluk, onay, kimlik yeniden denetimi, silme/biçimlendirme, doldurma, yazma, geri okuma | `#![forbid(unsafe_code)]` |
-| `lephy-gui` (1.2) | `lephycrypy-gui`: egui/eframe tek pencere (macOS/Windows) | `#![forbid(unsafe_code)]`; sıfırlayan global ayırıcı |
+| `lephy-usb` | yalnızca çıkarılabilir USB: uygunluk, onay, kimlik yeniden denetimi, silme/biçimlendirme, doldurma, yazma, geri okuma | `#![forbid(unsafe_code)]` |
+| `lephy-gui` | `lephycrypy-gui`: egui/eframe tek pencere (macOS/Windows) | `#![forbid(unsafe_code)]`; sıfırlayan global ayırıcı |
 
 ## Kullanım
 
@@ -58,39 +53,7 @@ Betikler için `--password-stdin`, `--password-fd` (Unix) ve `--password-file`; 
 argv/env'den alınmaz. `rekey` parolayı değiştirir ama dosya anahtarını korur; gerçek rotasyon
 `reencrypt`.
 
-## Doğrulama durumu
-
-| Ne | Nasıl | Durum |
-|---|---|---|
-| Argon2id, HKDF, XChaCha20-Poly1305, AES-256-GCM, BLAKE3 | resmî KAT'lar (`tests/kat/`, `cargo test -p lephy-core --test kat`) | geçiyor |
-| Biçim vektörleri 1–11 (arşiv + PADMÉ dahil) | yalnızca FORMAT.md'den yazılmış Python referansı (`tests/ref/lephy_ref.py`) ile bayt bayt (`--features test-vectors`) | geçiyor |
-| Kanonik son chunk, kesme, fazla bayt, `last` ortada | `pipeline` birim testleri | geçiyor |
-| zip-slip (`..`, mutlak, `\`, sürücü), symlink-dizin-sonra-dosya, yinelenen ad (NFC/harf), setuid temizleme, 17 MiB çerçeve, derinlik 257, END eksik/sonrası veri, PADMÉ kuyruğu, FIFO atlama/`--strict` | `archive` birim testleri | geçiyor |
-| Windows ad kuralları (CON, COM¹, ADS, sondaki nokta) | `names` birim testleri (saf fonksiyon; Windows CI'da uçtan uca) | geçiyor |
-| Yanlış parola/keyfile (3), bozuk başlık/chunk (4), hedef var (7), bütçe (6) | `ops` testleri + CLI çıkış kodları | geçiyor |
-| rekey (FK/chunk sabit, R4-Y2) ve reencrypt | `ops` testi | geçiyor |
-| Kilitli arena, sayfa refcount, hook sıfırlaması | `lephy-sys` testleri (macOS) | geçiyor |
-| Özellik testleri: STREAM sınırları, bit çevirme/kesme/ek bayt, PADMÉ, arşiv round-trip, bozulmuş arşivin kök dışına yazmaması | proptest (`tests/prop.rs`; yerelde 1500 vaka/test) | geçiyor |
-| Fuzz: `header`, `archive_entry`, `names`, `decrypt_known_key` | cargo-fuzz (`fuzz/`), yerelde 60 sn/hedef + 2 hedef 5 dk | geçiyor; 1 gerçek hata bulundu ve düzeltildi (PADMÉ uzunluk öneki taşması) |
-| Fuzz regresyonları + seed'ler her `cargo test`te | `tests/regress.rs` | geçiyor |
-| Miri (arena, refcount, hizalama, zeroize-sonra-dealloc) | `cargo +nightly-2026-11-01 miri test -p lephy-sys` | geçiyor (FFI testleri hariç) |
-| SIGINT parola isteminde (yankı geri, 130), akış ortasında SIGINT/SIGTERM (tmp yok, 130), KDF'de çift SIGINT | `crates/lephy-cli/tests/signals.rs` (Unix, pty için python3) | geçiyor; gecikme < 40 ms |
-| Panik hook'u: arena + bölge sıfır, tmp silinir, SIGABRT, terminal açık | `tests/fault/panic_hook.sh` (`fault-injection` + release) | geçiyor |
-| Kanarya taraması (`/proc/self/mem`) | `tests/canary.rs` (yalnızca Linux CI) | yazıldı; yerelde çalıştırılamadı |
-| cargo-deny (advisory, bans, lisans, kaynak), cargo-audit | `deny.toml` | geçiyor; yasakların tetiklendiği denendi |
-| cargo-vet | `supply-chain/` | geçiyor; 15 tam, 7 kısmi denetim, **90 istisna (kripto crate'leri dahil)** |
-| Tekrarlanabilir derleme (imzasız) | iki ayrı dizinde release derleme | macOS arm64'te SHA256 eşit; çapraz runner CI'da |
-| Windows kodu | yalnızca çapraz `cargo clippy --target x86_64-pc-windows-msvc`; CI'da çalıştırılacak | derleniyor, test edilmedi; `CTRL_BREAK` testi yazılmadı |
-| USB: uygunluk (SATA/Thunderbolt/Fixed/boş seri reddi), yanlış etiket/GiB → 5 ve hiçbir şey silinmez, adımlar arası kimlik değişimi → 5 ve sonraki adım çalışmaz, symlink takip etmeyen silme, sistem klasörleri, çok dosyalı doldurma, iki geri okuma etiketi | `lephy-usb` birim testleri (sahte platform + geçici dizin) | geçiyor |
-| USB: gerçek `diskutil` çıktısının ayrıştırılması; dahili diske `usb write` reddi | macOS'ta salt okunur gerçek çağrılar | geçiyor |
-| USB: gerçek USB bellekte silme/biçimlendirme/yazma | — | **denenmedi** (donanım yok; gerçek diske hiçbir silme çalıştırılmadı) |
-| GUI: parola alanı (yazma, backspace, pano reddi, kapasite), başsız (headless) çizim, şifrele/çöz/yanlış parola | `lephy-gui` testleri | geçiyor |
-| GUI: pencere açılır; SIGTERM/SIGINT ile kapanır (130) | release ikilisi macOS'ta çalıştırıldı | geçiyor; ekran görüntüsü/erişilebilirlik denetimi yapılmadı |
-
-Python referansı için: `python3 -m venv .venv && .venv/bin/pip install cryptography argon2-cffi blake3`,
-sonra `.venv/bin/python -I tests/ref/lephy_ref.py vectors tests/kat/vectors`.
-
-## USB (1.1)
+## USB belleğe yazma
 
 ```bash
 lephycrypy usb list
@@ -110,7 +73,7 @@ yeniden okunur; değişmişse kod 5 ile durur. Yalnızca geçerli `.lphy` dosyal
 `--fill-free-space` boş alanı rastgele veriyle doldurur. FAT/exFAT dizin kalıntıları, NTFS
 resident dosyalar ve wear-leveling yüzünden fiziksel silme garantisi yoktur.
 
-## GUI (1.2)
+## Masaüstü uygulaması
 
 `lephycrypy-gui` argümansız başlar (yollar argv'ye gitmez). Bir dosya ya da klasörü pencereye
 bırakın: `.lphy` dosyaları çözülür, diğerleri şifrelenir. Parola alanı maskelidir, panoya
@@ -128,8 +91,15 @@ cargo build --locked
 cargo test --locked --workspace
 ```
 
-`test-vectors` feature'ı yalnızca `lephy-core` testleri içindir; `lephy-cli` bu feature ile
-derlenmeyi derleme zamanında reddeder (R5-02).
+Masaüstü uygulaması:
+
+```bash
+cargo run --release -p lephy-gui
+```
+
+Fuzz hedefleri `fuzz/` altındadır (ayrı workspace, nightly + `cargo-fuzz`). Biçim vektörleri,
+yalnızca FORMAT.md okunarak yazılmış Python referansıyla (`tests/ref/lephy_ref.py`) bayt bayt
+karşılaştırılır: `cargo test -p lephy-core --features test-vectors`.
 
 ## Çıkış kodları
 
@@ -170,7 +140,7 @@ iyi araçlardır. lephycrypy+ daha dar bir hedefe yöneliktir: parolayla klasör
 - **Ne zaman age:** başkasına açık anahtarla gönderim veya boru hatlarında yaygın/kararlı biçim
   gerekiyorsa age/rage.
 
-## Parola kaynakları (D3)
+## Parola kaynakları
 
 Parola argv veya ortam değişkeninden **asla** okunmaz. Betik kullanımı için `--password-stdin`
 (tüm platformlar), `--password-fd <n>` (yalnızca Unix) ve `--password-file <yol>` vardır.

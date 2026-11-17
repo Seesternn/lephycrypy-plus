@@ -1,4 +1,4 @@
-//! Rastgelelik kaynağı (PLAN R4-O11, R5-02).
+//! Rastgelelik kaynağı.
 //!
 //! [`Entropy`] trait'i; varsayılan uygulama `getrandom`, doğrudan hedef tampona (arena) yazar.
 //! `test-vectors` feature'ı ile [`crate::testvec::FixedEntropy`] sabit değerleri sırayla verir.

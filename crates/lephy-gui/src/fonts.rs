@@ -1,4 +1,4 @@
-//! Sistem yazı tipi (PLAN › GUI): gömülü yazı tipi yok; çalışma anında işletim sisteminin
+//! Sistem yazı tipi: gömülü yazı tipi yok; çalışma anında işletim sisteminin
 //! Türkçe karakterleri kapsayan bir TrueType yazı tipi okunur.
 
 use std::sync::Arc;

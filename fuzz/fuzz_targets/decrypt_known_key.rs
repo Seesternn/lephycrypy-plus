@@ -1,4 +1,4 @@
-//! I8 / R5-14: bilinen anahtarla tam çözme hattı (mantık: logic.rs).
+//! I8 / bilinen anahtarla tam çözme hattı (mantık: logic.rs).
 #![no_main]
 
 #[path = "logic.rs"]

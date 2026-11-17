@@ -1,4 +1,4 @@
-//! Paralel STREAM hattı (PLAN E2, E3, B1, R5-12, R5-17).
+//! Paralel STREAM hattı.
 //!
 //! okuyucu (çağıran iş parçacığı) → bounded `work` kanalı → işçi iş parçacıkları
 //! (`seal/open_chunk(index, last)`) → bounded `done` kanalı → sıralı yazıcı (`BTreeMap`) →
@@ -6,7 +6,7 @@
 //! `nbuf = clamp(64 MiB / chunk_size, 2, 8)`, her tampon `chunk_size + 17` B (ileri okuma).
 //! Yerinde şifreleme; düz metin tamponları yazıcı iade etmeden önce sıfırlanır.
 //!
-//! İlerleme garantisi (E3): tampon okuyucuya ancak havuzdan alınırsa verilir ve o anda indeksi
+//! İlerleme garantisi: tampon okuyucuya ancak havuzdan alınırsa verilir ve o anda indeksi
 //! atanır; işçiler indeksten bağımsızdır; yazıcı en düşük bekleyen indeksi yazınca tamponu iade
 //! eder; havuzdaki tüm tamponlar `nbuf`'tan küçük bir indeks penceresinde olduğundan en düşük
 //! indeks her zaman ya bir işçide ya da yazıcıdadır.
@@ -16,7 +16,7 @@
 //!
 //! `BufReader`/`BufWriter`/`Stdout` yasaktır (clippy.toml); okuyucu/yazıcı doğrudan havuz
 //! tamponunu kullanır. `std::thread::scope` kullanılır (rayon yerine): işçi iş parçacıkları
-//! başlarken sinyal maskesi kurar (R5-12).
+//! başlarken sinyal maskesi kurar.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -271,7 +271,7 @@ fn run(
                         return;
                     }
                     written += out_len as u64;
-                    // R5-04 panik hook testi: 4. chunk'ta bilinçli panik (yalnızca test derlemesi).
+                    // panik hook testi: 4. chunk'ta bilinçli panik (yalnızca test derlemesi).
                     #[cfg(feature = "fault-injection")]
                     assert!(
                         next != 3,
@@ -336,7 +336,7 @@ fn read_loop<'p>(
     shared: &Shared,
 ) -> Result<u64> {
     // Şifrelemede chunk_size+1, çözmede chunk_size+16+1 bayt okunur; fazla bayt sonraki
-    // tampona taşınır (carry) ve son chunk tespiti böyle yapılır (B1).
+    // tampona taşınır (carry) ve son chunk tespiti böyle yapılır.
     let unit = match mode {
         Mode::Encrypt => chunk_size,
         Mode::Decrypt | Mode::Verify => chunk_size + TAG_LEN,
