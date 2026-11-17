@@ -75,11 +75,19 @@ resident dosyalar ve wear-leveling yüzünden fiziksel silme garantisi yoktur.
 
 ## Masaüstü uygulaması
 
-`lephycrypy-gui` argümansız başlar (yollar argv'ye gitmez). Bir dosya ya da klasörü pencereye
-bırakın: `.lphy` dosyaları çözülür, diğerleri şifrelenir. Parola alanı maskelidir, panoya
-kopyalama/yapıştırma kapalıdır, metin doğrudan kilitli bellekte tutulur. "Gelişmiş" bölümünde
-Argon2id belleği, algoritma ve PADMÉ seçilir. Bulut senkron klasörüne çıkarma onay ister.
-Sistem yazı tipi kullanılır; gömülü yazı tipi yoktur. Linux'ta GUI yoktur.
+`lephycrypy-gui` (macOS ve Windows) tek pencerelik sade bir uygulamadır:
+
+1. Bir dosya ya da klasörü pencereye bırakın veya **Dosya seç** / **Klasör seç** ile seçin.
+   `.lphy` dosyaları açılır, diğer her şey şifrelenir.
+2. Parolayı girin. Şifrelerken parola iki kez istenir; en az 8 karakter olmalı ve eşleşme
+   anında gösterilir.
+3. Kaydedilecek yeri gerekirse **Değiştir** ile seçin ve **Şifrele** ya da **Şifreyi çöz**'e basın.
+4. İş bitince **Klasörde göster** sonucu Finder'da ya da Gezgin'de açar.
+
+Parola alanı maskelidir; kopyalama ve yapıştırma kapalıdır, metin doğrudan kilitli bellekte
+tutulur. **Gelişmiş ayarlar** altında algoritma, parola türetme belleği ve boyut gizleme seçilir.
+Bulut senkron klasörüne çözme ayrıca onay ister. Uygulama sistemin açık/koyu temasını izler ve
+sistem yazı tiplerini kullanır. Linux'ta masaüstü uygulaması yoktur.
 
 ## Derleme
 

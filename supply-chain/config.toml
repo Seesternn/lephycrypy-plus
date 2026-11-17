@@ -746,6 +746,10 @@ criteria = "safe-to-deploy"
 version = "0.2.2"
 criteria = "safe-to-deploy"
 
+[[exemptions.objc2-uniform-type-identifiers]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+
 [[exemptions.objc2-user-notifications]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
@@ -893,6 +897,10 @@ criteria = "safe-to-deploy"
 [[exemptions.regex-syntax]]
 version = "0.8.11"
 criteria = "safe-to-run"
+
+[[exemptions.rfd]]
+version = "0.18.0"
+criteria = "safe-to-deploy"
 
 [[exemptions.rustix]]
 version = "0.38.44"

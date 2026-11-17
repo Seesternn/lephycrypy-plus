@@ -8,6 +8,8 @@ use eframe::egui::{self, Event, Key, Response, Sense, Ui, Vec2, WidgetInfo};
 use lephy_core::password::MAX_RAW_LEN;
 use lephy_sys::mem::SecretBytes;
 
+use crate::theme;
+
 /// Bir olayın alan üzerindeki etkisi.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effect {
@@ -103,16 +105,28 @@ impl SecretField {
         self.buf.clear();
     }
 
+    /// Unicode scalar sayısı (geçersiz UTF-8 → 0).
+    #[must_use]
+    pub fn char_count(&self) -> usize {
+        std::str::from_utf8(self.buf.expose()).map_or(0, |s| s.chars().count())
+    }
+
+    /// İki alanın içeriği aynı mı (bayt bayt; NFC denetimi işte yapılır).
+    #[must_use]
+    pub fn same_as(&self, other: &Self) -> bool {
+        self.buf.expose() == other.buf.expose()
+    }
+
     /// Çizer ve odaktayken klavye olaylarını tüketir. `true`: Enter'a basıldı.
     pub fn ui(&mut self, ui: &mut Ui, enabled: bool) -> (Response, bool) {
-        let width = ui.available_width().min(360.0);
-        let height = ui.spacing().interact_size.y + 6.0;
+        let pal = theme::palette(ui.ctx());
+        let width = ui.available_width();
         let sense = if enabled {
             Sense::click()
         } else {
             Sense::hover()
         };
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), sense);
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, theme::CONTROL_H), sense);
         if response.clicked() {
             response.request_focus();
         }
@@ -136,47 +150,44 @@ impl SecretField {
             w.current_text_value = Some(String::new());
             w
         });
-        let visuals = ui.style().interact(&response);
         let focused = response.has_focus();
         let stroke = if focused {
-            ui.visuals().selection.stroke
+            egui::Stroke::new(1.5, pal.accent)
+        } else if response.hovered() && enabled {
+            egui::Stroke::new(1.0, pal.muted)
         } else {
-            visuals.bg_stroke
+            egui::Stroke::new(1.0, pal.line)
         };
-        let painter = ui.painter_at(rect);
+        let painter = ui.painter_at(rect.expand(2.0));
         painter.rect(
             rect,
-            4.0,
-            ui.visuals().extreme_bg_color,
+            f32::from(theme::R_INPUT),
+            pal.surface,
             stroke,
             egui::StrokeKind::Inside,
         );
-        let count = std::str::from_utf8(self.buf.expose()).map_or(0, |s| s.chars().count());
+        let count = self.char_count();
         let (text, color) = if count == 0 {
-            (
-                if focused {
-                    String::new()
-                } else {
-                    "parola".to_string()
-                },
-                ui.visuals().weak_text_color(),
-            )
+            (self.label.to_string(), pal.muted)
         } else {
-            ("•".repeat(count.min(64)), ui.visuals().text_color())
+            (
+                "\u{2022}".repeat(count.min(48)),
+                if enabled { pal.ink } else { pal.muted },
+            )
         };
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        let galley = painter.layout_no_wrap(text, font, color);
+        let galley = painter.layout_no_wrap(text, crate::fonts::regular(15.0), color);
         let text_width = galley.size().x;
-        let pos = egui::pos2(rect.left() + 8.0, rect.center().y - galley.size().y / 2.0);
+        let pos = egui::pos2(rect.left() + 12.0, rect.center().y - galley.size().y / 2.0);
         painter.galley(pos, galley, color);
         if focused {
-            let x = (pos.x + text_width + 2.0).min(rect.right() - 6.0);
+            let text_width = if count == 0 { 0.0 } else { text_width };
+            let x = (pos.x + text_width + 2.0).min(rect.right() - 10.0);
             painter.line_segment(
                 [
-                    egui::pos2(x, rect.top() + 6.0),
-                    egui::pos2(x, rect.bottom() - 6.0),
+                    egui::pos2(x, rect.top() + 10.0),
+                    egui::pos2(x, rect.bottom() - 10.0),
                 ],
-                egui::Stroke::new(1.0, ui.visuals().text_color()),
+                egui::Stroke::new(1.5, pal.accent),
             );
         }
         (response, submit)

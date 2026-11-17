@@ -19,6 +19,8 @@ mod fonts;
 mod logic;
 #[cfg(any(target_os = "macos", windows))]
 mod secret_field;
+#[cfg(any(target_os = "macos", windows))]
+mod theme;
 
 use std::process::ExitCode;
 
@@ -48,15 +50,15 @@ fn main() -> ExitCode {
     if cfg!(all(target_os = "macos", not(debug_assertions))) {
         let _ = lephy_sys::platform::deny_debugger();
     }
-    let Some((_, font)) = fonts::find_system_font() else {
+    let Some(font) = fonts::find_system_fonts() else {
         eprintln!("hata: Türkçe karakterleri kapsayan bir sistem yazı tipi bulunamadı");
         return ExitCode::from(1);
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("lephycrypy+")
-            .with_inner_size([600.0, 520.0])
-            .with_min_inner_size([520.0, 460.0])
+            .with_inner_size([520.0, 640.0])
+            .with_min_inner_size([420.0, 540.0])
             .with_drag_and_drop(true),
         persist_window: false,
         centered: true,
@@ -67,8 +69,8 @@ fn main() -> ExitCode {
         options,
         Box::new(move |cc| {
             fonts::install(&cc.egui_ctx, font);
-            app::apply_style(&cc.egui_ctx);
-            Ok(Box::new(app::App::default()))
+            theme::apply(&cc.egui_ctx);
+            Ok(app::boxed())
         }),
     );
     lephy_sys::signal::mark_cleanup_done();
