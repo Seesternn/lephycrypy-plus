@@ -11,7 +11,6 @@ publish.workspace = true
 [features]
 default = []
 # Açık karar 2: zxcvbn parola gücü; sıfırlanmayan parola kopyaları bırakır, varsayılan kapalı.
-strength = []
 # sabit salt/nonce/FK enjeksiyonu + işaret dizgesi. YALNIZCA testler için;
 # lephy-cli/lephy-gui bu feature ile derlenmeyi `const` iddiasıyla reddeder.
 test-vectors = []

@@ -302,6 +302,39 @@ pub fn keyfile_digest_from_path(path: &Path) -> Result<zeroize::Zeroizing<[u8; 3
     Ok(out)
 }
 
+/// Yeni bir anahtar dosyası oluşturur: `len` rastgele bayt, yalnızca sahibi okuyabilir (0600),
+/// var olan dosyanın üzerine yazmaz. `KEYFILE_MIN..=KEYFILE_MAX` aralığında olmalıdır.
+///
+/// # Errors
+/// Dosya zaten var (kod 7), uzunluk aralık dışı, G/Ç ya da RNG hatası.
+pub fn generate_keyfile(path: &Path, len: usize) -> Result<()> {
+    let len64 = len as u64;
+    if !(KEYFILE_MIN..=KEYFILE_MAX).contains(&len64) {
+        return Err(Error::Environment(format!(
+            "anahtar dosyası {KEYFILE_MIN}..={KEYFILE_MAX} bayt olmalı"
+        )));
+    }
+    let mut buf = zeroize::Zeroizing::new(vec![0u8; len]);
+    crate::entropy::Entropy::fill(&mut crate::entropy::OsEntropy, &mut buf)?;
+    let mut oo = std::fs::OpenOptions::new();
+    oo.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        oo.mode(0o600);
+    }
+    let mut f = oo.open(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            Error::Exists(path.display().to_string())
+        } else {
+            Error::Io(e)
+        }
+    })?;
+    std::io::Write::write_all(&mut f, &buf)?;
+    f.sync_all()?;
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -361,6 +394,24 @@ mod tests {
             *d,
             crate::kdf::keyfile_digest(&(0u8..64).collect::<Vec<_>>())
         );
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn generated_keyfile_is_usable_and_never_overwritten() {
+        let p = std::env::temp_dir().join(format!("lphy-kfgen-{}", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        generate_keyfile(&p, 64).unwrap();
+        assert_eq!(std::fs::metadata(&p).unwrap().len(), 64);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let m = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(m, 0o600);
+        }
+        assert!(keyfile_digest_from_path(&p).is_ok());
+        assert!(matches!(generate_keyfile(&p, 64), Err(Error::Exists(_))));
+        assert!(generate_keyfile(&p.with_extension("x"), 8).is_err());
         let _ = std::fs::remove_file(&p);
     }
 }

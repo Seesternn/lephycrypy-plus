@@ -12,9 +12,11 @@ pub mod kdf;
 pub mod names;
 pub mod ops;
 pub mod pad;
+pub mod passphrase;
 pub mod password;
 pub mod pipeline;
 pub mod stream;
+pub mod strength;
 pub mod testvec;
 
 /// `test-vectors` feature'ının açık olup olmadığı. İkililer

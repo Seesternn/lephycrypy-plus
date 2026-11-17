@@ -308,6 +308,29 @@ pub fn describe_source(path: &Path, mode: Mode) -> (String, String) {
     (name, detail)
 }
 
+/// Şifreli dosyanın başlığından, parola sorulmadan okunabilen bilgiler (tek satır).
+/// Başlık okunamazsa `None`.
+#[must_use]
+pub fn header_summary(path: &Path) -> Option<String> {
+    let h = ops::info(path).ok()?;
+    let kind = match h.content_type {
+        lephy_core::header::ContentType::Archive => tr("arşiv", "archive"),
+        lephy_core::header::ContentType::Raw => tr("ham akış", "raw stream"),
+    };
+    let mut out = format!(
+        "{}, Argon2id {} MiB, {kind}",
+        h.alg.name(),
+        h.kdf.memory_mib()
+    );
+    if h.padded {
+        out.push_str(tr(", boyut gizli", ", size hidden"));
+    }
+    if h.keyfile {
+        out.push_str(tr(", anahtar dosyası gerekli", ", key file required"));
+    }
+    Some(out)
+}
+
 /// İnsan okunur boyut (Türkçe ondalık virgül).
 #[must_use]
 #[allow(clippy::cast_precision_loss)]

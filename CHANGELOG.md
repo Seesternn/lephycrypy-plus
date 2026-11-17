@@ -51,6 +51,13 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Passphrase generator using the EFF large wordlist (`lephycrypy passphrase`, and "Generate a
+  strong password" in the app; shown once so it can be written down).
+- Password strength estimate while typing (rough, dependency-free; labelled as an estimate).
+- Key-file generator (`lephycrypy keyfile-gen`, and "Create new" in the app): random bytes,
+  mode `0600`, never overwrites.
+- The app shows an encrypted file's algorithm, key-derivation memory and content type before
+  asking for the password.
 - Desktop app in English and Turkish, chosen from the system language and switchable in the
   window.
 - Internal security review report: `docs/SECURITY-REVIEW-2026-11.md`.

@@ -110,6 +110,22 @@ impl SecretField {
         self.buf.clear();
     }
 
+    /// İçeriği verilen baytlarla değiştirir (kilitli bellekten kilitli belleğe kopya).
+    ///
+    /// # Panics
+    /// Kilitli arena dolarsa.
+    #[allow(clippy::expect_used)]
+    pub fn set(&mut self, bytes: &[u8]) {
+        self.buf.clear();
+        self.buf.push_slice(bytes).expect("kapasite");
+    }
+
+    /// Kaba güç tahmini.
+    #[must_use]
+    pub fn strength(&self) -> lephy_core::strength::Estimate {
+        lephy_core::strength::estimate(self.buf.expose())
+    }
+
     /// Unicode scalar sayısı (geçersiz UTF-8 → 0).
     #[must_use]
     pub fn char_count(&self) -> usize {

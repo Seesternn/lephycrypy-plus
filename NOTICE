@@ -1,11 +1,14 @@
 lephycrypy+
 Copyright 2026 lephycrypy+ contributors
 
-Bu ürün MIT veya Apache-2.0 lisansı ile dağıtılır (LICENSE-MIT, LICENSE-APACHE).
+This product is licensed under the MIT license or the Apache License 2.0, at your option
+(LICENSE-MIT, LICENSE-APACHE).
 
-Üçüncü taraf içerik:
+Third-party content:
 
-- EFF Long Wordlist (eff_large_wordlist.txt), `--generate-passphrase` için
+- EFF Large Wordlist (crates/lephy-core/data/eff_large_wordlist.txt), used by the passphrase
+  generator (`lephycrypy passphrase` and the desktop app).
   Electronic Frontier Foundation,
   Creative Commons Attribution 3.0 (CC BY 3.0).
   https://www.eff.org/deeplinks/2016/07/new-wordlists-random-passphrases
+  Unmodified; SHA-256 addd35536511597a02fa0a9ff1e5284677b8883b83e986e43f15a3db996b903e.

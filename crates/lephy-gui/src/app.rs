@@ -37,6 +37,8 @@ struct Source {
     mode: Mode,
     name: String,
     detail: String,
+    /// Şifreli dosyada başlık özeti (algoritma, bellek, içerik türü).
+    summary: Option<String>,
 }
 
 enum Stage {
@@ -67,6 +69,8 @@ pub struct App {
     cancel_requested: bool,
     /// Seçili anahtar dosyası.
     keyfile: Option<PathBuf>,
+    /// Üretilen kelime öbeği: kullanıcı not alsın diye bir kez gösterilir (kilitli bellekte).
+    generated: Option<lephy_sys::mem::SecretBytes>,
     /// Açılacak dosya anahtar dosyası gerektiriyor.
     keyfile_required: bool,
     /// Son karede ölçülen içerik yüksekliği (dikey ortalama için).
@@ -99,6 +103,7 @@ impl Default for App {
             cancel_requested: false,
             keyfile: None,
             keyfile_required: false,
+            generated: None,
             content_h: 0.0,
             show_help: false,
             ram_mib: lephy_sys::platform::physical_memory_bytes().map_or(0, |b| b / (1024 * 1024)),
@@ -117,16 +122,21 @@ impl App {
         let mode = logic::detect_mode(p);
         let (name, detail) = logic::describe_source(p, mode);
         self.output = Some(logic::default_output(p, mode));
+        let summary = (mode == Mode::Decrypt)
+            .then(|| logic::header_summary(p))
+            .flatten();
         self.source = Some(Source {
             path: p.to_path_buf(),
             mode,
             name,
             detail,
+            summary,
         });
         self.stage = Stage::Ready;
         self.error = None;
         self.allow_cloud = false;
         self.keyfile = None;
+        self.generated = None;
         self.keyfile_required = mode == Mode::Decrypt && logic::needs_keyfile(p);
         self.password.clear();
         self.confirm.clear();
@@ -140,6 +150,7 @@ impl App {
         self.allow_cloud = false;
         self.keyfile = None;
         self.keyfile_required = false;
+        self.generated = None;
         self.password.clear();
         self.confirm.clear();
     }
@@ -380,6 +391,9 @@ impl App {
                                                 logic::describe_source(&src.path, src.mode);
                                             src.name = n;
                                             src.detail = d;
+                                            if src.mode == Mode::Decrypt {
+                                                src.summary = logic::header_summary(&src.path);
+                                            }
                                         }
                                     }
                                 });
@@ -495,6 +509,7 @@ impl App {
             src.mode,
             src.path.is_dir(),
         );
+        let summary = src.summary.clone();
         let mut change = false;
         egui::Frame::new()
             .fill(pal.surface)
@@ -539,6 +554,10 @@ impl App {
                         });
                     }
                 });
+                if let Some(sm) = &summary {
+                    ui.add_space(6.0);
+                    ui.add(egui::Label::new(RichText::new(sm).color(pal.muted).size(12.5)).wrap());
+                }
             });
         if change {
             self.reset();
@@ -572,6 +591,9 @@ impl App {
                 .color(pal.ink),
         );
         ui.label(RichText::new(sub).color(pal.muted).size(13.0));
+        if mode == Mode::Encrypt {
+            self.generator(ui, pal);
+        }
         ui.add_space(10.0);
 
         let (r1, s1) = self.password.ui(ui, true);
@@ -636,8 +658,99 @@ impl App {
         }
     }
 
+    /// "Güçlü bir parola üret": 6 kelimelik öbek iki alana da yazılır ve bir kez gösterilir.
+    fn generator(&mut self, ui: &mut Ui, pal: Palette) {
+        if self.generated.is_none() {
+            if link_button(
+                ui,
+                pal,
+                tr("Güçlü bir parola üret", "Generate a strong password"),
+            )
+            .clicked()
+                && let Ok(p) = lephy_core::passphrase::generate(
+                    &mut lephy_core::entropy::OsEntropy,
+                    lephy_core::passphrase::DEFAULT_WORDS,
+                    '-',
+                )
+            {
+                self.password.set(p.expose());
+                self.confirm.set(p.expose());
+                self.generated = Some(p);
+            }
+            return;
+        }
+        let mut hide = false;
+        egui::Frame::new()
+            .fill(pal.accent_soft)
+            .corner_radius(CornerRadius::same(theme::R_INPUT))
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                if let Some(p) = &self.generated {
+                    // Görüntülenen metin araç takımının bellek kopyasına düşer; serbest
+                    // bırakılırken sıfırlayan ayırıcı siler (THREAT-MODEL).
+                    let text = String::from_utf8_lossy(p.expose());
+                    ui.label(
+                        RichText::new(text.as_ref())
+                            .font(fonts::semibold(15.5))
+                            .color(pal.ink),
+                    );
+                }
+                ui.label(
+                    RichText::new(tr(
+                        "Bu parolayı şimdi bir yere yazın. Pencere kapanınca bir daha gösterilmez.",
+                        "Write this password down now. It will not be shown again.",
+                    ))
+                    .color(pal.muted)
+                    .size(12.5),
+                );
+                hide =
+                    link_button(ui, pal, tr("Yazdım, gizle", "I wrote it down, hide it")).clicked();
+            });
+        if hide {
+            self.generated = None;
+        }
+    }
+
+    /// Güç çubuğu: beş bölüm, düzeye göre dolu.
+    fn strength_bar(&self, ui: &mut Ui, pal: Palette) {
+        use lephy_core::strength::Level;
+        let e = self.password.strength();
+        let (n, label, color) = match e.level {
+            Level::VeryWeak => (1, tr("Çok zayıf", "Very weak"), pal.danger),
+            Level::Weak => (2, tr("Zayıf", "Weak"), pal.danger),
+            Level::Fair => (3, tr("Orta", "Fair"), pal.muted),
+            Level::Strong => (4, tr("Güçlü", "Strong"), pal.ok),
+            Level::VeryStrong => (5, tr("Çok güçlü", "Very strong"), pal.ok),
+        };
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(120.0, 6.0), Sense::hover());
+            let w = (rect.width() - 4.0 * 4.0) / 5.0;
+            for i in 0..5 {
+                #[allow(clippy::cast_precision_loss)]
+                let r = Rect::from_min_size(
+                    pos2(rect.left() + (w + 4.0) * i as f32, rect.top()),
+                    vec2(w, rect.height()),
+                );
+                let c = if i < n { color } else { pal.line };
+                ui.painter().rect_filled(r, 3.0, c);
+            }
+            ui.label(
+                RichText::new(match lang() {
+                    Lang::Tr => format!("{label} (tahmini ~{:.0} bit)", e.bits),
+                    Lang::En => format!("{label} (estimated ~{:.0} bits)", e.bits),
+                })
+                .color(pal.muted)
+                .size(12.5),
+            );
+        });
+    }
+
     fn password_hint(&self, ui: &mut Ui, pal: Palette) {
         let n = self.password.char_count();
+        if n > 0 {
+            self.strength_bar(ui, pal);
+        }
         let (text, color) = if n == 0 {
             (
                 match lang() {
@@ -811,6 +924,7 @@ impl App {
         });
         let mut pick = false;
         let mut clear = false;
+        let mut create = false;
         egui::Frame::new()
             .fill(pal.surface)
             .stroke(Stroke::new(
@@ -851,6 +965,10 @@ impl App {
                             pick = link_button(ui, pal, tr("Değiştir", "Change")).clicked();
                         } else {
                             pick = link_button(ui, pal, tr("Seç", "Choose")).clicked();
+                            if !required {
+                                create = link_button(ui, pal, tr("Yeni oluştur", "Create new"))
+                                    .clicked();
+                            }
                         }
                     });
                 });
@@ -865,6 +983,23 @@ impl App {
         }
         if clear {
             self.keyfile = None;
+        }
+        if create
+            && let Some(p) = rfd::FileDialog::new()
+                .set_title(tr(
+                    "Yeni anahtar dosyasını kaydedin",
+                    "Save the new key file",
+                ))
+                .set_file_name("lephycrypy.key")
+                .save_file()
+        {
+            match lephy_core::password::generate_keyfile(&p, 64) {
+                Ok(()) => {
+                    self.keyfile = Some(p);
+                    self.error = None;
+                }
+                Err(e) => self.error = Some(logic::describe_error(&e)),
+            }
         }
     }
 

@@ -283,6 +283,23 @@ enum Command {
         #[command(flatten)]
         unlock: UnlockArgs,
     },
+    /// Rastgele bir kelime öbeği (parola) üretir ve standart çıktıya yazar (EFF büyük listesi).
+    Passphrase {
+        /// Kelime sayısı (4–16; her kelime ≈ 12,9 bit).
+        #[arg(long, default_value_t = 6)]
+        words: usize,
+        /// Kelime ayracı.
+        #[arg(long, default_value = "-")]
+        separator: char,
+    },
+    /// Yeni bir anahtar dosyası oluşturur (rastgele bayt, 0600, üzerine yazmaz).
+    KeyfileGen {
+        /// Oluşturulacak dosya.
+        path: PathBuf,
+        /// Bayt sayısı (32–1048576).
+        #[arg(long, default_value_t = 64)]
+        size: usize,
+    },
     /// Bir dizindeki bayat `.lphy-tmp-*` dosya/dizinlerini onayla siler.
     Cleanup {
         /// Taranacak dizin.
@@ -832,6 +849,28 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             Ok(())
         }
         Command::Usb { cmd } => run_usb(cmd, log),
+        Command::Passphrase { words, separator } => {
+            let p = lephy_core::passphrase::generate(
+                &mut lephy_core::entropy::OsEntropy,
+                *words,
+                *separator,
+            )?;
+            lephy_sys::term::write_all_raw(&std::io::stdout(), p.expose())?;
+            lephy_sys::term::write_all_raw(&std::io::stdout(), b"\n")?;
+            eprintln!(
+                "≈ {:.0} bit; bu öbeği güvenli bir yere yazın, tekrar gösterilmez",
+                lephy_core::passphrase::bits(*words)
+            );
+            Ok(())
+        }
+        Command::KeyfileGen { path, size } => {
+            password::generate_keyfile(path, *size)?;
+            eprintln!(
+                "anahtar dosyası oluşturuldu: {} ({size} bayt). Kaybederseniz bu dosyayla şifrelenen veriler açılamaz; yedekleyin.",
+                disp(path)
+            );
+            Ok(())
+        }
         Command::Cleanup { dir, yes } => {
             let stale = lephy_core::io::scan_stale(dir)?;
             if stale.is_empty() {
