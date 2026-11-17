@@ -40,6 +40,7 @@ Fixes from the November 2026 internal review (not an independent audit):
 - The signal handler preserves `errno`.
 - `--password-fd` duplicates the descriptor instead of taking ownership, and refuses the
   program's own internal descriptors.
+- Arena-based memory tests no longer starve each other when run in parallel (flaky CI failure).
 - macOS: secure keyboard input is on while a password field has focus, so processes with input
   monitoring permission cannot read the keystrokes.
 - An archive entry with an extreme modification time no longer crashes extraction on Windows,
@@ -51,6 +52,14 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Batch encryption: several files or folders become separate `.lphy` files
+  (`lephycrypy encrypt a b c --out-dir DIR`; drop or choose several items in the app). The
+  password is asked once; each file still gets its own salt and key. One failing item does not
+  stop the others.
+- Secure deletion of the originals after encryption has been verified (`--secure-delete`, and an
+  option in the app). It asks for explicit confirmation, overwrites each file once with random
+  data and is honest about its limits on SSDs, copy-on-write file systems and snapshots. Files
+  with other hard links are only unlinked.
 - Passphrase generator using the EFF large wordlist (`lephycrypy passphrase`, and "Generate a
   strong password" in the app; shown once so it can be written down).
 - Password strength estimate while typing (rough, dependency-free; labelled as an estimate).

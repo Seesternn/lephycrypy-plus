@@ -34,6 +34,8 @@ const KDF_PRESETS: [(u32, &str, &str); 4] = [
 /// Seçilen kaynak.
 struct Source {
     path: PathBuf,
+    /// Tüm kaynaklar (toplu işte birden çok; ilk öğe `path`).
+    paths: Vec<PathBuf>,
     mode: Mode,
     name: String,
     detail: String,
@@ -69,6 +71,10 @@ pub struct App {
     cancel_requested: bool,
     /// Seçili anahtar dosyası.
     keyfile: Option<PathBuf>,
+    /// Şifreledikten sonra orijinali güvenli sil (Gelişmiş ayarlar).
+    secure_delete: bool,
+    /// Güvenli silme onayı bekleniyor (Şifrele'ye basıldı).
+    confirm_delete: bool,
     /// Üretilen kelime öbeği: kullanıcı not alsın diye bir kez gösterilir (kilitli bellekte).
     generated: Option<lephy_sys::mem::SecretBytes>,
     /// Açılacak dosya anahtar dosyası gerektiriyor.
@@ -104,6 +110,8 @@ impl Default for App {
             keyfile: None,
             keyfile_required: false,
             generated: None,
+            secure_delete: false,
+            confirm_delete: false,
             content_h: 0.0,
             show_help: false,
             ram_mib: lephy_sys::platform::physical_memory_bytes().map_or(0, |b| b / (1024 * 1024)),
@@ -127,6 +135,7 @@ impl App {
             .flatten();
         self.source = Some(Source {
             path: p.to_path_buf(),
+            paths: vec![p.to_path_buf()],
             mode,
             name,
             detail,
@@ -140,6 +149,60 @@ impl App {
         self.keyfile_required = mode == Mode::Decrypt && logic::needs_keyfile(p);
         self.password.clear();
         self.confirm.clear();
+    }
+
+    /// Birden çok kaynak: hepsi aynı işleme (hepsi şifreli ya da hiçbiri) uygun olmalı.
+    fn set_sources(&mut self, paths: &[PathBuf]) {
+        match paths {
+            [] => {}
+            [one] => self.set_source(one),
+            many => {
+                let modes: Vec<Mode> = many.iter().map(|p| logic::detect_mode(p)).collect();
+                let mode = modes[0];
+                if modes.iter().any(|m| *m != mode) {
+                    self.reset();
+                    self.error = Some(
+                        tr(
+                            "Şifreli (.lphy) ve şifresiz dosyalar birlikte seçilemez. Önce birini, sonra diğerini işleyin.",
+                            "Encrypted (.lphy) and unencrypted files cannot be mixed. Process one group, then the other.",
+                        )
+                        .to_string(),
+                    );
+                    return;
+                }
+                self.set_source(&many[0]);
+                let names: Vec<String> = many
+                    .iter()
+                    .take(4)
+                    .map(|p| logic::describe_source(p, mode).0)
+                    .collect();
+                let more = many.len().saturating_sub(4);
+                if let Some(src) = &mut self.source {
+                    src.paths = many.to_vec();
+                    src.name = match lang() {
+                        Lang::Tr => format!("{} öğe", many.len()),
+                        Lang::En => format!("{} items", many.len()),
+                    };
+                    src.detail = if more > 0 {
+                        match lang() {
+                            Lang::Tr => format!("{} ve {more} öğe daha", names.join(", ")),
+                            Lang::En => format!("{} and {more} more", names.join(", ")),
+                        }
+                    } else {
+                        names.join(", ")
+                    };
+                    src.summary = None;
+                }
+                // Toplu işte çıktı bir klasördür: her kaynak oraya ayrı bir dosya olarak yazılır.
+                self.output = many[0].parent().map(Path::to_path_buf);
+                self.keyfile_required =
+                    mode == Mode::Decrypt && many.iter().any(|p| logic::needs_keyfile(p));
+            }
+        }
+    }
+
+    fn batch(&self) -> bool {
+        self.source.as_ref().is_some_and(|s| s.paths.len() > 1)
     }
 
     fn reset(&mut self) {
@@ -195,10 +258,29 @@ impl App {
             return;
         };
         let mode = src.mode;
+        let items: Vec<logic::Item> = if src.paths.len() > 1 {
+            src.paths
+                .iter()
+                .map(|p| {
+                    let name = logic::default_output(p, mode)
+                        .file_name()
+                        .map(std::ffi::OsStr::to_os_string)
+                        .unwrap_or_default();
+                    logic::Item {
+                        input: p.clone(),
+                        output: output.join(name),
+                    }
+                })
+                .collect()
+        } else {
+            vec![logic::Item {
+                input: src.path.clone(),
+                output: output.clone(),
+            }]
+        };
         let job = Job {
             mode,
-            input: src.path.clone(),
-            output: output.clone(),
+            items,
             password: self.password.take(),
             confirm: (mode == Mode::Encrypt).then(|| self.confirm.take()),
             kdf_mib: self.kdf_mib,
@@ -206,7 +288,9 @@ impl App {
             pad: self.pad,
             allow_cloud: self.allow_cloud,
             keyfile: self.keyfile.clone(),
+            secure_delete: self.secure_delete,
         };
+        self.confirm_delete = false;
         self.confirm.clear();
         // Önceki işten kalan iptal, iş başlamadan (UI iş parçacığında) temizlenir; böylece boyut
         // tahmini sırasında basılan İptal kaybolmaz.
@@ -218,10 +302,12 @@ impl App {
         lephy_core::pipeline::reset_progress();
         let total = Arc::clone(&self.total);
         std::thread::spawn(move || {
-            total.store(
-                logic::estimate_total(job.mode, &job.input),
-                Ordering::Relaxed,
-            );
+            let sum = job
+                .items
+                .iter()
+                .map(|i| logic::estimate_total(job.mode, &i.input))
+                .sum();
+            total.store(sum, Ordering::Relaxed);
             let r = if lephy_sys::signal::interrupted() {
                 // Boyut tahmini sırasında iptal edildi: anahtar türetmeye hiç başlanmaz.
                 Err(logic::describe_error(
@@ -296,18 +382,24 @@ impl App {
         if self.running() {
             return;
         }
-        let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()));
-        if let Some(p) = dropped {
-            self.set_source(&p);
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        if !dropped.is_empty() {
+            self.set_sources(&dropped);
         }
     }
 
     fn pick_file(&mut self) {
-        if let Some(p) = rfd::FileDialog::new()
-            .set_title(tr("Dosya seçin", "Choose a file"))
-            .pick_file()
+        if let Some(ps) = rfd::FileDialog::new()
+            .set_title(tr("Dosya seçin", "Choose files"))
+            .pick_files()
         {
-            self.set_source(&p);
+            self.set_sources(&ps);
         }
     }
 
@@ -325,6 +417,19 @@ impl App {
 
     fn choose_output(&mut self) {
         let Some(cur) = &self.output else { return };
+        if self.batch() {
+            // Toplu işte çıktı bir klasördür.
+            if let Some(p) = rfd::FileDialog::new()
+                .set_title(tr("Çıktı klasörünü seçin", "Choose the output folder"))
+                .set_directory(cur)
+                .pick_folder()
+            {
+                self.output = Some(p);
+                self.allow_cloud = false;
+                self.error = None;
+            }
+            return;
+        }
         let mut d =
             rfd::FileDialog::new().set_title(tr("Kaydedilecek yeri seçin", "Choose where to save"));
         if let Some(dir) = cur.parent() {
@@ -649,12 +754,86 @@ impl App {
             Mode::Decrypt => tr("Şifreyi çöz", "Decrypt"),
         };
         let enabled = self.can_start();
-        if primary_button(ui, pal, label, enabled).clicked() || (submit && enabled) {
-            self.start(ctx);
+        if self.confirm_delete && mode == Mode::Encrypt {
+            self.delete_confirmation(ui, ctx, pal);
+        } else if primary_button(ui, pal, label, enabled).clicked() || (submit && enabled) {
+            if self.secure_delete && mode == Mode::Encrypt {
+                // Geri alınamaz adım: önce açık onay.
+                self.confirm_delete = true;
+            } else {
+                self.start(ctx);
+            }
         }
         if let Some(e) = &self.error {
             ui.add_space(8.0);
             ui.label(RichText::new(e).color(pal.danger).size(13.5));
+        }
+    }
+
+    /// Güvenli silme onayı: silinecekler listelenir; yalnızca açık onayla başlar.
+    fn delete_confirmation(&mut self, ui: &mut Ui, ctx: &egui::Context, pal: Palette) {
+        let names: Vec<String> = self
+            .source
+            .as_ref()
+            .map(|s| {
+                s.paths
+                    .iter()
+                    .take(8)
+                    .map(|p| escape_display(&logic::short_dir(p)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let total = self.source.as_ref().map_or(0, |s| s.paths.len());
+        let mut go = false;
+        let mut back = false;
+        egui::Frame::new()
+            .fill(pal.surface)
+            .stroke(Stroke::new(1.5, pal.danger))
+            .corner_radius(CornerRadius::same(theme::R_CARD))
+            .inner_margin(egui::Margin::same(14))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    RichText::new(tr(
+                        "Şifreleme doğrulandıktan sonra bunlar kalıcı olarak silinecek:",
+                        "After encryption is verified, these will be permanently deleted:",
+                    ))
+                    .font(fonts::semibold(14.5))
+                    .color(pal.ink),
+                );
+                for n in &names {
+                    ui.add(egui::Label::new(RichText::new(n).color(pal.ink).size(13.0)).truncate());
+                }
+                if total > names.len() {
+                    ui.label(
+                        RichText::new(match lang() {
+                            Lang::Tr => format!("ve {} öğe daha", total - names.len()),
+                            Lang::En => format!("and {} more", total - names.len()),
+                        })
+                        .color(pal.muted)
+                        .size(13.0),
+                    );
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(tr(
+                        "Her dosyanın üzerine bir kez rastgele veri yazılır. SSD'lerde, APFS gibi dosya sistemlerinde, anlık görüntülerde ve bulut geçmişinde eski içerik yine de kalabilir. Bu işlem geri alınamaz.",
+                        "Each file is overwritten once with random data. Old content may still remain on SSDs, on file systems such as APFS, in snapshots and in cloud history. This cannot be undone.",
+                    ))
+                    .color(pal.muted)
+                    .size(12.5),
+                );
+                ui.add_space(8.0);
+                go = primary_button(ui, pal, tr("Şifrele ve sil", "Encrypt and delete"), true)
+                    .clicked();
+                ui.add_space(4.0);
+                back = secondary_button(ui, pal, tr("Vazgeç", "Cancel"), ui.available_width(), 38.0)
+                    .clicked();
+            });
+        if go {
+            self.start(ctx);
+        } else if back {
+            self.confirm_delete = false;
         }
     }
 
@@ -791,19 +970,28 @@ impl App {
     }
 
     fn output_row(&mut self, ui: &mut Ui, pal: Palette) {
+        let batch = self.batch();
         let Some(out) = &self.output else { return };
         let name = out
             .file_name()
             .map(|f| escape_display(&f.to_string_lossy()))
             .unwrap_or_default();
-        let dir = out
-            .parent()
-            .map(|d| escape_display(&logic::short_dir(d)))
-            .unwrap_or_default();
+        let dir = if batch {
+            // Klasörün kendisi: her öğe içine ayrı bir dosya olarak yazılır.
+            escape_display(&logic::short_dir(out))
+        } else {
+            out.parent()
+                .map(|d| escape_display(&logic::short_dir(d)))
+                .unwrap_or_default()
+        };
         ui.label(
-            RichText::new(tr("Kaydedilecek yer", "Save to"))
-                .color(pal.muted)
-                .size(13.0),
+            RichText::new(if batch {
+                tr("Kaydedilecek klasör", "Save to folder")
+            } else {
+                tr("Kaydedilecek yer", "Save to")
+            })
+            .color(pal.muted)
+            .size(13.0),
         );
         let mut change = false;
         egui::Frame::new()
@@ -900,6 +1088,13 @@ impl App {
                     tr(
                         "Dosya boyutunu gizle (PADMÉ dolgusu)",
                         "Hide the file size (PADMÉ padding)",
+                    ),
+                );
+                ui.checkbox(
+                    &mut self.secure_delete,
+                    tr(
+                        "Şifreledikten sonra orijinali güvenli sil",
+                        "Securely delete the original after encryption",
                     ),
                 );
                 ui.add_space(12.0);
@@ -1114,12 +1309,25 @@ impl App {
                 .font(fonts::semibold(22.0))
                 .color(pal.ink),
             );
-            let name = out
-                .output
-                .file_name()
-                .map(|f| escape_display(&f.to_string_lossy()))
-                .unwrap_or_default();
+            let name = if out.outputs.len() == 1 {
+                out.outputs[0]
+                    .file_name()
+                    .map(|f| escape_display(&f.to_string_lossy()))
+                    .unwrap_or_default()
+            } else {
+                match lang() {
+                    Lang::Tr => format!("{} öğe", out.outputs.len()),
+                    Lang::En => format!("{} items", out.outputs.len()),
+                }
+            };
             ui.label(RichText::new(name).color(pal.muted).size(14.0));
+            for (n, why) in out.failed.iter().take(6) {
+                ui.label(
+                    RichText::new(format!("{n}: {why}"))
+                        .color(pal.danger)
+                        .size(12.5),
+                );
+            }
             if out.skipped > 0 {
                 ui.label(
                     RichText::new(match lang() {
@@ -1142,16 +1350,29 @@ impl App {
             again = secondary_button(ui, pal, tr("Yeni işlem", "New"), ui.available_width(), 42.0).clicked();
             if mode == Mode::Encrypt {
                 ui.add_space(14.0);
-                ui.label(
-                    RichText::new(
-                        tr("Özgün dosya yerinde duruyor. Artık gerekmiyorsa kendiniz silebilirsiniz.", "The original is still in place. Delete it yourself if you no longer need it."),
+                let note = if out.deleted > 0 && out.kept == 0 {
+                    tr(
+                        "Özgün dosyaların üzerine yazıldı ve silindi. SSD ve anlık görüntülerde kalıntı olabilir.",
+                        "The originals were overwritten and deleted. Traces may remain on SSDs and in snapshots.",
                     )
-                    .color(pal.muted)
-                    .size(12.5),
-                );
+                } else if out.deleted > 0 {
+                    tr(
+                        "Özgünler silindi; şifrelemeden sonra değişen bazı öğeler yerinde bırakıldı.",
+                        "The originals were deleted; some items that changed after encryption were left in place.",
+                    )
+                } else {
+                    tr(
+                        "Özgün dosya yerinde duruyor. Artık gerekmiyorsa kendiniz silebilirsiniz.",
+                        "The original is still in place. Delete it yourself if you no longer need it.",
+                    )
+                };
+                ui.label(RichText::new(note).color(pal.muted).size(12.5));
             }
         });
-        if reveal && let Err(e) = logic::reveal_in_folder(&out.output) {
+        if reveal
+            && let Some(first) = out.outputs.first()
+            && let Err(e) = logic::reveal_in_folder(first)
+        {
             self.error = Some(match lang() {
                 Lang::Tr => format!("Klasör açılamadı: {e}."),
                 Lang::En => format!("Could not open the folder: {e}."),
@@ -1569,8 +1790,9 @@ mod tests {
         };
         frame(&ctx, &mut app);
         app.stage = Stage::Done(Outcome {
-            output: d.join("x.lphy"),
+            outputs: vec![d.join("x.lphy")],
             skipped: 2,
+            ..Outcome::default()
         });
         frame(&ctx, &mut app);
         app.reset();

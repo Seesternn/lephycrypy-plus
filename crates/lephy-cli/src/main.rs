@@ -172,13 +172,18 @@ enum RestoreSymlinks {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Dosya ya da klasörü şifreler ("-" = stdin, ham akış).
+    /// Dosya ya da klasörleri şifreler ("-" = stdin, ham akış). Birden çok kaynakta her biri
+    /// ayrı bir `.lphy` olur (`--out-dir`).
     Encrypt {
-        /// Kaynak dosya/klasör ("-" = stdin).
-        input: PathBuf,
-        /// Çıktı yolu (varsayılan: <8 rastgele hex>.lphy).
-        #[arg(short, long, value_name = "YOL")]
+        /// Kaynak dosya/klasör(ler) ("-" = stdin, tek başına).
+        #[arg(required = true, num_args = 1..)]
+        inputs: Vec<PathBuf>,
+        /// Çıktı yolu (tek kaynak; varsayılan: <8 rastgele hex>.lphy).
+        #[arg(short, long, value_name = "YOL", conflicts_with = "out_dir")]
         output: Option<PathBuf>,
+        /// Çıktı klasörü: her kaynak için rastgele adlı bir `.lphy` (birden çok kaynakta gerekli).
+        #[arg(long, value_name = "KLASÖR")]
+        out_dir: Option<PathBuf>,
         /// Algoritma.
         #[arg(long, value_enum, default_value = "xchacha20")]
         alg: Alg,
@@ -210,6 +215,13 @@ enum Command {
         /// Şifreleme + doğrulama + fsync sonrası orijinali sil (kalıntı uyarısı).
         #[arg(long)]
         delete_original: bool,
+        /// `--delete-original` gibi, ama silmeden önce her dosyanın üzerine bir kez rastgele veri
+        /// yazar. SSD/APFS gibi ortamlarda fiziksel silme garanti edilmez. Onay ister.
+        #[arg(long)]
+        secure_delete: bool,
+        /// `--secure-delete` için onay sorma (betikler).
+        #[arg(long, requires = "secure_delete")]
+        yes: bool,
     },
     /// `.lphy` dosyasını çözer (arşiv → klasör ya da tek dosya; ham → dosya/stdout).
     Decrypt {
@@ -454,6 +466,93 @@ fn keyfile_of(path: Option<&PathBuf>) -> Result<Option<zeroize::Zeroizing<[u8; 3
         .transpose()
 }
 
+/// Orijinali silme biçimi.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Remove {
+    No,
+    Plain,
+    Overwrite,
+}
+
+/// Toplu şifrelemede her kaynak için ortak ayarlar (parola bir kez okunur).
+struct EncryptJob<'a> {
+    nfc: &'a SecretBytes,
+    keyfile: Option<&'a [u8; 32]>,
+    opts: &'a EncryptOptions,
+    remove: Remove,
+}
+
+/// Tek kaynağı şifreler; istenirse doğrular ve orijinali siler. Her kaynakta yeni tuz ve
+/// yeni dosya anahtarı kullanılır (KDF her dosyada yeniden çalışır).
+fn encrypt_one(
+    job: &EncryptJob<'_>,
+    input: &Path,
+    out: &Path,
+    is_stdin: bool,
+    log: &mut dyn FnMut(&str),
+) -> Result<()> {
+    let inp = if is_stdin {
+        Input::Stdin
+    } else {
+        Input::Path(input)
+    };
+    let rep = ops::encrypt(
+        &inp,
+        out,
+        job.nfc,
+        job.keyfile,
+        job.opts,
+        &mut OsEntropy,
+        log,
+    )?;
+    if rep.noclobber_fallback {
+        eprintln!(
+            "uyarı: dosya sistemi atomik noclobber desteklemiyor; kontrol-sonra-rename kullanıldı"
+        );
+    }
+    if let Some(a) = &rep.archive {
+        print_report(a, log);
+    }
+    log(&format!(
+        "{} bayt ({}) şifrelendi → {}",
+        rep.plain_len,
+        match rep.content_type {
+            ContentType::Raw => "ham akış",
+            ContentType::Archive => "arşiv",
+        },
+        disp(out)
+    ));
+    if job.remove == Remove::No {
+        return Ok(());
+    }
+    let u = UnlockOptions {
+        allow_large_kdf: true,
+        strict_memory: job.opts.strict_memory,
+    };
+    ops::verify(out, job.nfc, job.keyfile, u, log)?;
+    if let Some(d) = out.parent() {
+        let _ = lephy_sys::fs::fsync_dir(if d.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            d
+        });
+    }
+    if let Some(a) = &rep.archive {
+        // Yalnızca arşive alınan öğeler silinir; atlanan varsa hiçbir şey silinmez.
+        let d = ops::delete_archived_with(a, job.remove == Remove::Overwrite)?;
+        for k in &d.kept {
+            eprintln!(
+                "uyarı: silinmedi (arşivden sonra değişti ya da boş değil): {}",
+                disp(k)
+            );
+        }
+    } else if input.symlink_metadata()?.is_file() {
+        std::fs::remove_file(input)?;
+    }
+    eprintln!("uyarı: orijinal silindi; disk/snapshot/VSS/bulut sürüm geçmişinde kalıntı olabilir");
+    Ok(())
+}
+
 fn default_output_name() -> Result<PathBuf> {
     use lephy_core::entropy::Entropy;
     let mut b = [0u8; 4];
@@ -519,8 +618,9 @@ fn cloud_check(target: &Path, allow: bool) -> Result<()> {
 fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
     match cmd {
         Command::Encrypt {
-            input,
+            inputs,
             output,
+            out_dir,
             alg,
             chunk_size,
             kdf,
@@ -532,35 +632,43 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             force,
             strict_memory,
             delete_original,
+            secure_delete,
+            yes,
         } => {
-            let is_stdin = input.as_os_str() == "-";
+            let is_stdin = inputs.iter().any(|i| i.as_os_str() == "-");
+            if is_stdin && inputs.len() > 1 {
+                return Err(Error::Environment(
+                    "stdin (\"-\") yalnızca tek kaynak olarak kullanılabilir".into(),
+                ));
+            }
+            if inputs.len() > 1 && out_dir.is_none() {
+                return Err(Error::Environment(
+                    "birden çok kaynakta --out-dir gerekli (her kaynak ayrı bir .lphy olur)".into(),
+                ));
+            }
             if is_stdin && *pad {
                 return Err(Error::Environment(
                     "--pad stdin girişiyle kullanılamaz".into(),
                 ));
             }
-            if *delete_original && is_stdin {
+            let remove = *delete_original || *secure_delete;
+            if remove && is_stdin {
                 return Err(Error::Environment(
                     "--delete-original stdin ile kullanılamaz".into(),
                 ));
             }
-            let kdf = kdf.params();
-            kdf.check_encrypt_policy()?;
-            let out = match output {
-                Some(o) => o.clone(),
-                None => default_output_name()?,
-            };
-            if let Some(o) = output
-                && let (Some(src), Some(dst)) = (input.file_name(), o.file_name())
-            {
-                let (s, d) = (src.to_string_lossy(), dst.to_string_lossy());
-                if !is_stdin && d.contains(&*s) {
-                    log(&format!(
-                        "bilgi: çıktı adı kaynak adını içeriyor ({})",
-                        escape_display(&d)
-                    ));
+            if *secure_delete && !*yes {
+                eprintln!(
+                    "Orijinaller, şifreleme doğrulandıktan sonra üzerine rastgele veri yazılarak silinecek.\n\
+                     SSD, APFS/Btrfs, anlık görüntü ve bulut geçmişinde eski içerik yine de kalabilir."
+                );
+                let a = prompt_line("Onaylamak için 'evet' yazın: ", "--yes verin")?;
+                if !matches!(a.trim().to_lowercase().as_str(), "evet" | "yes") {
+                    return Err(Error::Cancelled("güvenli silme onaylanmadı".into()));
                 }
             }
+            let kdf = kdf.params();
+            kdf.check_encrypt_policy()?;
             let keyfile = keyfile_of(pw.keyfile.as_ref())?;
             let source = source_of(pw);
             let nfc = read_password(&source, "Parola: ", true, is_stdin)?;
@@ -585,67 +693,50 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 },
                 strict: *strict,
             };
-            let inp = if is_stdin {
-                Input::Stdin
-            } else {
-                Input::Path(input)
-            };
-            let rep = ops::encrypt(
-                &inp,
-                &out,
-                &nfc,
-                keyfile.as_deref(),
-                &opts,
-                &mut OsEntropy,
-                log,
-            )?;
-            if rep.noclobber_fallback {
-                eprintln!(
-                    "uyarı: dosya sistemi atomik noclobber desteklemiyor; kontrol-sonra-rename kullanıldı"
-                );
-            }
-            if let Some(a) = &rep.archive {
-                print_report(a, log);
-            }
-            log(&format!(
-                "{} bayt ({}) şifrelendi → {}",
-                rep.plain_len,
-                match rep.content_type {
-                    ContentType::Raw => "ham akış",
-                    ContentType::Archive => "arşiv",
+            let job = EncryptJob {
+                nfc: &nfc,
+                keyfile: keyfile.as_deref(),
+                opts: &opts,
+                remove: if *secure_delete {
+                    Remove::Overwrite
+                } else if *delete_original {
+                    Remove::Plain
+                } else {
+                    Remove::No
                 },
-                disp(&out)
-            ));
-            if *delete_original {
-                let u = UnlockOptions {
-                    allow_large_kdf: true,
-                    strict_memory: *strict_memory,
+            };
+            let mut first_err = None;
+            let mut ok = 0usize;
+            for input in inputs {
+                let out = match (output, out_dir) {
+                    (Some(o), _) => o.clone(),
+                    (None, Some(d)) => d.join(default_output_name()?),
+                    (None, None) => default_output_name()?,
                 };
-                ops::verify(&out, &nfc, keyfile.as_deref(), u, log)?;
-                if let Some(d) = out.parent() {
-                    let _ = lephy_sys::fs::fsync_dir(if d.as_os_str().is_empty() {
-                        Path::new(".")
-                    } else {
-                        d
-                    });
-                }
-                if let Some(a) = &rep.archive {
-                    // Yalnızca arşive alınan öğeler silinir; atlanan varsa hiçbir şey silinmez.
-                    let d = ops::delete_archived(a)?;
-                    for k in &d.kept {
-                        eprintln!(
-                            "uyarı: silinmedi (arşivden sonra değişti ya da boş değil): {}",
-                            disp(k)
-                        );
+                if let Some(o) = output
+                    && let (Some(src), Some(dst)) = (input.file_name(), o.file_name())
+                {
+                    let (s, d) = (src.to_string_lossy(), dst.to_string_lossy());
+                    if !is_stdin && d.contains(&*s) {
+                        log(&format!(
+                            "bilgi: çıktı adı kaynak adını içeriyor ({})",
+                            escape_display(&d)
+                        ));
                     }
-                } else if input.symlink_metadata()?.is_file() {
-                    std::fs::remove_file(input)?;
                 }
-                eprintln!(
-                    "uyarı: orijinal silindi; disk/snapshot/VSS/bulut sürüm geçmişinde kalıntı olabilir"
-                );
+                match encrypt_one(&job, input, &out, is_stdin, log) {
+                    Ok(()) => ok += 1,
+                    Err(e) if inputs.len() > 1 => {
+                        eprintln!("hata: {}: {e}", disp(input));
+                        first_err.get_or_insert(e);
+                    }
+                    Err(e) => return Err(e),
+                }
             }
-            Ok(())
+            if inputs.len() > 1 {
+                log(&format!("{ok}/{} kaynak şifrelendi", inputs.len()));
+            }
+            first_err.map_or(Ok(()), Err)
         }
         Command::Decrypt {
             input,
@@ -900,12 +991,10 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
     }
 }
 
-fn prompt_line(q: &str) -> Result<String> {
+fn prompt_line(q: &str, non_tty_hint: &str) -> Result<String> {
     let stdin = std::io::stdin();
     if !lephy_sys::term::is_tty(&stdin) {
-        return Err(Error::Cancelled(
-            "onay gerekli: --confirm-label ve --confirm-size-gib verin".into(),
-        ));
+        return Err(Error::Cancelled(format!("onay gerekli: {non_tty_hint}")));
     }
     eprint!("{q}");
     let mut line = String::new();
@@ -913,6 +1002,7 @@ fn prompt_line(q: &str) -> Result<String> {
     Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_usb(cmd: &UsbCmd, log: &mut dyn FnMut(&str)) -> Result<()> {
     let platform = lephy_usb::native();
     match cmd {
@@ -980,8 +1070,14 @@ fn run_usb(cmd: &UsbCmd, log: &mut dyn FnMut(&str)) -> Result<()> {
                     size_gib: *g,
                 }
             } else {
-                let label = prompt_line("Onay için birim etiketini aynen yazın: ")?;
-                let gib = prompt_line("Onay için boyutu GiB olarak (tam sayı) yazın: ")?;
+                let label = prompt_line(
+                    "Onay için birim etiketini aynen yazın: ",
+                    "--confirm-label ve --confirm-size-gib verin",
+                )?;
+                let gib = prompt_line(
+                    "Onay için boyutu GiB olarak (tam sayı) yazın: ",
+                    "--confirm-label ve --confirm-size-gib verin",
+                )?;
                 let size_gib = gib
                     .trim()
                     .parse::<u64>()

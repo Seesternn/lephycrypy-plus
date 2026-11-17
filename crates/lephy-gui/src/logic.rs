@@ -80,14 +80,22 @@ pub fn default_output(input: &Path, mode: Mode) -> PathBuf {
     }
 }
 
-/// Arka plan işi. Parolalar kilitli `SecretBytes`'ta taşınır ve iş bitince düşer.
-pub struct Job {
-    /// Mod.
-    pub mode: Mode,
+/// Bir kaynak ve hedefi.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
     /// Kaynak.
     pub input: PathBuf,
     /// Hedef.
     pub output: PathBuf,
+}
+
+/// Arka plan işi. Parolalar kilitli `SecretBytes`'ta taşınır ve iş bitince düşer.
+#[allow(clippy::struct_excessive_bools)]
+pub struct Job {
+    /// Mod.
+    pub mode: Mode,
+    /// Kaynak/hedef çiftleri (toplu işte birden çok).
+    pub items: Vec<Item>,
     /// Parola (ham UTF-8).
     pub password: SecretBytes,
     /// Şifrelemede tekrar.
@@ -102,18 +110,35 @@ pub struct Job {
     pub allow_cloud: bool,
     /// İsteğe bağlı anahtar dosyası (parolaya ek ikinci etken).
     pub keyfile: Option<PathBuf>,
+    /// Şifreleme doğrulandıktan sonra orijinali üzerine yazarak sil (kullanıcı onayladı).
+    pub secure_delete: bool,
 }
 
-/// Başarılı işin sonucu.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// İşin sonucu.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Outcome {
-    /// Yazılan dosya ya da klasör.
-    pub output: PathBuf,
+    /// Yazılan dosya ya da klasörler.
+    pub outputs: Vec<PathBuf>,
     /// Atlanan arşiv girişleri (özel dosyalar, kurulmayan symlink'ler).
     pub skipped: usize,
+    /// Başarısız öğeler: (görünen ad, hata metni).
+    pub failed: Vec<(String, String)>,
+    /// Orijinali silinen öğe sayısı.
+    pub deleted: usize,
+    /// Silinemeyen (arşivden sonra değişen) yol sayısı.
+    pub kept: usize,
 }
 
-/// İşi yürütür.
+struct Ctx<'a> {
+    nfc: &'a SecretBytes,
+    kf: Option<&'a [u8; 32]>,
+    opts: Option<EncryptOptions>,
+    allow_cloud: bool,
+    secure_delete: bool,
+}
+
+/// İşi yürütür. Tek öğede hata doğrudan döner; toplu işte başarısız öğeler `failed`'a yazılır,
+/// diğerleri işlenmeye devam eder (hepsi başarısızsa ilk hata döner).
 ///
 /// # Errors
 /// Çekirdek hataları (mesajı ve çıkış kodu kategorisi arayüzde gösterilir).
@@ -125,9 +150,7 @@ pub fn run(job: Job) -> Result<Outcome> {
         .as_deref()
         .map(password::keyfile_digest_from_path)
         .transpose()?;
-    let kf = keyfile.as_deref();
-    let mut log = |_: &str| {};
-    match job.mode {
+    let opts = match job.mode {
         Mode::Encrypt => {
             let confirm = job.confirm.ok_or_else(|| {
                 Error::Environment(tr("parolayı tekrar girin", "enter the password again").into())
@@ -140,58 +163,111 @@ pub fn run(job: Job) -> Result<Outcome> {
                 ));
             }
             password::check_encrypt_policy(&nfc)?;
-            let kdf = KdfParams {
-                m_kib: job.kdf_mib.saturating_mul(1024),
-                ..KdfParams::DEFAULT
-            };
-            let opts = EncryptOptions {
+            Some(EncryptOptions {
                 alg: if job.aes {
                     AlgId::Aes256Gcm
                 } else {
                     AlgId::XChaCha20Poly1305
                 },
                 chunk_code: 2,
-                kdf,
+                kdf: KdfParams {
+                    m_kib: job.kdf_mib.saturating_mul(1024),
+                    ..KdfParams::DEFAULT
+                },
                 force: false,
                 strict_memory: false,
                 raw: false,
                 pad: Some(job.pad),
                 strict: false,
-            };
-            let rep = ops::encrypt(
-                &Input::Path(&job.input),
-                &job.output,
-                &nfc,
-                kf,
-                &opts,
-                &mut OsEntropy,
-                &mut log,
-            )?;
-            Ok(Outcome {
-                output: job.output,
-                skipped: rep.archive.as_ref().map_or(0, |a| a.skipped.len()),
             })
         }
-        Mode::Decrypt => {
-            if !job.allow_cloud && lephy_sys::fs::cloud_root_of(&job.output).is_some() {
-                return Err(Error::Cancelled(
-                    tr("hedef bir bulut senkron klasöründe; devam etmek için onay kutusunu işaretleyin", "the destination is in a cloud-sync folder; tick the box to continue").into(),
-                ));
+        Mode::Decrypt => None,
+    };
+    let ctx = Ctx {
+        nfc: &nfc,
+        kf: keyfile.as_deref(),
+        opts,
+        allow_cloud: job.allow_cloud,
+        secure_delete: job.secure_delete && job.mode == Mode::Encrypt,
+    };
+    let single = job.items.len() == 1;
+    let mut out = Outcome::default();
+    let mut first_err = None;
+    for item in &job.items {
+        if lephy_sys::signal::interrupted() {
+            return Err(Error::Interrupted);
+        }
+        match run_one(&ctx, item, &mut out) {
+            Ok(()) => {}
+            Err(e) if single || matches!(e, Error::Interrupted) => return Err(e),
+            Err(e) => {
+                let name = item
+                    .input
+                    .file_name()
+                    .map(|f| lephy_core::names::escape_display(&f.to_string_lossy()))
+                    .unwrap_or_default();
+                out.failed.push((name, describe_error(&e)));
+                first_err.get_or_insert(e);
             }
-            let rep = ops::decrypt(
-                &job.input,
-                &Output::Path(&job.output, false),
-                &nfc,
-                kf,
-                DecryptOptions::default(),
-                &mut log,
-            )?;
-            Ok(Outcome {
-                output: rep.target,
-                skipped: rep.archive.as_ref().map_or(0, |a| a.skipped.len()),
-            })
         }
     }
+    if out.outputs.is_empty()
+        && let Some(e) = first_err
+    {
+        return Err(e);
+    }
+    Ok(out)
+}
+
+fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
+    let mut log = |_: &str| {};
+    if let Some(opts) = &ctx.opts {
+        let rep = ops::encrypt(
+            &Input::Path(&item.input),
+            &item.output,
+            ctx.nfc,
+            ctx.kf,
+            opts,
+            &mut OsEntropy,
+            &mut log,
+        )?;
+        out.outputs.push(item.output.clone());
+        out.skipped += rep.archive.as_ref().map_or(0, |a| a.skipped.len());
+        if ctx.secure_delete {
+            // Silmeden önce yazılan dosya parolayla baştan sona doğrulanır.
+            let u = ops::UnlockOptions {
+                allow_large_kdf: true,
+                strict_memory: false,
+            };
+            ops::verify(&item.output, ctx.nfc, ctx.kf, u, &mut log)?;
+            if let Some(a) = &rep.archive {
+                let d = ops::delete_archived_with(a, true)?;
+                out.deleted += 1;
+                out.kept += d.kept.len();
+            }
+        }
+    } else {
+        if !ctx.allow_cloud && lephy_sys::fs::cloud_root_of(&item.output).is_some() {
+            return Err(Error::Cancelled(
+                tr(
+                    "hedef bir bulut senkron klasöründe; devam etmek için onay kutusunu işaretleyin",
+                    "the destination is in a cloud-sync folder; tick the box to continue",
+                )
+                .into(),
+            ));
+        }
+        let rep = ops::decrypt(
+            &item.input,
+            &Output::Path(&item.output, false),
+            ctx.nfc,
+            ctx.kf,
+            DecryptOptions::default(),
+            &mut log,
+        )?;
+        out.outputs.push(rep.target);
+        out.skipped += rep.archive.as_ref().map_or(0, |a| a.skipped.len());
+    }
+    Ok(())
 }
 
 /// İlerleme yüzdesi için tahmini toplam akış baytı: şifrelemede kaynak dosyaların toplam
@@ -435,8 +511,10 @@ mod tests {
         );
         let job = Job {
             mode: Mode::Encrypt,
-            input: d.join("a.txt"),
-            output: d.join("x.lphy"),
+            items: vec![Item {
+                input: d.join("a.txt"),
+                output: d.join("x.lphy"),
+            }],
             password: secret("gui parola 1234"),
             confirm: Some(secret("gui parola 1234")),
             kdf_mib: 64,
@@ -444,6 +522,7 @@ mod tests {
             pad: true,
             allow_cloud: false,
             keyfile: None,
+            secure_delete: false,
         };
         run(job).unwrap();
         assert_eq!(detect_mode(&d.join("x.lphy")), Mode::Decrypt);
@@ -459,8 +538,10 @@ mod tests {
         );
         let job = Job {
             mode: Mode::Decrypt,
-            input: d.join("x.lphy"),
-            output: d.join("geri.txt"),
+            items: vec![Item {
+                input: d.join("x.lphy"),
+                output: d.join("geri.txt"),
+            }],
             password: secret("gui parola 1234"),
             confirm: None,
             kdf_mib: 0,
@@ -468,17 +549,20 @@ mod tests {
             pad: true,
             allow_cloud: false,
             keyfile: None,
+            secure_delete: false,
         };
         let out = run(job).unwrap();
-        assert_eq!(out.output, d.join("geri.txt"));
+        assert_eq!(out.outputs, vec![d.join("geri.txt")]);
         assert_eq!(out.skipped, 0);
         assert_eq!(std::fs::read(d.join("geri.txt")).unwrap(), b"hello");
         // Uyuşmayan tekrar ve kısa parola
         for (p, c) in [("gui parola 1234", "başka parola 99"), ("kisa", "kisa")] {
             let job = Job {
                 mode: Mode::Encrypt,
-                input: d.join("a.txt"),
-                output: d.join("y.lphy"),
+                items: vec![Item {
+                    input: d.join("a.txt"),
+                    output: d.join("y.lphy"),
+                }],
                 password: secret(p),
                 confirm: Some(secret(c)),
                 kdf_mib: 64,
@@ -486,6 +570,7 @@ mod tests {
                 pad: false,
                 allow_cloud: false,
                 keyfile: None,
+                secure_delete: false,
             };
             let e = run(job).unwrap_err();
             assert_eq!(e.exit_code(), ExitCode::Io);
@@ -494,8 +579,10 @@ mod tests {
         // Yanlış parola → kod 3
         let job = Job {
             mode: Mode::Decrypt,
-            input: d.join("x.lphy"),
-            output: d.join("z.txt"),
+            items: vec![Item {
+                input: d.join("x.lphy"),
+                output: d.join("z.txt"),
+            }],
             password: secret("yanlış parola 1"),
             confirm: None,
             kdf_mib: 0,
@@ -503,10 +590,60 @@ mod tests {
             pad: true,
             allow_cloud: false,
             keyfile: None,
+            secure_delete: false,
         };
         let e = run(job).unwrap_err();
         assert_eq!(e.exit_code(), ExitCode::WrongPassword);
         assert!(describe_error(&e).starts_with("Parola yanlış"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn batch_continues_after_a_failure_and_secure_delete_removes_originals() {
+        let d = std::env::temp_dir().join(format!("lphy-gui-batch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("out")).unwrap();
+        std::fs::write(d.join("a.txt"), b"a").unwrap();
+        std::fs::write(d.join("b.txt"), b"b").unwrap();
+        let item = |name: &str, out: &str| Item {
+            input: d.join(name),
+            output: d.join("out").join(out),
+        };
+        let job = Job {
+            mode: Mode::Encrypt,
+            items: vec![
+                item("a.txt", "1.lphy"),
+                item("yok.txt", "2.lphy"),
+                item("b.txt", "3.lphy"),
+            ],
+            password: secret("toplu parola 1234"),
+            confirm: Some(secret("toplu parola 1234")),
+            kdf_mib: 64,
+            aes: false,
+            pad: true,
+            allow_cloud: false,
+            keyfile: None,
+            secure_delete: true,
+        };
+        let out = run(job).unwrap();
+        assert_eq!(out.outputs.len(), 2);
+        assert_eq!(out.failed.len(), 1, "{:?}", out.failed);
+        assert_eq!(out.deleted, 2);
+        assert!(!d.join("a.txt").exists() && !d.join("b.txt").exists());
+        // Hepsi başarısızsa hata döner.
+        let job = Job {
+            mode: Mode::Encrypt,
+            items: vec![item("yok1", "4.lphy"), item("yok2", "5.lphy")],
+            password: secret("toplu parola 1234"),
+            confirm: Some(secret("toplu parola 1234")),
+            kdf_mib: 64,
+            aes: false,
+            pad: true,
+            allow_cloud: false,
+            keyfile: None,
+            secure_delete: false,
+        };
+        assert!(run(job).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -519,8 +656,10 @@ mod tests {
         std::fs::write(d.join("key.bin"), [7u8; 64]).unwrap();
         let job = |mode, input: &str, output: &str, kf: bool| Job {
             mode,
-            input: d.join(input),
-            output: d.join(output),
+            items: vec![Item {
+                input: d.join(input),
+                output: d.join(output),
+            }],
             password: secret("gui parola 1234"),
             confirm: (mode == Mode::Encrypt).then(|| secret("gui parola 1234")),
             kdf_mib: 64,
@@ -528,6 +667,7 @@ mod tests {
             pad: true,
             allow_cloud: false,
             keyfile: kf.then(|| d.join("key.bin")),
+            secure_delete: false,
         };
         run(job(Mode::Encrypt, "a.txt", "k.lphy", true)).unwrap();
         assert!(needs_keyfile(&d.join("k.lphy")));

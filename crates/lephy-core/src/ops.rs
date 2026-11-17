@@ -285,6 +285,18 @@ pub struct DeleteReport {
 /// # Errors
 /// Atlanan giriş varsa kod 5.
 pub fn delete_archived(rep: &Report) -> Result<DeleteReport> {
+    delete_archived_with(rep, false)
+}
+
+/// [`delete_archived`] gibi; `overwrite` ise her dosyanın üzerine silinmeden önce bir kez
+/// rastgele veri yazılır ve fiziksel ortama indirilir. Birden çok sabit bağlantısı olan dosyanın
+/// üzerine yazılmaz (diğer adlar aynı veriyi gösterir), yalnızca bu ad silinir. SSD'lerde
+/// (aşınma dengeleme), kopyala-üzerine-yaz dosya sistemlerinde (APFS, Btrfs, `ReFS`), anlık
+/// görüntülerde ve bulut geçmişinde eski içerik yine de kalabilir.
+///
+/// # Errors
+/// Atlanan giriş varsa kod 5; RNG hatası.
+pub fn delete_archived_with(rep: &Report, overwrite: bool) -> Result<DeleteReport> {
     if !rep.skipped.is_empty() {
         return Err(Error::Cancelled(format!(
             "{} giriş arşive alınmadı; orijinal hiç silinmedi",
@@ -293,6 +305,10 @@ pub fn delete_archived(rep: &Report) -> Result<DeleteReport> {
     }
     let mut out = DeleteReport::default();
     for a in rep.archived.iter().filter(|a| !a.is_dir) {
+        if overwrite && same_item(a) && overwrite_in_place(a).is_err() {
+            out.kept.push(a.path.clone());
+            continue;
+        }
         if same_item(a) && std::fs::remove_file(&a.path).is_ok() {
             out.removed += 1;
         } else {
@@ -307,6 +323,39 @@ pub fn delete_archived(rep: &Report) -> Result<DeleteReport> {
         }
     }
     Ok(out)
+}
+
+/// Dosyanın üzerine bir kez rastgele veri yazar. Açılan nesnenin kimliği (fstat) arşive alınan
+/// öğeyle karşılaştırılır: arada symlink ya da başka bir dosyayla değiştirilmişse dokunulmaz.
+fn overwrite_in_place(a: &crate::archive::Archived) -> Result<()> {
+    let f = std::fs::OpenOptions::new().write(true).open(&a.path)?;
+    let md = f.metadata()?;
+    if !md.is_file() {
+        return Err(Error::Environment("normal dosya değil".into()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if a.id
+            .is_some_and(|(dev, ino)| md.dev() != dev || md.ino() != ino)
+        {
+            return Err(Error::Environment("dosya arşivden sonra değişti".into()));
+        }
+        if md.nlink() > 1 {
+            return Ok(()); // yalnızca bu ad silinecek
+        }
+    }
+    let mut left = md.len();
+    let mut buf = zeroize::Zeroizing::new(vec![0u8; 1 << 20]);
+    let mut w = &f;
+    while left > 0 {
+        let n = usize::try_from(left.min(buf.len() as u64)).unwrap_or(buf.len());
+        OsEntropy.fill(&mut buf[..n])?;
+        w.write_all(&buf[..n])?;
+        left -= n as u64;
+    }
+    lephy_sys::fs::full_sync(&f)?;
+    Ok(())
 }
 
 /// Yol hâlâ arşive alınan öğeyi mi gösteriyor (tür ve, Unix'te, aygıt + inode).
@@ -1091,6 +1140,42 @@ mod tests {
         let rep = encrypt_dir(&d, &src, "o1b.lphy");
         delete_archived(&rep).unwrap();
         assert!(!src.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secure_overwrite_replaces_content_and_respects_hard_links() {
+        let d = tmpdir("shred");
+        let src = d.join("kaynak");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.txt"), vec![b'A'; 3000]).unwrap();
+        std::fs::write(src.join("b.txt"), b"bbbb").unwrap();
+        std::fs::hard_link(src.join("b.txt"), d.join("b-baska-ad.txt")).unwrap();
+        let rep = encrypt_dir(&d, &src, "s.lphy");
+        let a = rep
+            .archived
+            .iter()
+            .find(|x| x.path.ends_with("a.txt"))
+            .unwrap();
+        overwrite_in_place(a).unwrap();
+        let after = std::fs::read(src.join("a.txt")).unwrap();
+        assert_eq!(after.len(), 3000);
+        assert_ne!(after, vec![b'A'; 3000], "içerik rastgele veriyle değişmeli");
+        let b = rep
+            .archived
+            .iter()
+            .find(|x| x.path.ends_with("b.txt"))
+            .unwrap();
+        overwrite_in_place(b).unwrap();
+        assert_eq!(
+            std::fs::read(d.join("b-baska-ad.txt")).unwrap(),
+            b"bbbb",
+            "diğer ada dokunulmaz"
+        );
+        let del = delete_archived_with(&rep, true).unwrap();
+        assert!(!src.exists(), "{:?}", del.kept);
+        assert_eq!(std::fs::read(d.join("b-baska-ad.txt")).unwrap(), b"bbbb");
         let _ = std::fs::remove_dir_all(&d);
     }
 

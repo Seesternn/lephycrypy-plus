@@ -63,6 +63,23 @@ pub fn fsync_dir(dir: &Path) -> io::Result<()> {
     imp::fsync_dir(dir)
 }
 
+/// Dosya içeriğini fiziksel ortama indirmeye çalışır: macOS'ta `F_FULLFSYNC` (sürücü önbelleği
+/// dahil), desteklenmezse ve diğer platformlarda `sync_all`.
+///
+/// # Errors
+/// G/Ç hatası.
+pub fn full_sync(f: &std::fs::File) -> io::Result<()> {
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: F_FULLFSYNC argüman almaz; `f` açık bir dosya.
+        if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_FULLFSYNC) } == 0 {
+            return Ok(());
+        }
+    }
+    f.sync_all()
+}
+
 /// Windows: `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED` (0x2000) koyar; diğerlerinde no-op.
 ///
 /// # Errors

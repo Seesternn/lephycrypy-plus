@@ -918,12 +918,25 @@ pub fn zeroize_all_registered() -> (usize, usize) {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::items_after_statements
+)]
 mod tests {
     use super::*;
 
+    /// Testler aynı süreç arenasını paylaşır; arenayı bilerek dolduran test diğerlerini aç
+    /// bırakmasın diye bellek testleri sırayla çalışır.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn secret_bytes_roundtrip_and_capacity() {
+        let _serial = serial();
         let mut s = SecretBytes::with_capacity(8).unwrap();
         assert_eq!(s.capacity(), 8);
         s.push_slice(b"abc").unwrap();
@@ -945,6 +958,7 @@ mod tests {
 
     #[test]
     fn freed_slot_is_zero_and_reusable() {
+        let _serial = serial();
         let p;
         {
             let mut a = SecretBytes::with_capacity(32).unwrap();
@@ -962,6 +976,7 @@ mod tests {
 
     #[test]
     fn page_refcount_keeps_page_locked_until_last_drop() {
+        let _serial = serial();
         // aynı sayfada iki sır, biri düşünce sayfa kilitli kalır. Diğer testler aynı
         // arenayı paylaştığından yalnızca "b yaşarken sayfa kilitli ve refs ≥ 1" denetlenir;
         // tam sayaç eşitliği `page_span`/`alloc` mantığıyla aşağıdaki tek-iş-parçacıklı
@@ -986,6 +1001,7 @@ mod tests {
 
     #[test]
     fn refcount_arithmetic() {
+        let _serial = serial();
         // page_span: tek sayfa, sınırda biten ve iki sayfaya yayılan aralıklar.
         let page = page_size();
         assert_eq!(page_span(0, 64, page), (0, 0));
@@ -997,6 +1013,7 @@ mod tests {
 
     #[test]
     fn arena_exhaustion_is_an_error_not_a_panic() {
+        let _serial = serial();
         let mut keep = Vec::new();
         loop {
             match SecretBytes::with_capacity(4096) {
@@ -1020,6 +1037,7 @@ mod tests {
                 DROPS.fetch_add(1, Ordering::SeqCst);
             }
         }
+        let _serial = serial();
         let b = SecretBox::new(Aligned([7; 100])).unwrap();
         assert_eq!((b.ptr.as_ptr() as usize) % 64, 0);
         assert_eq!(b.0[99], 7);
@@ -1029,6 +1047,7 @@ mod tests {
 
     #[test]
     fn large_buf_filled_zeroed_on_drop_and_registered() {
+        let _serial = serial();
         #[derive(Clone, Copy, PartialEq, Debug)]
         #[repr(align(64))]
         struct Blk([u64; 16]);
@@ -1053,6 +1072,7 @@ mod tests {
 
     #[test]
     fn zero_len_large_buf() {
+        let _serial = serial();
         let b: LargeSecretBuf<u8> = LargeSecretBuf::new_filled(0, 0).unwrap();
         assert!(b.is_empty());
     }
