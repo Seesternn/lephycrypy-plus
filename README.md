@@ -8,6 +8,12 @@ saklama; adlar ve yapı her zaman şifreli; akışlı işleme; atomik yazma; bel
 > tek yedek olarak kullanmayın. Biçim [docs/FORMAT.md](docs/FORMAT.md)'de, güvenlik sınırları
 > [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)'de anlatılır.
 
+<p>
+  <img src="docs/images/pick.png" width="32%" alt="Dosya bırakma ekranı">
+  <img src="docs/images/ready.png" width="32%" alt="Parola ve kayıt yeri ekranı">
+  <img src="docs/images/done.png" width="32%" alt="İşlem tamamlandı ekranı">
+</p>
+
 ## Platformlar
 
 | Platform | Durum |
@@ -83,6 +89,8 @@ resident dosyalar ve wear-leveling yüzünden fiziksel silme garantisi yoktur.
    anında gösterilir.
 3. Kaydedilecek yeri gerekirse **Değiştir** ile seçin ve **Şifrele** ya da **Şifreyi çöz**'e basın.
 4. İş bitince **Klasörde göster** sonucu Finder'da ya da Gezgin'de açar.
+
+Kısayol: Cmd+O (Windows'ta Ctrl+O) dosya seçme penceresini açar.
 
 Parola alanı maskelidir; kopyalama ve yapıştırma kapalıdır, metin doğrudan kilitli bellekte
 tutulur. **Gelişmiş ayarlar** altında algoritma, parola türetme belleği ve boyut gizleme seçilir.
