@@ -90,10 +90,13 @@ resident dosyalar ve wear-leveling yüzünden fiziksel silme garantisi yoktur.
 3. Kaydedilecek yeri gerekirse **Değiştir** ile seçin ve **Şifrele** ya da **Şifreyi çöz**'e basın.
 4. İş bitince **Klasörde göster** sonucu Finder'da ya da Gezgin'de açar.
 
-Kısayol: Cmd+O (Windows'ta Ctrl+O) dosya seçme penceresini açar.
+Kısayol: Cmd+O (Windows'ta Ctrl+O) dosya seçme penceresini açar. Finder'da `.lphy` dosyasına çift
+tıklayarak açma henüz desteklenmiyor; dosyayı pencereye bırakın.
 
 Parola alanı maskelidir; kopyalama ve yapıştırma kapalıdır, metin doğrudan kilitli bellekte
-tutulur. **Gelişmiş ayarlar** altında algoritma, parola türetme belleği ve boyut gizleme seçilir.
+tutulur. **Gelişmiş ayarlar** altında algoritma, parola türetme belleği (Hızlı, Önerilen, Güçlü,
+En güçlü), boyut gizleme ve isteğe bağlı anahtar dosyası seçilir; **?** düğmesi bu terimleri
+açıklar. Anahtar dosyasıyla şifrelenmiş bir dosya açılırken anahtar dosyası ayrıca istenir.
 Bulut senkron klasörüne çözme ayrıca onay ister. Uygulama sistemin açık/koyu temasını izler ve
 sistem yazı tiplerini kullanır. Linux'ta masaüstü uygulaması yoktur.
 

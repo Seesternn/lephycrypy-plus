@@ -31,7 +31,7 @@ use crate::cipher::{SharedCipher, TAG_LEN};
 use crate::error::{Error, Result};
 use crate::stream::{open_chunk, seal_chunk};
 
-/// Süreç genelinde hattın okuduğu akış baytı. Yalnızca ilerleme göstergesi içindir; aynı anda
+/// Süreç genelinde hattın sırayla yazdığı (ya da doğruladığı) akış baytı. Yalnızca ilerleme göstergesi içindir; aynı anda
 /// birden çok hat çalışırsa toplamı gösterir.
 static PROGRESS: AtomicU64 = AtomicU64::new(0);
 
@@ -40,7 +40,7 @@ pub fn reset_progress() {
     PROGRESS.store(0, Ordering::Relaxed);
 }
 
-/// Son sıfırlamadan bu yana hattın okuduğu bayt.
+/// Son sıfırlamadan bu yana hattın yazdığı bayt.
 #[must_use]
 pub fn progress() -> u64 {
     PROGRESS.load(Ordering::Relaxed)
@@ -126,10 +126,7 @@ fn read_full(r: &mut dyn Read, dest: &mut [u8], shared: &Shared) -> Result<usize
     while n < dest.len() {
         match r.read(&mut dest[n..]) {
             Ok(0) => break,
-            Ok(k) => {
-                n += k;
-                PROGRESS.fetch_add(k as u64, Ordering::Relaxed);
-            }
+            Ok(k) => n += k,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
                 shared.check()?;
             }
@@ -289,6 +286,7 @@ fn run(
                         return;
                     }
                     written += out_len as u64;
+                    PROGRESS.fetch_add(out_len as u64, Ordering::Relaxed);
                     // panik hook testi: 4. chunk'ta bilinçli panik (yalnızca test derlemesi).
                     #[cfg(feature = "fault-injection")]
                     assert!(

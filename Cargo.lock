@@ -1746,6 +1746,7 @@ dependencies = [
  "lephy-core",
  "lephy-sys",
  "rfd",
+ "zeroize",
 ]
 
 [[package]]

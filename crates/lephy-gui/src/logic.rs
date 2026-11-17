@@ -42,6 +42,16 @@ pub fn detect_mode(path: &Path) -> Mode {
     }
 }
 
+/// Şifreli dosya anahtar dosyası gerektiriyor mu (başlık okunamazsa `false`).
+#[must_use]
+pub fn needs_keyfile(path: &Path) -> bool {
+    let mut h = [0u8; HEADER_LEN];
+    std::fs::File::open(path)
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut h))
+        .is_ok()
+        && Header::parse(&h).is_ok_and(|hd| hd.keyfile)
+}
+
 /// Varsayılan çıktı: şifrelemede aynı dizinde `<8 rastgele hex>.lphy` (D1); çözmede `.lphy`
 /// kaldırılmış ad ya da `<ad>.out`.
 #[must_use]
@@ -89,6 +99,8 @@ pub struct Job {
     pub pad: bool,
     /// Bulut senkron klasörüne çıkarmaya izin.
     pub allow_cloud: bool,
+    /// İsteğe bağlı anahtar dosyası (parolaya ek ikinci etken).
+    pub keyfile: Option<PathBuf>,
 }
 
 /// Başarılı işin sonucu.
@@ -108,6 +120,13 @@ pub fn run(job: Job) -> Result<Outcome> {
     lephy_sys::signal::reset_interrupted();
     let nfc = password::normalize_nfc(&job.password)?;
     drop(job.password);
+    let keyfile = job
+        .keyfile
+        .as_deref()
+        .map(password::keyfile_digest_from_path)
+        .transpose()?
+        .map(zeroize::Zeroizing::new);
+    let kf = keyfile.as_deref();
     let mut log = |_: &str| {};
     match job.mode {
         Mode::Encrypt => {
@@ -142,7 +161,7 @@ pub fn run(job: Job) -> Result<Outcome> {
                 &Input::Path(&job.input),
                 &job.output,
                 &nfc,
-                None,
+                kf,
                 &opts,
                 &mut OsEntropy,
                 &mut log,
@@ -162,7 +181,7 @@ pub fn run(job: Job) -> Result<Outcome> {
                 &job.input,
                 &Output::Path(&job.output, false),
                 &nfc,
-                None,
+                kf,
                 DecryptOptions::default(),
                 &mut log,
             )?;
@@ -210,8 +229,10 @@ pub fn estimate_total(mode: Mode, input: &Path) -> u64 {
 pub fn describe_error(e: &Error) -> String {
     match (e, e.exit_code()) {
         (Error::KeyfileRequired, _) => {
-            "Bu dosya bir anahtar dosyasıyla şifrelenmiş. Komut satırından `--keyfile` ile açın."
-                .into()
+            "Bu dosya bir anahtar dosyasıyla şifrelenmiş. Anahtar dosyasını seçin.".into()
+        }
+        (Error::KeyfileNotUsed, _) => {
+            "Bu dosya anahtar dosyası kullanmıyor. Seçili anahtar dosyasını kaldırın.".into()
         }
         (_, ExitCode::WrongPassword) => {
             "Parola yanlış. Büyük/küçük harf ve klavye düzenini kontrol edip yeniden deneyin."
@@ -370,6 +391,7 @@ mod tests {
             aes: false,
             pad: true,
             allow_cloud: false,
+            keyfile: None,
         };
         run(job).unwrap();
         assert_eq!(detect_mode(&d.join("x.lphy")), Mode::Decrypt);
@@ -393,6 +415,7 @@ mod tests {
             aes: false,
             pad: true,
             allow_cloud: false,
+            keyfile: None,
         };
         let out = run(job).unwrap();
         assert_eq!(out.output, d.join("geri.txt"));
@@ -410,6 +433,7 @@ mod tests {
                 aes: true,
                 pad: false,
                 allow_cloud: false,
+                keyfile: None,
             };
             let e = run(job).unwrap_err();
             assert_eq!(e.exit_code(), ExitCode::Io);
@@ -426,10 +450,43 @@ mod tests {
             aes: false,
             pad: true,
             allow_cloud: false,
+            keyfile: None,
         };
         let e = run(job).unwrap_err();
         assert_eq!(e.exit_code(), ExitCode::WrongPassword);
         assert!(describe_error(&e).starts_with("Parola yanlış"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn keyfile_roundtrip() {
+        let d = std::env::temp_dir().join(format!("lphy-gui-kf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("a.txt"), b"anahtar dosyasi testi").unwrap();
+        std::fs::write(d.join("key.bin"), [7u8; 64]).unwrap();
+        let job = |mode, input: &str, output: &str, kf: bool| Job {
+            mode,
+            input: d.join(input),
+            output: d.join(output),
+            password: secret("gui parola 1234"),
+            confirm: (mode == Mode::Encrypt).then(|| secret("gui parola 1234")),
+            kdf_mib: 64,
+            aes: false,
+            pad: true,
+            allow_cloud: false,
+            keyfile: kf.then(|| d.join("key.bin")),
+        };
+        run(job(Mode::Encrypt, "a.txt", "k.lphy", true)).unwrap();
+        assert!(needs_keyfile(&d.join("k.lphy")));
+        let e = run(job(Mode::Decrypt, "k.lphy", "x.txt", false)).unwrap_err();
+        assert!(describe_error(&e).contains("anahtar dosyasıyla"), "{e}");
+        assert!(!d.join("x.txt").exists());
+        run(job(Mode::Decrypt, "k.lphy", "geri.txt", true)).unwrap();
+        assert_eq!(
+            std::fs::read(d.join("geri.txt")).unwrap(),
+            b"anahtar dosyasi testi"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

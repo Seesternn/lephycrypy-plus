@@ -20,7 +20,15 @@ use crate::secret_field::SecretField;
 use crate::theme::{self, Palette};
 
 /// İçerik sütununun en büyük genişliği.
-const COLUMN_W: f32 = 440.0;
+const COLUMN_W: f32 = 460.0;
+
+/// Parola türetme belleği seçenekleri (MiB, ad).
+const KDF_PRESETS: [(u32, &str); 4] = [
+    (256, "Hızlı"),
+    (512, "Önerilen"),
+    (1024, "Güçlü"),
+    (2048, "En güçlü"),
+];
 
 /// Seçilen kaynak.
 struct Source {
@@ -56,6 +64,16 @@ pub struct App {
     job: Option<Receiver<JobResult>>,
     /// Kesinti "İptal" düğmesinden mi geldi (sinyal değil → pencere kapanmaz).
     cancel_requested: bool,
+    /// Seçili anahtar dosyası.
+    keyfile: Option<PathBuf>,
+    /// Açılacak dosya anahtar dosyası gerektiriyor.
+    keyfile_required: bool,
+    /// Son karede ölçülen içerik yüksekliği (dikey ortalama için).
+    content_h: f32,
+    /// Gelişmiş ayarlarda terim açıklamaları açık mı.
+    show_help: bool,
+    /// Fiziksel bellek (MiB; bilinmiyorsa 0). Fazla büyük KDF seçenekleri kapatılır.
+    ram_mib: u64,
     /// Pencere iş sürerken kapatılmak istendi: iş durunca kapanır.
     close_after_job: bool,
     /// İşin tahmini toplam akış baytı (0: bilinmiyor).
@@ -78,6 +96,11 @@ impl Default for App {
             error: None,
             job: None,
             cancel_requested: false,
+            keyfile: None,
+            keyfile_required: false,
+            content_h: 0.0,
+            show_help: false,
+            ram_mib: lephy_sys::platform::physical_memory_bytes().map_or(0, |b| b / (1024 * 1024)),
             close_after_job: false,
             total: Arc::new(AtomicU64::new(0)),
         }
@@ -102,6 +125,8 @@ impl App {
         self.stage = Stage::Ready;
         self.error = None;
         self.allow_cloud = false;
+        self.keyfile = None;
+        self.keyfile_required = mode == Mode::Decrypt && logic::needs_keyfile(p);
         self.password.clear();
         self.confirm.clear();
     }
@@ -112,6 +137,8 @@ impl App {
         self.stage = Stage::Pick;
         self.error = None;
         self.allow_cloud = false;
+        self.keyfile = None;
+        self.keyfile_required = false;
         self.password.clear();
         self.confirm.clear();
     }
@@ -140,6 +167,9 @@ impl App {
         if self.running() || self.output.is_none() || self.password.is_empty() {
             return false;
         }
+        if self.keyfile_required && self.keyfile.is_none() {
+            return false;
+        }
         match src.mode {
             Mode::Encrypt => {
                 self.password.char_count() >= MIN_SCALARS && self.password.same_as(&self.confirm)
@@ -163,6 +193,7 @@ impl App {
             aes: self.aes,
             pad: self.pad,
             allow_cloud: self.allow_cloud,
+            keyfile: self.keyfile.clone(),
         };
         self.confirm.clear();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -292,33 +323,41 @@ impl App {
         }
         let pal = theme::palette(&ctx);
 
-        let avail = ui.available_rect_before_wrap();
-        let w = COLUMN_W.min(avail.width());
-        let col = Rect::from_min_size(
-            pos2(avail.center().x - w / 2.0, avail.top()),
-            vec2(w, avail.height()),
-        );
-        ui.scope_builder(UiBuilder::new().max_rect(col), |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.set_width(w);
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("lephycrypy+")
-                            .font(fonts::semibold(15.0))
-                            .color(pal.ink),
-                    );
-                    ui.add_space(18.0);
-                    match self.stage {
-                        Stage::Pick => self.pick_view(ui, pal),
-                        Stage::Ready => self.ready_view(ui, &ctx, pal),
-                        Stage::Running { since } => self.running_view(ui, pal, since),
-                        Stage::Done(_) => self.done_view(ui, pal),
-                    }
-                    ui.add_space(24.0);
+        let view = ui.available_rect_before_wrap();
+        let w = COLUMN_W.min(view.width() - 40.0).max(240.0);
+        let pad_x = ((view.width() - w) / 2.0).max(0.0);
+        let top = ((view.height() - self.content_h) / 2.0 - 8.0).max(22.0);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(pad_x);
+                    ui.vertical(|ui| {
+                        ui.set_width(w);
+                        ui.add_space(top);
+                        let r = ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new("lephycrypy+")
+                                    .font(fonts::semibold(15.0))
+                                    .color(pal.ink),
+                            );
+                            ui.add_space(18.0);
+                            match self.stage {
+                                Stage::Pick => self.pick_view(ui, pal),
+                                Stage::Ready => self.ready_view(ui, &ctx, pal),
+                                Stage::Running { since } => self.running_view(ui, pal, since),
+                                Stage::Done(_) => self.done_view(ui, pal),
+                            }
+                        });
+                        let h = r.response.rect.height();
+                        if (h - self.content_h).abs() > 1.0 {
+                            self.content_h = h;
+                            ctx.request_repaint();
+                        }
+                        ui.add_space(24.0);
+                    });
                 });
-        });
+            });
     }
 
     fn pick_view(&mut self, ui: &mut Ui, pal: Palette) {
@@ -484,6 +523,11 @@ impl App {
             self.password_hint(ui, pal);
         }
 
+        if mode == Mode::Decrypt && self.keyfile_required {
+            ui.add_space(12.0);
+            self.keyfile_row(ui, pal, true);
+        }
+
         ui.add_space(14.0);
         self.output_row(ui, pal);
         if let Some(root) = self.cloud_root() {
@@ -607,35 +651,111 @@ impl App {
             .fill(pal.surface)
             .stroke(Stroke::new(1.0, pal.line))
             .corner_radius(CornerRadius::same(theme::R_CARD))
-            .inner_margin(egui::Margin::same(14))
+            .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new("Algoritma").color(pal.muted).size(13.0));
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.aes, false, "XChaCha20-Poly1305");
-                    ui.selectable_value(&mut self.aes, true, "AES-256-GCM");
+                    ui.label(RichText::new("Algoritma").color(pal.muted).size(13.0));
+                    if help_button(ui, pal, self.show_help).clicked() {
+                        self.show_help = !self.show_help;
+                    }
                 });
-                ui.add_space(8.0);
+                if self.show_help {
+                    help_card(ui, pal);
+                }
+                segmented(
+                    ui,
+                    pal,
+                    &mut self.aes,
+                    &[
+                        (false, "XChaCha20-Poly1305", true),
+                        (true, "AES-256-GCM", true),
+                    ],
+                );
+                ui.add_space(12.0);
                 ui.label(
                     RichText::new(format!("Parola türetme belleği: {} MiB", self.kdf_mib))
                         .color(pal.muted)
                         .size(13.0),
                 );
-                ui.add(
-                    egui::Slider::new(&mut self.kdf_mib, 64..=2048)
-                        .step_by(64.0)
-                        .show_value(false),
-                );
-                ui.label(
-                    RichText::new(
-                        "Yüksek değer tahmin denemelerini yavaşlatır; dosyayı açarken de bu kadar bellek gerekir.",
-                    )
-                    .color(pal.muted)
-                    .size(12.5),
-                );
-                ui.add_space(8.0);
+                // Fiziksel belleğin %75'ini aşan seçenek sunulmaz (CLI'deki bütçe kuralı).
+                let fits = |m: u32| self.ram_mib == 0 || u64::from(m) * 4 <= self.ram_mib * 3;
+                let opts = KDF_PRESETS.map(|(m, l)| (m, l, fits(m)));
+                segmented(ui, pal, &mut self.kdf_mib, &opts);
+                ui.add_space(12.0);
                 ui.checkbox(&mut self.pad, "Dosya boyutunu gizle (PADMÉ dolgusu)");
+                ui.add_space(12.0);
+                self.keyfile_row(ui, pal, false);
             });
+    }
+
+    fn keyfile_row(&mut self, ui: &mut Ui, pal: Palette, required: bool) {
+        let title = if required {
+            "Anahtar dosyası (bu dosya için gerekli)"
+        } else {
+            "Anahtar dosyası (isteğe bağlı)"
+        };
+        ui.label(RichText::new(title).color(pal.muted).size(13.0));
+        let name = self.keyfile.as_ref().map(|k| {
+            k.file_name()
+                .map(|f| escape_display(&f.to_string_lossy()))
+                .unwrap_or_default()
+        });
+        let mut pick = false;
+        let mut clear = false;
+        egui::Frame::new()
+            .fill(pal.surface)
+            .stroke(Stroke::new(
+                1.0,
+                if required && name.is_none() {
+                    pal.accent
+                } else {
+                    pal.line
+                },
+            ))
+            .corner_radius(CornerRadius::same(theme::R_INPUT))
+            .inner_margin(egui::Margin::symmetric(12, 4))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.set_min_height(32.0);
+                    let text_w = (ui.available_width() - 120.0).max(60.0);
+                    ui.allocate_ui_with_layout(
+                        vec2(text_w, 32.0),
+                        Layout::left_to_right(Align::Center),
+                        |ui| {
+                            match &name {
+                                Some(n) => ui.add(
+                                    egui::Label::new(RichText::new(n).color(pal.ink).size(14.0))
+                                        .truncate(),
+                                ),
+                                None => {
+                                    ui.label(RichText::new("Seçilmedi").color(pal.muted).size(14.0))
+                                }
+                            };
+                        },
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if name.is_some() {
+                            clear = link_button(ui, pal, "Kaldır").clicked();
+                            pick = link_button(ui, pal, "Değiştir").clicked();
+                        } else {
+                            pick = link_button(ui, pal, "Seç").clicked();
+                        }
+                    });
+                });
+            });
+        if pick
+            && let Some(p) = rfd::FileDialog::new()
+                .set_title("Anahtar dosyasını seçin")
+                .pick_file()
+        {
+            self.keyfile = Some(p);
+            self.error = None;
+        }
+        if clear {
+            self.keyfile = None;
+        }
     }
 
     fn running_view(&mut self, ui: &mut Ui, pal: Palette, since: Instant) {
@@ -651,6 +771,10 @@ impl App {
         #[allow(clippy::cast_precision_loss)]
         let frac = (total > 0 && done > 0).then(|| (done as f32 / total as f32).clamp(0.0, 0.99));
         let (title, sub) = match frac {
+            Some(f) if f >= 0.99 => (
+                "Diske yazılıyor…".to_string(),
+                "Son veriler kalıcı olarak kaydediliyor.".to_string(),
+            ),
             Some(f) => (
                 format!("{verb}… %{}", (f * 100.0).floor()),
                 format!(
@@ -780,11 +904,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let fill = theme::palette(ui.ctx()).bg;
         egui::CentralPanel::default()
-            .frame(
-                egui::Frame::new()
-                    .fill(fill)
-                    .inner_margin(egui::Margin::symmetric(24, 22)),
-            )
+            .frame(egui::Frame::new().fill(fill))
             .show(ui, |ui| self.draw(ui));
     }
 }
@@ -865,6 +985,159 @@ fn secondary_button(ui: &mut Ui, pal: Palette, text: &str, w: f32, h: f32) -> Re
     );
     focus_ring(ui, &resp, rect, pal);
     resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// Bölümlü seçim (radyo grubu). Seçenek: (değer, ad, etkin mi).
+fn segmented<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    pal: Palette,
+    value: &mut T,
+    opts: &[(T, &str, bool)],
+) {
+    let h = 36.0;
+    let (outer, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    ui.painter().rect(
+        outer,
+        f32::from(theme::R_INPUT),
+        pal.bg,
+        Stroke::new(1.0, pal.line),
+        StrokeKind::Inside,
+    );
+    #[allow(clippy::cast_precision_loss)]
+    let seg_w = (outer.width() - 6.0) / opts.len() as f32;
+    for (i, &(v, label, enabled)) in opts.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        let r = Rect::from_min_size(
+            pos2(outer.left() + 3.0 + seg_w * i as f32, outer.top() + 3.0),
+            vec2(seg_w, h - 6.0),
+        );
+        let id = ui.scope_id().with(("seg", label));
+        let sense = if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let resp = ui.interact(r, id, sense);
+        let selected = *value == v;
+        resp.widget_info(|| {
+            WidgetInfo::selected(egui::Role::RadioButton, enabled, selected, label)
+        });
+        if resp.clicked() {
+            *value = v;
+        }
+        if selected {
+            ui.painter().rect(
+                r,
+                f32::from(theme::R_INPUT) - 2.0,
+                pal.surface,
+                Stroke::new(1.0, pal.line),
+                StrokeKind::Inside,
+            );
+        } else if resp.hovered() && enabled {
+            ui.painter().rect_filled(
+                r,
+                f32::from(theme::R_INPUT) - 2.0,
+                pal.line.gamma_multiply(0.5),
+            );
+        }
+        let (font, color) = if selected {
+            (fonts::semibold(13.5), pal.ink)
+        } else if enabled {
+            (fonts::regular(13.5), pal.muted)
+        } else {
+            (fonts::regular(13.5), pal.muted.gamma_multiply(0.45))
+        };
+        ui.painter()
+            .text(r.center(), egui::Align2::CENTER_CENTER, label, font, color);
+        if resp.has_focus() {
+            ui.painter().rect_stroke(
+                r,
+                f32::from(theme::R_INPUT) - 2.0,
+                Stroke::new(1.5, pal.accent),
+                StrokeKind::Inside,
+            );
+        }
+        if enabled {
+            let _ = resp.on_hover_cursor(CursorIcon::PointingHand);
+        } else {
+            let _ = resp.on_hover_text("Bu bilgisayarın belleği bu seçenek için yetmiyor.");
+        }
+    }
+}
+
+/// Daire içinde "?" düğmesi.
+fn help_button(ui: &mut Ui, pal: Palette, open: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
+    resp.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, "Terimleri açıkla"));
+    let c = rect.center();
+    let (fill, fg) = if open {
+        (pal.accent, pal.on_accent)
+    } else if resp.hovered() {
+        (pal.accent_soft, pal.accent)
+    } else {
+        (pal.surface, pal.muted)
+    };
+    ui.painter().circle(
+        c,
+        9.0,
+        fill,
+        Stroke::new(1.0, if open { pal.accent } else { pal.line }),
+    );
+    ui.painter().text(
+        c + vec2(0.0, 0.5),
+        egui::Align2::CENTER_CENTER,
+        "?",
+        fonts::semibold(12.5),
+        fg,
+    );
+    focus_ring(ui, &resp, rect, pal);
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text("Bu ayarlar ne anlama geliyor?")
+}
+
+/// Terim açıklamaları.
+fn help_card(ui: &mut Ui, pal: Palette) {
+    const TERMS: [(&str, &str); 5] = [
+        (
+            "XChaCha20-Poly1305",
+            "Varsayılan şifreleme yöntemi. Her işlemcide hızlıdır ve yanlış kullanıma karşı daha dayanıklıdır.",
+        ),
+        (
+            "AES-256-GCM",
+            "Yaygın kullanılan standart. Donanım desteği olan işlemcilerde çok hızlıdır. İki yöntem de aynı güvenlik düzeyindedir.",
+        ),
+        (
+            "Parola türetme belleği (Argon2id)",
+            "Parolanız şifreleme anahtarına dönüştürülürken kullanılan bellek. Arttıkça parola tahmin denemeleri pahalılaşır; dosyayı açan bilgisayarda da bu kadar boş bellek gerekir.",
+        ),
+        (
+            "Boyut gizleme (PADMÉ)",
+            "Şifreli dosyanın boyutunu yuvarlayarak gerçek boyutun anlaşılmasını zorlaştırır. Dosya en fazla yaklaşık %12 büyür.",
+        ),
+        (
+            "Anahtar dosyası",
+            "Parolaya ek olarak seçtiğiniz herhangi bir dosya (32 bayt ile 1 MiB arası). Şifreli dosyayı açmak için hem parola hem bu dosya gerekir; bu dosyayı kaybederseniz verinize ulaşamazsınız.",
+        ),
+    ];
+    egui::Frame::new()
+        .fill(pal.bg)
+        .corner_radius(CornerRadius::same(theme::R_INPUT))
+        .inner_margin(egui::Margin::same(12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            for (i, (term, desc)) in TERMS.iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(6.0);
+                }
+                ui.label(
+                    RichText::new(*term)
+                        .font(fonts::semibold(13.5))
+                        .color(pal.ink),
+                );
+                ui.label(RichText::new(*desc).color(pal.muted).size(13.0));
+            }
+        });
+    ui.add_space(8.0);
 }
 
 /// Çerçevesiz metin düğmesi (vurgu renginde).

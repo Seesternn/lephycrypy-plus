@@ -130,7 +130,14 @@ pub fn apply(ctx: &egui::Context) {
         s.spacing.item_spacing = egui::vec2(8.0, 8.0);
         s.spacing.button_padding = egui::vec2(14.0, 8.0);
         s.spacing.interact_size.y = 30.0;
-        s.spacing.slider_width = 220.0;
+        let mut scroll = egui::style::ScrollStyle::floating();
+        scroll.bar_width = 7.0;
+        scroll.floating_width = 3.0;
+        scroll.active_background_opacity = 0.0;
+        scroll.interact_background_opacity = 0.0;
+        scroll.active_handle_opacity = 0.35;
+        scroll.interact_handle_opacity = 0.55;
+        s.spacing.scroll = scroll;
         s.text_styles = [
             (TextStyle::Heading, fonts::semibold(22.0)),
             (TextStyle::Body, fonts::regular(14.5)),

@@ -19,6 +19,7 @@ fault-injection = ["lephy-core/fault-injection"]
 [dependencies]
 lephy-core = { workspace = true }
 lephy-sys = { workspace = true }
+zeroize = { workspace = true }
 
 # persistence kapalı, pano (clipboard) kapalı, gömülü yazı tipleri (default_fonts:
 # Ubuntu/UFL + emoji/OFL) kapalı — sistem yazı tipi çalışma anında yüklenir. glow (OpenGL):
