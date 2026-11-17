@@ -110,13 +110,15 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
-      - uses: EmbarkStudios/cargo-deny-action@30f817c6f72275c6d54dc744fbca09ebc958599f # v2.0.12
-        with:
-          command: check advisories bans licenses sources
-          arguments: --all-features
       - uses: taiki-e/install-action@328a871ad8f62ecac78390391f463ccabc974b72 # v2.69.9
         with:
-          tool: cargo-audit,cargo-vet
+          tool: cargo-deny,cargo-audit,cargo-vet
+      # İki kademe: sıkı (çekirdek/CLI/USB; FFI bütçesi, çift sürüm deny, GUI crate'leri yasak)
+      # ve GUI (egui/eframe zinciri; lisans/advisory/kaynak/sert yasaklar, çift sürüm uyarı).
+      - name: cargo deny — sıkı kademe (çekirdek, CLI, USB)
+        run: cargo deny --all-features --exclude lephy-gui check
+      - name: cargo deny — GUI kademesi
+        run: cargo deny --all-features --config deny-gui.toml check
       - run: cargo audit --deny warnings
       - name: cargo vet
         run: cargo vet --locked
@@ -153,11 +155,13 @@ jobs:
         run: |
           set -euo pipefail
           ! cargo tree --locked --workspace --prefix none | grep -E '^(secrecy|signal-hook|ctrlc|memsec|sysinfo) '
-      - name: test-vectors must not build into lephy-cli (R5-02)
+      - name: test-vectors must not build into lephy-cli / lephy-gui (R5-02)
         run: |
           set -euo pipefail
-          if cargo build --locked -p lephy-cli --features lephy-core/test-vectors; then
-            echo "::error::lephy-cli built with test-vectors"; exit 1; fi
+          for p in lephy-cli lephy-gui; do
+            if cargo build --locked -p "$p" --features lephy-core/test-vectors; then
+              echo "::error::$p built with test-vectors"; exit 1; fi
+          done
       - name: zeroize kenarları mevcut, Vec döndüren AEAD ve test feature'ları yok (R4-O4, R5-02/03/04)
         run: |
           set -euo pipefail

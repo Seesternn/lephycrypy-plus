@@ -14,6 +14,7 @@
 
 #![cfg_attr(not(test), warn(clippy::missing_errors_doc))]
 
+pub mod alloc;
 pub mod fdio;
 pub mod fs;
 pub mod mem;

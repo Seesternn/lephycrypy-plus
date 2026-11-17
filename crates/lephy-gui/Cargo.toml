@@ -1,0 +1,31 @@
+[package]
+name = "lephy-gui"
+description = "lephycrypy+ masaüstü arayüzü (1.2; egui/eframe; #![forbid(unsafe_code)])"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "lephycrypy-gui"
+path = "src/main.rs"
+
+[features]
+# R5-04 panik hook testi için (CLI ile aynı); dağıtımda asla açılmaz.
+fault-injection = ["lephy-core/fault-injection"]
+
+[dependencies]
+lephy-core = { workspace = true }
+lephy-sys = { workspace = true }
+
+# PLAN › GUI: persistence kapalı, pano (clipboard) kapalı, gömülü yazı tipleri (default_fonts:
+# Ubuntu/UFL + emoji/OFL) kapalı — sistem yazı tipi çalışma anında yüklenir. glow (OpenGL):
+# wgpu'dan çok daha küçük bağımlılık ağacı. Linux'ta GUI yoktur (açık karar 11b; wayland/x11
+# sistem kütüphaneleri gerektirir): ikili "desteklenmiyor" der.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "accesskit"] }
+
+[lints]
+workspace = true

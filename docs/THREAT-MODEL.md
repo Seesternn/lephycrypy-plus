@@ -91,6 +91,28 @@ fiziksel garanti yok; `--format` denetleyici düzeyinde garanti vermez; geri oku
 yapılamadıysa "önbellekten doğrulandı"; is_removable tutarsız; harici USB SSD/HDD ("Fixed")
 desteklenmez; kimlik yeniden doğrulaması ile çağrı arasında TOCTOU penceresi kalır;
 sistem/boot/Time Machine dışlanır.
+- macOS `diskutil` seri numarası vermez: seri zorunluluğu (açık karar 16) yalnızca Windows'ta.
+  macOS fiziksel kimliği `MediaName|DiskUUID|ParentWholeDisk` + boyut + `st_dev`'dir.
+- Windows'ta yeniden bağlama (`FSCTL_DISMOUNT_VOLUME`) uygulanmadı: geri okuma her zaman
+  "önbellekten doğrulandı" etiketi alır.
+- `diskutil` anahtar adları dahili disk çıktısından doğrulandı; bir USB bellekte aldıkları değerler,
+  Windows `STORAGE_DEVICE_DESCRIPTOR` alanlarının USB bellekteki değerleri, `diskutil eraseVolume`
+  ve `Format-Volume -Path` uçtan uca davranışı **gerçek donanımla doğrulanmadı**.
+- PowerShell `Format-Volume` değerleri komut dizgisine gömülmez, alt sürecin ortamından okunur;
+  `powershell.exe` imzası (`WinVerifyTrust`) denetlenmez.
+- Boş alan doldurma ChaCha20 anahtar akışıdır (dosya başına ayrı nonce, ≤ 64 GiB/dosya).
+
+## GUI (1.2)
+- egui/winit olay kuyruğu (`Event::Text`) ve IME kompozisyonu parola metninin heap kopyalarını
+  üretir; sıfırlayan global ayırıcı bunları serbest bırakılırken siler, ama serbest bırakılana
+  kadar ve yığın/yazmaç kopyaları için garanti yoktur. OS klavye kaydı/erişilebilirlik
+  araçları kapsam dışıdır.
+- Pano kapalıdır (`clipboard` feature yok; parola alanı kopyala/kes/yapıştır olaylarını yutar).
+- Kalıcı ayar (`persistence`) yoktur; pencere konumu ve geçmiş yollar diske yazılmaz.
+- GUI işlemleri `--strict`, symlink kurma ve `--rename-conflicts` sunmaz (varsayılan güvenli
+  politika); bunlar için CLI kullanılır.
+- Tedarik zinciri: egui/eframe zinciri ~400 crate ekler (cargo-vet istisnalarının çoğu);
+  çekirdek bu zincirden ayrı, sıkı kademede denetlenir (deny.toml `--exclude lephy-gui`).
 
 ## Arşiv
 Harf katlama erken uyarısı `char::to_lowercase` ile yapılır (CaseFolding.txt C+S ile tam eşdeğerlik

@@ -40,15 +40,17 @@ jobs:
           set -euo pipefail
           export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
           export RUSTFLAGS="--remap-path-prefix=$PWD=/src --remap-path-prefix=$HOME=/home"
-          cargo build --locked --release --target "${{ matrix.target }}" -p lephy-cli
+          cargo build --locked --release --target "${{ matrix.target }}" -p lephy-cli -p lephy-gui
           mkdir -p out
-          bin=target/${{ matrix.target }}/release/lephycrypy
-          [ -f "$bin.exe" ] && bin="$bin.exe"
-          cp "$bin" out/
-          (cd out && shasum -a 256 * > "SHA256SUMS-${{ matrix.target }}-${{ matrix.attempt }}.txt")
-          for m in LPHY-TEST-VECTORS-BUILD LPHY-FAULT-INJECTION; do
-            if grep -q "$m" "$bin"; then echo "::error::$m marker in release binary"; exit 1; fi
+          for name in lephycrypy lephycrypy-gui; do
+            bin=target/${{ matrix.target }}/release/$name
+            [ -f "$bin.exe" ] && bin="$bin.exe"
+            for m in LPHY-TEST-VECTORS-BUILD LPHY-FAULT-INJECTION; do
+              if grep -q "$m" "$bin"; then echo "::error::$m marker in $name"; exit 1; fi
+            done
+            cp "$bin" out/
           done
+          (cd out && shasum -a 256 lephycrypy* > "SHA256SUMS-${{ matrix.target }}-${{ matrix.attempt }}.txt")
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: build-${{ matrix.target }}-${{ matrix.attempt }}
@@ -66,10 +68,9 @@ jobs:
         run: |
           set -euo pipefail
           for t in aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc; do
-            a=$(awk '{print $1}' "artifacts/build-$t-a/SHA256SUMS-$t-a.txt")
-            b=$(awk '{print $1}' "artifacts/build-$t-b/SHA256SUMS-$t-b.txt")
-            echo "$t: a=$a b=$b"
-            [ "$a" = "$b" ] || { echo "::error::non-reproducible build for $t"; exit 1; }
+            cat "artifacts/build-$t-a/SHA256SUMS-$t-a.txt"
+            diff "artifacts/build-$t-a/SHA256SUMS-$t-a.txt" "artifacts/build-$t-b/SHA256SUMS-$t-b.txt" \
+              || { echo "::error::non-reproducible build for $t"; exit 1; }
           done
           mkdir -p dist
           for t in aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc; do

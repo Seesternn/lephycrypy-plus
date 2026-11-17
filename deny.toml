@@ -1,4 +1,6 @@
-# cargo-deny yapılandırması (PLAN R5-07, açık karar 20)
+# cargo-deny yapılandırması — SIKI kademe (PLAN R5-07, açık karar 20): çekirdek, CLI, USB.
+# Çalıştırma: `cargo deny --all-features --exclude lephy-gui check`
+# GUI (egui/eframe zinciri, ~400 crate) ayrı ve gevşek kademede denetlenir: deny-gui.toml.
 
 [graph]
 targets = [
@@ -74,10 +76,11 @@ deny = [
         "cap-primitives", "fs-set-times", "io-extras", "winx",
         "anstyle-wincon", "anstyle-query",       # clap renkli çıktı (Windows konsol)
     ], reason = "R5-01: unsafe/FFI iç crate'lerde yalnızca lephy-sys" },
-    # Gelecek crate'ler (1.1/1.2): yalnızca kendi crate'lerine ait bağımlılıklar
-    { crate = "egui", wrappers = ["lephy-gui"], reason = "GUI yalnızca lephy-gui (1.2)" },
-    { crate = "eframe", wrappers = ["lephy-gui"], reason = "GUI yalnızca lephy-gui (1.2)" },
-    { crate = "winit", wrappers = ["eframe"], reason = "GUI yalnızca lephy-gui (1.2)" },
+    # GUI bağımlılıkları çekirdeğe sızamaz: bu yapılandırma `--exclude lephy-gui` ile çalışır
+    # (lephy-gui ayrı, gevşek kademe: deny-gui.toml). Çekirdek/CLI/USB'de hiçbiri bulunmamalı.
+    { crate = "egui", reason = "GUI yalnızca lephy-gui (1.2; deny-gui.toml)" },
+    { crate = "eframe", reason = "GUI yalnızca lephy-gui (1.2; deny-gui.toml)" },
+    { crate = "winit", reason = "GUI yalnızca lephy-gui (1.2; deny-gui.toml)" },
     # USB (1.1): plist zinciri yerine lephy-usb/plist_lite; rand_chacha yerine chacha20 anahtar
     # akışı (denetlenmemiş crate sayısını büyütmemek, R5-07).
     { crate = "plist", reason = "lephy-usb kendi küçük ayrıştırıcısını kullanır (plist_lite)" },

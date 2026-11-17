@@ -25,6 +25,12 @@ pub fn interrupted() -> bool {
     INTERRUPTED.load(Ordering::SeqCst)
 }
 
+/// Kesinti ister (GUI "İptal" düğmesi): hat bir sonraki chunk sınırında `Interrupted` ile
+/// durur, tmp dosyaları normal yoldan silinir.
+pub fn request_interrupt() {
+    INTERRUPTED.store(true, Ordering::SeqCst);
+}
+
 /// Bayrağı sıfırlar (yalnızca testler ve ardışık komutlar için).
 pub fn reset_interrupted() {
     INTERRUPTED.store(false, Ordering::SeqCst);

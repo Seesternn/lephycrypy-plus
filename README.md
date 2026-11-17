@@ -4,11 +4,12 @@ Açık kaynaklı, Rust ile yazılmış dosya/klasör şifreleme aracı. Hedef: p
 saklama; adlar ve yapı her zaman şifreli; akışlı işleme; atomik yazma; bellekte sır kalıntılarını
 **en iyi çaba ile** en aza indirme.
 
-> **Durum: aşama 3 (sertleştirme) — 1.0 öncesi.** Dosya ve klasörler adları/yapısı gizli bir
-> arşiv olarak şifrelenir (varsayılan PADMÉ); stdin ve `--raw` ham akıştır. Fuzz, Miri, proptest,
-> sinyal/panik testleri ve tedarik zinciri denetimleri yerinde. 1.0 için kalanlar: kripto
-> crate'lerinin yerel cargo-vet denetimi, imzalama/notarization (açık karar 17–19), CI'ın gerçek
-> runner'larda ilk koşusu ve bağımsız inceleme. Yol haritası ve tüm tasarım kararları [docs/PLAN.md](docs/PLAN.md)'de;
+> **Durum: 1.0 öncesi; 1.1 (USB) ve 1.2 (GUI) kodu da hazır.** Dosya ve klasörler adları/yapısı
+> gizli bir arşiv olarak şifrelenir (varsayılan PADMÉ); stdin ve `--raw` ham akıştır. `usb`
+> komutları yalnızca çıkarılabilir USB belleği temizleyip şifreli dosyayı yazar; `lephycrypy-gui`
+> sürükle-bırak arayüzüdür (macOS/Windows). 1.0 için kalanlar: kripto crate'lerinin yerel
+> cargo-vet denetimi, imzalama/notarization (açık karar 17–19), CI'ın gerçek runner'larda ilk
+> koşusu ve bağımsız inceleme. USB yolu gerçek bir USB bellekle hiç denenmedi. Yol haritası ve tüm tasarım kararları [docs/PLAN.md](docs/PLAN.md)'de;
 > biçim [docs/FORMAT.md](docs/FORMAT.md)'de; sınırlar [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)'de.
 > **Bağımsız denetim yapılmamıştır; üretim verisi için kullanmayın.**
 
@@ -18,7 +19,7 @@ saklama; adlar ve yapı her zaman şifreli; akışlı işleme; atomik yazma; bel
 |---|---|
 | macOS (aarch64, x86_64) | desteklenir; CI'da tam test; imzalı/notarize ikili (1.0) |
 | Windows (x86_64) | desteklenir; CI'da tam test; Authenticode açık karar (PLAN › 18) |
-| Linux | derlenir, **best-effort**: test edilmez, ikili yayımlanmaz; CI'da yalnızca check/clippy/Miri/fuzz/kanarya |
+| Linux | derlenir, **best-effort**: test edilmez, ikili yayımlanmaz; CI'da yalnızca check/clippy/Miri/fuzz/kanarya; `usb` ve GUI desteklenmez |
 
 MSRV: Rust 1.95.0 (`rust-toolchain.toml` ile sabit).
 
@@ -29,7 +30,8 @@ MSRV: Rust 1.95.0 (`rust-toolchain.toml` ile sabit).
 | `lephy-sys` | tek FFI/unsafe crate: bellek kilitleme, süreç sertleştirme, dosya sistemi, birim, terminal, sinyal | evet, her blokta `// SAFETY:` |
 | `lephy-core` | kriptografi, biçim, arşiv, pipeline | `#![forbid(unsafe_code)]` |
 | `lephy-cli` | `lephycrypy` komut satırı | `#![forbid(unsafe_code)]` |
-| `lephy-usb` (1.1), `lephy-gui` (1.2) | ertelendi | — |
+| `lephy-usb` (1.1) | yalnızca çıkarılabilir USB: uygunluk, onay, kimlik yeniden denetimi, silme/biçimlendirme, doldurma, yazma, geri okuma | `#![forbid(unsafe_code)]` |
+| `lephy-gui` (1.2) | `lephycrypy-gui`: egui/eframe tek pencere (macOS/Windows) | `#![forbid(unsafe_code)]`; sıfırlayan global ayırıcı |
 
 ## Kullanım
 
@@ -79,9 +81,42 @@ argv/env'den alınmaz. `rekey` parolayı değiştirir ama dosya anahtarını kor
 | cargo-vet | `supply-chain/` | geçiyor; 15 tam, 7 kısmi denetim, **90 istisna (kripto crate'leri dahil)** |
 | Tekrarlanabilir derleme (imzasız) | iki ayrı dizinde release derleme | macOS arm64'te SHA256 eşit; çapraz runner CI'da |
 | Windows kodu | yalnızca çapraz `cargo clippy --target x86_64-pc-windows-msvc`; CI'da çalıştırılacak | derleniyor, test edilmedi; `CTRL_BREAK` testi yazılmadı |
+| USB: uygunluk (SATA/Thunderbolt/Fixed/boş seri reddi), yanlış etiket/GiB → 5 ve hiçbir şey silinmez, adımlar arası kimlik değişimi → 5 ve sonraki adım çalışmaz, symlink takip etmeyen silme, sistem klasörleri, çok dosyalı doldurma, iki geri okuma etiketi | `lephy-usb` birim testleri (sahte platform + geçici dizin) | geçiyor |
+| USB: gerçek `diskutil` çıktısının ayrıştırılması; dahili diske `usb write` reddi | macOS'ta salt okunur gerçek çağrılar | geçiyor |
+| USB: gerçek USB bellekte silme/biçimlendirme/yazma | — | **denenmedi** (donanım yok; gerçek diske hiçbir silme çalıştırılmadı) |
+| GUI: parola alanı (yazma, backspace, pano reddi, kapasite), başsız (headless) çizim, şifrele/çöz/yanlış parola | `lephy-gui` testleri | geçiyor |
+| GUI: pencere açılır; SIGTERM/SIGINT ile kapanır (130) | release ikilisi macOS'ta çalıştırıldı | geçiyor; ekran görüntüsü/erişilebilirlik denetimi yapılmadı |
 
 Python referansı için: `python3 -m venv .venv && .venv/bin/pip install cryptography argon2-cffi blake3`,
 sonra `.venv/bin/python -I tests/ref/lephy_ref.py vectors tests/kat/vectors`.
+
+## USB (1.1)
+
+```bash
+lephycrypy usb list
+```
+
+```bash
+lephycrypy usb write yedek.lphy --target /Volumes/USBBELLEK
+```
+
+Yalnızca **USB veriyolu ve çıkarılabilir ortam** kabul edilir; dahili, sanal, sistem ve Time
+Machine birimleri ile "Fixed" görünen harici USB SSD/HDD'ler reddedilir (kod 1, bayrakla aşılamaz).
+Windows'ta seri numarası boş aygıtlar da reddedilir. Komut önce silinecekleri gösterir, sonra
+birim etiketini **ve** boyutu GiB olarak aynen yazmanızı ister (betikte `--confirm-label` +
+`--confirm-size-gib`); uyuşmazlık kod 5'tir ve hiçbir şey silinmez. Her adımdan önce aygıt kimliği
+yeniden okunur; değişmişse kod 5 ile durur. Yalnızca geçerli `.lphy` dosyaları yazılır.
+`--format` birimi exFAT olarak biçimlendirir (Windows'ta yönetici oturumu gerekir),
+`--fill-free-space` boş alanı rastgele veriyle doldurur. FAT/exFAT dizin kalıntıları, NTFS
+resident dosyalar ve wear-leveling yüzünden fiziksel silme garantisi yoktur.
+
+## GUI (1.2)
+
+`lephycrypy-gui` argümansız başlar (yollar argv'ye gitmez). Bir dosya ya da klasörü pencereye
+bırakın: `.lphy` dosyaları çözülür, diğerleri şifrelenir. Parola alanı maskelidir, panoya
+kopyalama/yapıştırma kapalıdır, metin doğrudan kilitli bellekte tutulur. "Gelişmiş" bölümünde
+Argon2id belleği, algoritma ve PADMÉ seçilir. Bulut senkron klasörüne çıkarma onay ister.
+Sistem yazı tipi kullanılır; gömülü yazı tipi yoktur. Linux'ta GUI yoktur.
 
 ## Derleme
 
