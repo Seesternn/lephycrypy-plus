@@ -203,6 +203,52 @@ def encrypt_file(alg, chunk_code, m_kib, t, p, pwd_nfc, keyfile, salt, prefix, w
 
 
 # ---------------------------------------------------------------------------------------------
+# PADMÉ ve arşiv (FORMAT.md › PADMÉ, Arşiv)
+# ---------------------------------------------------------------------------------------------
+def padme(L: int) -> int:
+    if L < 2:
+        return L
+    E = L.bit_length() - 1
+    S = E.bit_length()  # floor(log2 E) + 1
+    z = max(E - S, 0)
+    m = (1 << z) - 1
+    return (L + m) & ~m
+
+
+def raw_padded(data: bytes) -> bytes:
+    body = struct.pack("<Q", len(data)) + data
+    return body + b"\0" * (padme(len(body)) - len(body))
+
+
+def archive_entry(kind: int, path: str, mode: int, mtime: int, data: bytes | None = None) -> bytes:
+    p = unicodedata.normalize("NFC", path).encode("utf-8")
+    out = bytes([kind]) + struct.pack("<H", len(p)) + p + struct.pack("<I", mode) + struct.pack("<q", mtime)
+    if kind in (0, 2):
+        if data:
+            out += struct.pack("<I", len(data)) + data
+        out += struct.pack("<I", 0)
+    return out
+
+
+def archive_end() -> bytes:
+    return bytes([255]) + struct.pack("<H", 0) + struct.pack("<I", 0) + struct.pack("<q", 0)
+
+
+def archive_padded(entries: bytes) -> bytes:
+    body = entries + archive_end()
+    return body + b"\0" * (padme(len(body)) - len(body))
+
+
+def encrypt_stream_file(alg, content_type, padded, chunk_code, m_kib, t, p, pwd_nfc, keyfile,
+                        salt, prefix, wrap_nonce, fk, plaintext: bytes) -> bytes:
+    header, keys = build_header(alg, content_type, padded, chunk_code, m_kib, t, p, pwd_nfc, keyfile,
+                                salt, prefix, wrap_nonce, fk)
+    body = encrypt_stream(alg, keys["data_key"], header[64:88], chunk_aad(header),
+                          CHUNK_SIZES[chunk_code], plaintext)
+    return header + body
+
+
+# ---------------------------------------------------------------------------------------------
 # Test vektörleri (FORMAT.md › Test vektörleri)
 # ---------------------------------------------------------------------------------------------
 COMMON = dict(m_kib=64 * 1024, t=1, p=1)
@@ -250,6 +296,21 @@ def vectors(outdir: str):
             f.write(blob)
         meta[f"v{num}"] = {"alg": alg, "chunk_code": chunk_code, "plain_len": len(pt),
                            "keyfile": kf.hex() if kf else None, "sha256_blake3": blake3.blake3(blob).hexdigest()}
+    # 5: arşiv, a.txt="hi", mode 0644, mtime 0, padded
+    pt5 = archive_padded(archive_entry(0, "a.txt", 0o644, 0, b"hi"))
+    blob = encrypt_stream_file(1, 1, True, 0, COMMON["m_kib"], COMMON["t"], COMMON["p"], pwd, None,
+                               SALT, PREFIX, WRAP, FK, pt5)
+    with open(os.path.join(outdir, "v5.lphy"), "wb") as f:
+        f.write(blob)
+    meta["v5"] = {"alg": 1, "chunk_code": 0, "content_type": 1, "padded": True, "plain_len": len(pt5)}
+    # 6: ham + pad, "hello"
+    pt6 = raw_padded(b"hello")
+    blob = encrypt_stream_file(1, 0, True, 0, COMMON["m_kib"], COMMON["t"], COMMON["p"], pwd, None,
+                               SALT, PREFIX, WRAP, FK, pt6)
+    with open(os.path.join(outdir, "v6.lphy"), "wb") as f:
+        f.write(blob)
+    meta["v6"] = {"alg": 1, "chunk_code": 0, "content_type": 0, "padded": True, "plain_len": len(pt6)}
+    assert padme(100) == 104 and padme(1000) == 1024 and padme(1_000_000) == 1_015_808
     # 7/8/11: KEK eşitliği
     nfd = "ş ğ İ é".encode("utf-8")
     nfc = "ş ğ İ é".encode("utf-8")

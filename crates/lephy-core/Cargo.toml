@@ -33,6 +33,7 @@ blake3 = { workspace = true }
 getrandom = { workspace = true }
 unicode-normalization = { workspace = true }
 crossbeam-channel = { workspace = true }
+cap-std = { workspace = true }
 # Aşama 2'de: cap-std, tempfile. `strength` feature'ı (zxcvbn) açık karar 2 onaylanırsa.
 
 [dev-dependencies]

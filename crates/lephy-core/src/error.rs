@@ -111,6 +111,94 @@ impl Error {
 /// Çekirdek sonuç türü.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// `Write`/`Read` adaptörlerinden (PADMÉ, arşiv) `io::Error` içinde taşınan biçim ihlali;
+/// [`Error::from_io`] bunu kod 4'e çevirir.
+#[derive(Debug)]
+pub struct FormatViolation {
+    /// Konum (`"arşiv"`, `"PADMÉ"` …).
+    pub at: String,
+    /// Ayrıntı.
+    pub detail: String,
+}
+
+impl fmt::Display for FormatViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.at, self.detail)
+    }
+}
+
+impl std::error::Error for FormatViolation {}
+
+impl FormatViolation {
+    /// `io::Error(InvalidData)` içine sarılmış ihlal.
+    #[must_use]
+    pub fn io(detail: &str) -> std::io::Error {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            FormatViolation {
+                at: "veri".into(),
+                detail: detail.into(),
+            },
+        )
+    }
+
+    /// `at` ile.
+    #[must_use]
+    pub fn io_at(at: &str, detail: &str) -> std::io::Error {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            FormatViolation {
+                at: at.into(),
+                detail: detail.into(),
+            },
+        )
+    }
+
+    /// Bu `io::Error` bir biçim ihlali mi.
+    #[must_use]
+    pub fn is(e: &std::io::Error) -> bool {
+        matches!(e.get_ref(), Some(inner) if inner.is::<FormatViolation>())
+    }
+}
+
+/// Politika ihlali (`--strict`: atlanan/değiştirilen giriş) — kod 4; ortam kaynaklı (ayrıcalık)
+/// olanlar `Environment` ile kod 1.
+#[derive(Debug)]
+pub struct StrictViolation(pub String);
+
+impl fmt::Display for StrictViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "--strict: {}", self.0)
+    }
+}
+
+impl std::error::Error for StrictViolation {}
+
+impl Error {
+    /// `io::Error` → `Corrupt` (biçim ihlali taşıyorsa), `Interrupted` ya da `Io`.
+    #[must_use]
+    pub fn from_io(e: std::io::Error) -> Self {
+        if let Some(inner) = e.get_ref() {
+            if let Some(fv) = inner.downcast_ref::<FormatViolation>() {
+                return Error::Corrupt {
+                    at: fv.at.clone(),
+                    detail: Some(fv.detail.clone()),
+                };
+            }
+            if let Some(sv) = inner.downcast_ref::<StrictViolation>() {
+                return Error::Corrupt {
+                    at: "arşiv".into(),
+                    detail: Some(sv.to_string()),
+                };
+            }
+        }
+        if e.kind() == std::io::ErrorKind::Interrupted {
+            return Error::Interrupted;
+        }
+        Error::Io(e)
+    }
+}
+
 impl fmt::Display for ExitCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.code())

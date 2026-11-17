@@ -40,6 +40,20 @@
   "plain_len": 5,
   "sha256_blake3": "957973d382f3da777f8b139b79f0a3a97d75db7484e7e688fdb7cfdd47895131"
  },
+ "v5": {
+  "alg": 1,
+  "chunk_code": 0,
+  "content_type": 1,
+  "padded": true,
+  "plain_len": 48
+ },
+ "v6": {
+  "alg": 1,
+  "chunk_code": 0,
+  "content_type": 0,
+  "padded": true,
+  "plain_len": 14
+ },
  "v7_kek": "46f9b413c9c130a15b70c9a4dd50ce9744e8e5bb763385896073b77e1511ce01",
  "v9": {
   "alg": 1,

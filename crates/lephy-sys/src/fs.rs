@@ -454,6 +454,71 @@ mod imp {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Bulut senkron kökleri (R5-05) — sezgisel liste, tek yer
+// ---------------------------------------------------------------------------------------------
+
+/// Bilinen bulut senkron kökleri (var olanlar): macOS `~/Library/Mobile Documents`,
+/// `~/Library/CloudStorage/*`; Windows `%OneDrive%`, `%USERPROFILE%\OneDrive*`, `Dropbox`,
+/// `Google Drive`, `My Drive`. Liste sezgiseldir ve eksik olabilir.
+#[must_use]
+#[allow(clippy::disallowed_methods)] // yalnızca HOME/USERPROFILE/OneDrive okunur; sır değildir (D3 ihlali yok)
+pub fn cloud_sync_roots() -> Vec<std::path::PathBuf> {
+    #[allow(unused_mut)] // Linux: hiçbir kök bloğu derlenmez (best-effort platform)
+    let mut out: Vec<std::path::PathBuf> = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = std::path::PathBuf::from(home);
+            out.push(home.join("Library/Mobile Documents"));
+            if let Ok(rd) = std::fs::read_dir(home.join("Library/CloudStorage")) {
+                for e in rd.flatten() {
+                    out.push(e.path());
+                }
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Some(od) = std::env::var_os("OneDrive") {
+            out.push(std::path::PathBuf::from(od));
+        }
+        if let Some(up) = std::env::var_os("USERPROFILE") {
+            let up = std::path::PathBuf::from(up);
+            if let Ok(rd) = std::fs::read_dir(&up) {
+                for e in rd.flatten() {
+                    let n = e.file_name().to_string_lossy().into_owned();
+                    if n.starts_with("OneDrive")
+                        || n == "Dropbox"
+                        || n == "Google Drive"
+                        || n == "My Drive"
+                    {
+                        out.push(e.path());
+                    }
+                }
+            }
+        }
+    }
+    out.retain(|p| p.exists());
+    out
+}
+
+/// `path` (kanonikleştirilmiş) bilinen bir bulut kökünün altındaysa o kökü döner.
+#[must_use]
+pub fn cloud_root_of(path: &Path) -> Option<std::path::PathBuf> {
+    let canon = path
+        .canonicalize()
+        .or_else(|_| {
+            path.parent()
+                .map_or(Ok(path.to_path_buf()), Path::canonicalize)
+        })
+        .ok()?;
+    cloud_sync_roots()
+        .into_iter()
+        .filter_map(|r| r.canonicalize().ok())
+        .find(|r| canon.starts_with(r))
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {

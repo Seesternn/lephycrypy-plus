@@ -1,7 +1,9 @@
 //! Üst düzey işlemler: başlık kurma/açma, `encrypt`, `decrypt`, `verify`, `info`, `rekey`,
-//! `reencrypt` (PLAN › Kriptografik tasarım, Rekey ve reencrypt, Çözme sırası).
+//! `reencrypt` (PLAN › Kriptografik tasarım, Rekey ve reencrypt, Çözme sırası, Arşiv).
 //!
-//! Aşama 1: yalnızca `content_type = 0` (ham akış), PADMÉ kapalı. Arşiv ve dolgu aşama 2.
+//! Aşama 2: dosya ve klasörler arşiv (`content_type = 1`, varsayılan PADMÉ); stdin ve `--raw`
+//! ham akış (`content_type = 0`, isteğe bağlı PADMÉ). Çıkarma tmp dizinine (cap-std kök handle)
+//! ve sonunda noclobber rename; tek üst düzey dosyalı arşivde dosya doğrudan hedefe taşınır.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -10,14 +12,16 @@ use std::path::{Path, PathBuf};
 use lephy_sys::mem::SecretBytes;
 use subtle::ConstantTimeEq;
 
+use crate::archive::{ArchivePadReader, ArchiveWriter, ExtractOptions, Extractor, Report};
 use crate::cipher::{AlgId, SharedCipher, TAG_LEN};
-use crate::entropy::Entropy;
+use crate::entropy::{Entropy, OsEntropy};
 use crate::error::{Error, Result};
 use crate::header::{
     ContentType, HEADER_LEN, Header, MAC_END, NewHeaderParams, WRAP_AAD_END, chunk_aad,
 };
 use crate::io::AtomicWriter;
 use crate::kdf::{self, KEY_LEN, KdfParams};
+use crate::pad::{RawPadReader, RawPadWriter};
 use crate::pipeline::{StreamParams, decrypt_stream, encrypt_stream, verify_stream};
 
 fn arena_err(e: impl std::fmt::Display) -> Error {
@@ -234,8 +238,9 @@ pub fn build_header(
     })
 }
 
-/// Şifreleme seçenekleri.
+/// Şifreleme seçenekleri. Bayraklar CLI bayraklarını birebir yansıtır (durum makinesi değil).
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct EncryptOptions {
     /// Algoritma.
     pub alg: AlgId,
@@ -247,54 +252,55 @@ pub struct EncryptOptions {
     pub force: bool,
     /// `--strict-memory`.
     pub strict_memory: bool,
+    /// Dosya girişini arşiv yerine ham akış olarak yaz (`--raw`); stdin her zaman ham.
+    pub raw: bool,
+    /// PADMÉ: `None` = varsayılan (arşivde açık, ham akışta kapalı).
+    pub pad: Option<bool>,
+    /// Atlanan giriş hata (`--strict`).
+    pub strict: bool,
 }
 
 /// Şifreleme girişi.
 pub enum Input<'a> {
-    /// Dosya yolu.
+    /// Dosya ya da klasör yolu.
     Path(&'a Path),
-    /// Standart girdi (boyut bilinmez; PADMÉ kullanılamaz).
+    /// Standart girdi (ham akış; boyut bilinmez; PADMÉ kullanılamaz).
     Stdin,
 }
 
 /// Şifreleme raporu.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Default)]
 pub struct EncryptReport {
-    /// Düz metin bayt.
+    /// Düz metin bayt (dolgu dahil akış uzunluğu).
     pub plain_len: u64,
     /// Noclobber geri dönüşü kullanıldı (uyarı).
     pub noclobber_fallback: bool,
+    /// Arşiv raporu (atlananlar, uyarılar).
+    pub archive: Option<Report>,
+    /// İçerik türü.
+    pub content_type: ContentType,
 }
 
-fn open_input(input: &Input<'_>) -> Result<Box<dyn Read + Send>> {
-    match input {
-        Input::Path(p) => {
-            let md = std::fs::metadata(p)?;
-            if !md.is_file() {
-                return Err(Error::Environment(format!(
-                    "{} normal bir dosya değil (klasörler aşama 2'de)",
-                    p.display()
-                )));
-            }
-            Ok(Box::new(File::open(p)?))
-        }
-        Input::Stdin => {
-            let stdin = std::io::stdin();
-            if lephy_sys::term::is_tty(&stdin) {
-                return Err(Error::Environment(
-                    "stdin bir terminal; giriş verisi bekleniyor".into(),
-                ));
-            }
-            Ok(Box::new(stdin))
-        }
-    }
+fn output_inside_source(src: &Path, out: &Path) -> bool {
+    let Ok(a) = src.canonicalize() else {
+        return false;
+    };
+    let out_dir = out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let Ok(b) = out_dir.canonicalize() else {
+        return false;
+    };
+    let target = b.join(out.file_name().unwrap_or_default());
+    target == a || target.starts_with(&a)
 }
 
-/// Tek dosya / stdin şifreleme (`content_type = 0`).
+/// Dosya/klasör (arşiv) ya da stdin/`--raw` (ham akış) şifreleme.
 ///
 /// # Errors
-/// 1, 6, 7, 8, 130.
-#[allow(clippy::too_many_arguments)]
+/// 1, 4 (`--strict`), 6, 7, 8, 130.
+#[allow(clippy::too_many_lines)] // giriş türü × dolgu dallanması tek yerde okunur kalsın
 pub fn encrypt(
     input: &Input<'_>,
     output: &Path,
@@ -304,26 +310,51 @@ pub fn encrypt(
     entropy: &mut dyn Entropy,
     log: &mut dyn FnMut(&str),
 ) -> Result<EncryptReport> {
-    // Çıktı yolu kaynak dosyanın kendisi olamaz.
-    if let Input::Path(p) = input
-        && let (Ok(a), Ok(b)) = (p.canonicalize(), output.canonicalize())
-        && a == b
-    {
-        return Err(Error::Environment("çıktı yolu girişle aynı".into()));
-    }
-    let mut reader = open_input(input)?;
+    // Kaynak/hedef ilişkisi (C8).
+    let (content_type, padded) = match input {
+        Input::Path(p) => {
+            if output_inside_source(p, output) {
+                return Err(Error::Environment(
+                    "çıktı yolu kaynak ağacının içinde ya da kaynağın kendisi".into(),
+                ));
+            }
+            let md = p.symlink_metadata()?;
+            if md.file_type().is_symlink() {
+                return Err(Error::Environment(
+                    "kaynak bir symlink; takip edilmez".into(),
+                ));
+            }
+            if md.is_dir() || !opts.raw {
+                (ContentType::Archive, opts.pad.unwrap_or(true))
+            } else {
+                (ContentType::Raw, opts.pad.unwrap_or(false))
+            }
+        }
+        Input::Stdin => {
+            if opts.pad == Some(true) {
+                return Err(Error::Environment(
+                    "stdin girişinde PADMÉ kullanılamaz".into(),
+                ));
+            }
+            (ContentType::Raw, false)
+        }
+    };
     let params = NewHeaderParams {
         alg: opts.alg,
-        content_type: ContentType::Raw,
-        padded: false,
+        content_type,
+        padded,
         chunk_code: opts.chunk_code,
         kdf: opts.kdf,
         keyfile: keyfile_digest.is_some(),
     };
-    if let Input::Path(p) = input {
-        let size = std::fs::metadata(p)?.len();
+    // Boş alan ön kontrolü (yalnızca dosya; klasörde boyut önceden bilinmez).
+    if let Input::Path(p) = input
+        && let Ok(md) = p.metadata()
+        && md.is_file()
+    {
+        let size = md.len();
         let chunk = crate::header::chunk_size_for(opts.chunk_code).unwrap_or(1 << 20) as u64;
-        let est = HEADER_LEN as u64 + size + (size / chunk + 1) * TAG_LEN as u64;
+        let est = HEADER_LEN as u64 + size + 64 + (size / chunk + 1) * TAG_LEN as u64;
         let dir = output
             .parent()
             .filter(|d| !d.as_os_str().is_empty())
@@ -349,12 +380,58 @@ pub fn encrypt(
         aad: &aad,
         chunk_size: unlocked.header.chunk_size(),
     };
-    let plain_len = encrypt_stream(&sp, reader.as_mut(), w.file())?;
+    let mut report = EncryptReport {
+        content_type,
+        ..Default::default()
+    };
+    report.plain_len = match (input, content_type, padded) {
+        (Input::Stdin, _, _) => {
+            let mut stdin = std::io::stdin();
+            if lephy_sys::term::is_tty(&stdin) {
+                return Err(Error::Environment(
+                    "stdin bir terminal; giriş verisi bekleniyor".into(),
+                ));
+            }
+            encrypt_stream(&sp, &mut stdin, w.file())?
+        }
+        (Input::Path(p), ContentType::Raw, false) => {
+            let mut f = File::open(p)?;
+            encrypt_stream(&sp, &mut f, w.file())?
+        }
+        (Input::Path(p), ContentType::Raw, true) => {
+            let f = File::open(p)?;
+            let len = f.metadata()?.len();
+            let mut r = RawPadReader::new(f, len);
+            encrypt_stream(&sp, &mut r, w.file())?
+        }
+        (Input::Path(p), ContentType::Archive, pad) => {
+            let aw = ArchiveWriter::new(p, opts.strict)?;
+            let n;
+            let rep;
+            if pad {
+                let mut r = ArchivePadReader::new(aw);
+                n = encrypt_stream(&sp, &mut r, w.file()).map_err(map_adaptor)?;
+                rep = r.into_inner().report;
+            } else {
+                let mut r = aw;
+                n = encrypt_stream(&sp, &mut r, w.file()).map_err(map_adaptor)?;
+                rep = r.report;
+            }
+            report.archive = Some(rep);
+            n
+        }
+    };
     let outcome = w.commit(opts.force)?;
-    Ok(EncryptReport {
-        plain_len,
-        noclobber_fallback: outcome.noclobber_fallback,
-    })
+    report.noclobber_fallback = outcome.noclobber_fallback;
+    Ok(report)
+}
+
+/// Pipeline'dan dönen `Io` hatası adaptör kaynaklıysa (`FormatViolation`/`StrictViolation`) kod 4.
+fn map_adaptor(e: Error) -> Error {
+    match e {
+        Error::Io(io) => Error::from_io(io),
+        other => other,
+    }
 }
 
 /// Başlığı okur (256 B).
@@ -389,9 +466,9 @@ pub fn info(path: &Path) -> Result<Header> {
 
 /// Çözme hedefi.
 pub enum Output<'a> {
-    /// Dosya (atomik yazma).
+    /// Dosya ya da klasör (atomik; `bool` = `--force`).
     Path(&'a Path, bool),
-    /// Standart çıktı (ham fd; kısmi çıktı uyarısı çağıranda).
+    /// Standart çıktı (ham fd; yalnızca ham akış; kısmi çıktı uyarısı çağıranda).
     Stdout,
 }
 
@@ -420,7 +497,41 @@ fn open_and_unlock(
     Ok((f, u))
 }
 
-/// Çözme (`content_type = 0`). Döner: düz metin bayt sayısı.
+/// Çözme raporu.
+#[derive(Debug, Clone, Default)]
+pub struct DecryptReport {
+    /// Düz metin bayt (ham: `L`; arşiv: akış uzunluğu).
+    pub plain_len: u64,
+    /// Arşiv raporu.
+    pub archive: Option<Report>,
+    /// Noclobber geri dönüşü.
+    pub noclobber_fallback: bool,
+    /// Nihai hedef yolu.
+    pub target: PathBuf,
+}
+
+/// Çözme seçenekleri (arşiv için).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DecryptOptions {
+    /// Kilit/bütçe.
+    pub unlock: UnlockOptions,
+    /// Çıkarma politikası (`padded` başlıktan doldurulur).
+    pub extract: ExtractOptions,
+}
+
+/// Dizin oluşturur (0700) ve Windows'ta indeksleme dışı bırakır.
+fn create_tmp_dir(dir: &Path) -> Result<()> {
+    std::fs::create_dir(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let _ = lephy_sys::fs::mark_not_content_indexed(dir);
+    Ok(())
+}
+
+/// Çözme. Döner: rapor.
 ///
 /// # Errors
 /// 3, 4, 6, 7, 8, 1, 130.
@@ -429,20 +540,10 @@ pub fn decrypt(
     output: &Output<'_>,
     pwd_nfc: &SecretBytes,
     keyfile_digest: Option<&[u8; 32]>,
-    opts: UnlockOptions,
+    opts: DecryptOptions,
     log: &mut dyn FnMut(&str),
-) -> Result<u64> {
-    let (mut f, u) = open_and_unlock(path, pwd_nfc, keyfile_digest, opts, log)?;
-    if u.header.content_type != ContentType::Raw {
-        return Err(Error::Environment(
-            "arşiv içeriği aşama 2'de desteklenir".into(),
-        ));
-    }
-    if u.header.padded {
-        return Err(Error::Environment(
-            "PADMÉ dolgulu içerik aşama 2'de desteklenir".into(),
-        ));
-    }
+) -> Result<DecryptReport> {
+    let (mut f, u) = open_and_unlock(path, pwd_nfc, keyfile_digest, opts.unlock, log)?;
     let cipher = SharedCipher::new(u.header.alg, &key32(&u.data_key)?)?;
     let aad = chunk_aad(&u.bytes);
     let sp = StreamParams {
@@ -451,8 +552,19 @@ pub fn decrypt(
         aad: &aad,
         chunk_size: u.header.chunk_size(),
     };
-    match output {
-        Output::Path(out, force) => {
+    let mut report = DecryptReport::default();
+    match (u.header.content_type, output) {
+        (ContentType::Raw, Output::Stdout) => {
+            let mut so = RawStdout;
+            report.plain_len = if u.header.padded {
+                let mut w = RawPadWriter::new(&mut so);
+                decrypt_stream(&sp, &mut f, &mut w).map_err(map_adaptor)?;
+                w.finish().map_err(Error::from_io)?.1
+            } else {
+                decrypt_stream(&sp, &mut f, &mut so)?
+            };
+        }
+        (ContentType::Raw, Output::Path(out, force)) => {
             let total = std::fs::metadata(path)?.len();
             let dir = out
                 .parent()
@@ -460,23 +572,109 @@ pub fn decrypt(
                 .unwrap_or(Path::new("."));
             crate::io::precheck_space(dir, total)?;
             let mut w = AtomicWriter::create(out, *force)?;
-            let n = decrypt_stream(&sp, &mut f, w.file())?;
+            report.plain_len = if u.header.padded {
+                let mut pw = RawPadWriter::new(w.file());
+                decrypt_stream(&sp, &mut f, &mut pw).map_err(map_adaptor)?;
+                pw.finish().map_err(Error::from_io)?.1
+            } else {
+                decrypt_stream(&sp, &mut f, w.file())?
+            };
             let o = w.commit(*force)?;
-            if o.noclobber_fallback {
-                log(
-                    "uyarı: dosya sistemi atomik noclobber desteklemiyor; kontrol-sonra-rename kullanıldı",
-                );
-            }
-            Ok(n)
+            report.noclobber_fallback = o.noclobber_fallback;
+            report.target = out.to_path_buf();
         }
-        Output::Stdout => {
-            let mut so = RawStdout;
-            decrypt_stream(&sp, &mut f, &mut so)
+        (ContentType::Archive, Output::Stdout) => {
+            return Err(Error::Environment(
+                "arşiv içeriği stdout'a yazılamaz; -o ile bir hedef verin".into(),
+            ));
+        }
+        (ContentType::Archive, Output::Path(out, force)) => {
+            if !force && out.symlink_metadata().is_ok() {
+                return Err(Error::Exists(out.display().to_string()));
+            }
+            let total = std::fs::metadata(path)?.len();
+            let parent = out
+                .parent()
+                .filter(|d| !d.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            crate::io::precheck_space(parent, total)?;
+            let mut ent = OsEntropy;
+            let tmp_name = format!(
+                "{}{}",
+                out.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                crate::io::tmp_name(&mut ent)?
+            );
+            let tmp = parent.join(tmp_name);
+            create_tmp_dir(&tmp)?;
+            let guard = TmpDirGuard {
+                path: tmp.clone(),
+                keep: false,
+            };
+            let mut eo = opts.extract;
+            eo.padded = u.header.padded;
+            let mut ex = Extractor::new(&tmp, eo)?;
+            report.plain_len = decrypt_stream(&sp, &mut f, &mut ex).map_err(map_adaptor)?;
+            let single = ex.single_file.clone();
+            let rep = ex.finish()?;
+            // Tek üst düzey dosya: dosyayı doğrudan hedefe taşı, tmp dizini sil.
+            let src: PathBuf = match &single {
+                Some(name) if rep.entries == 1 && rep.symlinks_created == 0 => tmp.join(name),
+                _ => tmp.clone(),
+            };
+            let fallback = move_into_place(&src, out, *force)?;
+            report.noclobber_fallback = fallback;
+            report.archive = Some(rep);
+            report.target = out.to_path_buf();
+            if single.is_some() && src != tmp {
+                let _ = std::fs::remove_dir_all(&tmp);
+            }
+            let mut guard = guard;
+            guard.keep = true;
+            let _ = lephy_sys::fs::fsync_dir(parent);
+        }
+    }
+    Ok(report)
+}
+
+struct TmpDirGuard {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl Drop for TmpDirGuard {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = std::fs::remove_dir_all(&self.path);
         }
     }
 }
 
-/// Doğrulama (yazmadan). Döner: düz metin bayt sayısı.
+/// Noclobber (ya da `--force`: var olan hedef önce kaldırılır) rename; geri dönüş bayrağı.
+fn move_into_place(src: &Path, dst: &Path, force: bool) -> Result<bool> {
+    if force && let Ok(md) = dst.symlink_metadata() {
+        if md.is_dir() && !md.file_type().is_symlink() {
+            std::fs::remove_dir_all(dst)?;
+        } else {
+            std::fs::remove_file(dst)?;
+        }
+    }
+    match lephy_sys::fs::rename_noclobber(src, dst) {
+        Ok(()) => Ok(false),
+        Err(lephy_sys::fs::NoclobberError::Exists) => Err(Error::Exists(dst.display().to_string())),
+        Err(lephy_sys::fs::NoclobberError::Unsupported) => {
+            if dst.symlink_metadata().is_ok() {
+                return Err(Error::Exists(dst.display().to_string()));
+            }
+            lephy_sys::fs::rename_replace(src, dst)?;
+            Ok(true)
+        }
+        Err(lephy_sys::fs::NoclobberError::Io(e)) => Err(Error::Io(e)),
+    }
+}
+
+/// Doğrulama (yazmadan). Döner: düz metin akış uzunluğu.
 ///
 /// # Errors
 /// 3, 4, 6, 1, 130.
@@ -509,8 +707,8 @@ pub struct NewCredentials<'a> {
     pub kdf: Option<KdfParams>,
 }
 
-/// `rekey`: FK aynı kalır; yeni `salt`/`wrap_nonce`/`commit_tag`/`wrapped_fk`/`header_mac`; chunk'lar aynen
-/// kopyalanır; atomik. `data_key` değişmediğinden `stream_nonce_prefix` korunur.
+/// `rekey`: FK aynı kalır; yeni `salt`/`wrap_nonce`/`commit_tag`/`wrapped_fk`/`header_mac`;
+/// chunk'lar aynen kopyalanır; atomik. `data_key` değişmediğinden `stream_nonce_prefix` korunur.
 ///
 /// # Errors
 /// 3, 4, 6, 1, 130.
@@ -623,6 +821,7 @@ impl Read for PipeReader {
 }
 
 /// `reencrypt`: yeni FK ve `stream_nonce_prefix`, tüm chunk'lar yeniden şifrelenir; atomik.
+/// İçerik türü ve dolgu aynen korunur (düz metin akışı geçirilir, ayrıştırılmaz).
 ///
 /// # Errors
 /// 3, 4, 6, 1, 130.
@@ -636,11 +835,6 @@ pub fn reencrypt(
     log: &mut dyn FnMut(&str),
 ) -> Result<u64> {
     let (mut f, u) = open_and_unlock(path, old_pwd, old_keyfile, opts, log)?;
-    if u.header.content_type != ContentType::Raw || u.header.padded {
-        return Err(Error::Environment(
-            "arşiv/dolgulu içerik aşama 2'de desteklenir".into(),
-        ));
-    }
     let params = NewHeaderParams {
         alg: u.header.alg,
         content_type: u.header.content_type,
@@ -715,7 +909,7 @@ pub fn reencrypt(
 #[allow(clippy::unwrap_used, clippy::panic, clippy::too_many_lines)]
 mod tests {
     use super::*;
-    use crate::entropy::OsEntropy;
+    use crate::archive::SymlinkPolicy;
 
     fn pwd(s: &str) -> SecretBytes {
         crate::password::normalize_nfc(&SecretBytes::from_slice(s.as_bytes()).unwrap()).unwrap()
@@ -729,6 +923,19 @@ mod tests {
         }
     }
 
+    fn opts(raw: bool, pad: Option<bool>) -> EncryptOptions {
+        EncryptOptions {
+            alg: AlgId::XChaCha20Poly1305,
+            chunk_code: 0,
+            kdf: small_kdf(),
+            force: false,
+            strict_memory: false,
+            raw,
+            pad,
+            strict: false,
+        }
+    }
+
     fn tmpdir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("lphy-ops-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -737,19 +944,13 @@ mod tests {
     }
 
     #[test]
-    fn full_roundtrip_wrong_password_keyfile_and_rekey() {
+    fn raw_roundtrip_wrong_password_keyfile_and_rekey() {
         let d = tmpdir("rt");
         let src = d.join("in.bin");
         let data: Vec<u8> = (0..300_000u32).map(|i| (i % 253) as u8).collect();
         std::fs::write(&src, &data).unwrap();
         let out = d.join("out.lphy");
-        let opts = EncryptOptions {
-            alg: AlgId::XChaCha20Poly1305,
-            chunk_code: 0,
-            kdf: small_kdf(),
-            force: false,
-            strict_memory: false,
-        };
+        let o = opts(true, None);
         let mut log = |_: &str| {};
         let p = pwd("doğru parola!");
         let kf = kdf::keyfile_digest(&[0x42; 64]);
@@ -758,43 +959,38 @@ mod tests {
             &out,
             &p,
             Some(&kf),
-            &opts,
+            &o,
             &mut OsEntropy,
             &mut log,
         )
         .unwrap();
         assert_eq!(rep.plain_len, data.len() as u64);
+        assert_eq!(rep.content_type, ContentType::Raw);
         assert_eq!(
             std::fs::metadata(&out).unwrap().len(),
             256 + data.len() as u64 + 5 * 16
         );
-        // şifreli çıktıda düz metin yok
         let ct = std::fs::read(&out).unwrap();
         assert!(!ct.windows(64).any(|w| w == &data[1000..1064]));
 
         let u = UnlockOptions::default();
-        // yanlış parola → 3
         assert!(matches!(
             verify(&out, &pwd("yanlış parola"), Some(&kf), u, &mut log),
             Err(Error::WrongPassword)
         ));
-        // keyfile yok → 3 (ayrı mesaj)
         assert!(matches!(
             verify(&out, &p, None, u, &mut log),
             Err(Error::KeyfileRequired)
         ));
-        // yanlış keyfile → 3
         let kf2 = kdf::keyfile_digest(&[0x43; 64]);
         assert!(matches!(
             verify(&out, &p, Some(&kf2), u, &mut log),
             Err(Error::WrongPassword)
         ));
-        // doğru
         assert_eq!(
             verify(&out, &p, Some(&kf), u, &mut log).unwrap(),
             data.len() as u64
         );
-        // bozuk chunk → 4
         let mut bad = ct.clone();
         bad[256 + 70_000] ^= 1;
         let badp = d.join("bad.lphy");
@@ -803,7 +999,6 @@ mod tests {
             Err(Error::Corrupt { at, .. }) => assert_eq!(at, "chunk 1"),
             o => panic!("{o:?}"),
         }
-        // bozuk header_mac → 4 başlık
         let mut bad = ct.clone();
         bad[230] ^= 1;
         std::fs::write(&badp, &bad).unwrap();
@@ -811,17 +1006,30 @@ mod tests {
             Err(Error::Corrupt { at, .. }) => assert_eq!(at, "başlık"),
             o => panic!("{o:?}"),
         }
-        // çöz
         let dec = d.join("dec.bin");
-        let n = decrypt(&out, &Output::Path(&dec, false), &p, Some(&kf), u, &mut log).unwrap();
-        assert_eq!(n, data.len() as u64);
+        let dopts = DecryptOptions::default();
+        let r = decrypt(
+            &out,
+            &Output::Path(&dec, false),
+            &p,
+            Some(&kf),
+            dopts,
+            &mut log,
+        )
+        .unwrap();
+        assert_eq!(r.plain_len, data.len() as u64);
         assert_eq!(std::fs::read(&dec).unwrap(), data);
-        // hedef var → 7
         assert!(matches!(
-            decrypt(&out, &Output::Path(&dec, false), &p, Some(&kf), u, &mut log),
+            decrypt(
+                &out,
+                &Output::Path(&dec, false),
+                &p,
+                Some(&kf),
+                dopts,
+                &mut log
+            ),
             Err(Error::Exists(_))
         ));
-        // rekey: FK aynı, chunk'lar aynı, header_mac farklı
         let p2 = pwd("yeni parola 123");
         let newc = NewCredentials {
             pwd_nfc: &p2,
@@ -840,9 +1048,9 @@ mod tests {
         )
         .unwrap();
         let ct2 = std::fs::read(&out).unwrap();
-        assert_eq!(&ct2[256..], &ct[256..], "chunk'lar bire bir aynı");
-        assert_ne!(&ct2[224..256], &ct[224..256], "header_mac değişti");
-        assert_eq!(&ct2[64..88], &ct[64..88], "stream_nonce_prefix korunur");
+        assert_eq!(&ct2[256..], &ct[256..]);
+        assert_ne!(&ct2[224..256], &ct[224..256]);
+        assert_eq!(&ct2[64..88], &ct[64..88]);
         assert!(matches!(
             verify(&out, &p, Some(&kf), u, &mut log),
             Err(Error::KeyfileNotUsed)
@@ -851,7 +1059,6 @@ mod tests {
             verify(&out, &p2, None, u, &mut log).unwrap(),
             data.len() as u64
         );
-        // R4-Y2: eski başlık + eski parola yeni dosyayı açar
         let mut frank = ct[..256].to_vec();
         frank.extend_from_slice(&ct2[256..]);
         std::fs::write(&badp, &frank).unwrap();
@@ -859,7 +1066,6 @@ mod tests {
             verify(&badp, &p, Some(&kf), u, &mut log).unwrap(),
             data.len() as u64
         );
-        // reencrypt: sonra eski başlık açamaz
         let p3 = pwd("üçüncü parola!!");
         let newc = NewCredentials {
             pwd_nfc: &p3,
@@ -878,9 +1084,16 @@ mod tests {
             Err(Error::Corrupt { .. })
         ));
         let dec2 = d.join("dec2.bin");
-        decrypt(&out, &Output::Path(&dec2, false), &p3, None, u, &mut log).unwrap();
+        decrypt(
+            &out,
+            &Output::Path(&dec2, false),
+            &p3,
+            None,
+            dopts,
+            &mut log,
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&dec2).unwrap(), data);
-        // info KDF'siz
         let h = info(&out).unwrap();
         assert_eq!(h.kdf, small_kdf());
         assert!(crate::io::scan_stale(&d).unwrap().is_empty());
@@ -888,9 +1101,171 @@ mod tests {
     }
 
     #[test]
+    fn raw_padded_roundtrip_and_size_change() {
+        let d = tmpdir("pad");
+        let src = d.join("in.bin");
+        std::fs::write(&src, vec![3u8; 1000]).unwrap();
+        let out = d.join("out.lphy");
+        let p = pwd("parola parola");
+        let mut log = |_: &str| {};
+        let rep = encrypt(
+            &Input::Path(&src),
+            &out,
+            &p,
+            None,
+            &opts(true, Some(true)),
+            &mut OsEntropy,
+            &mut log,
+        )
+        .unwrap();
+        assert_eq!(rep.plain_len, crate::pad::padme(1008));
+        assert!(info(&out).unwrap().padded);
+        let dec = d.join("dec.bin");
+        let r = decrypt(
+            &out,
+            &Output::Path(&dec, false),
+            &p,
+            None,
+            DecryptOptions::default(),
+            &mut log,
+        )
+        .unwrap();
+        assert_eq!(r.plain_len, 1000);
+        assert_eq!(std::fs::read(&dec).unwrap(), vec![3u8; 1000]);
+        // reencrypt dolgulu ham akışı da taşır
+        let p2 = pwd("ikinci parola!");
+        reencrypt(
+            &out,
+            &p,
+            None,
+            &NewCredentials {
+                pwd_nfc: &p2,
+                keyfile_digest: None,
+                kdf: None,
+            },
+            UnlockOptions::default(),
+            &mut OsEntropy,
+            &mut log,
+        )
+        .unwrap();
+        let dec2 = d.join("dec2.bin");
+        decrypt(
+            &out,
+            &Output::Path(&dec2, false),
+            &p2,
+            None,
+            DecryptOptions::default(),
+            &mut log,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&dec2).unwrap(), vec![3u8; 1000]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn archive_roundtrip_dir_single_file_and_strings() {
+        let d = tmpdir("arc");
+        let src = d.join("tree");
+        std::fs::create_dir_all(src.join("sub/deep")).unwrap();
+        std::fs::write(src.join("gizli-ad.txt"), b"content-one").unwrap();
+        std::fs::write(src.join("sub/deep/x.bin"), vec![1u8; 70_000]).unwrap();
+        std::fs::create_dir_all(src.join("empty")).unwrap();
+        let out = d.join("tree.lphy");
+        let p = pwd("parola parola");
+        let mut log = |_: &str| {};
+        let rep = encrypt(
+            &Input::Path(&src),
+            &out,
+            &p,
+            None,
+            &opts(false, None),
+            &mut OsEntropy,
+            &mut log,
+        )
+        .unwrap();
+        assert_eq!(rep.content_type, ContentType::Archive);
+        let h = info(&out).unwrap();
+        assert!(h.padded);
+        assert_eq!(h.content_type, ContentType::Archive);
+        let ct = std::fs::read(&out).unwrap();
+        assert!(
+            !ct.windows(12).any(|w| w == b"gizli-ad.txt"),
+            "ad şifreli çıktıda görünmemeli"
+        );
+        // çıktı kaynak ağacının içinde → kod 1
+        assert!(matches!(
+            encrypt(
+                &Input::Path(&src),
+                &src.join("x.lphy"),
+                &p,
+                None,
+                &opts(false, None),
+                &mut OsEntropy,
+                &mut log
+            ),
+            Err(Error::Environment(_))
+        ));
+        let dst = d.join("restored");
+        let dopts = DecryptOptions {
+            unlock: UnlockOptions::default(),
+            extract: ExtractOptions {
+                symlinks: SymlinkPolicy::Safe,
+                ..Default::default()
+            },
+        };
+        let r = decrypt(&out, &Output::Path(&dst, false), &p, None, dopts, &mut log).unwrap();
+        assert_eq!(r.archive.as_ref().unwrap().entries, 5);
+        assert_eq!(
+            std::fs::read(dst.join("gizli-ad.txt")).unwrap(),
+            b"content-one"
+        );
+        assert_eq!(
+            std::fs::read(dst.join("sub/deep/x.bin")).unwrap(),
+            vec![1u8; 70_000]
+        );
+        assert!(dst.join("empty").is_dir());
+        assert!(crate::io::scan_stale(&d).unwrap().is_empty());
+        assert!(matches!(
+            decrypt(&out, &Output::Path(&dst, false), &p, None, dopts, &mut log),
+            Err(Error::Exists(_))
+        ));
+        // tek dosya → arşiv, çözümde düzleştirilir
+        let single = d.join("tree/gizli-ad.txt");
+        let out2 = d.join("single.lphy");
+        encrypt(
+            &Input::Path(&single),
+            &out2,
+            &p,
+            None,
+            &opts(false, None),
+            &mut OsEntropy,
+            &mut log,
+        )
+        .unwrap();
+        assert_eq!(info(&out2).unwrap().content_type, ContentType::Archive);
+        let dst2 = d.join("single-out.txt");
+        let r = decrypt(
+            &out2,
+            &Output::Path(&dst2, false),
+            &p,
+            None,
+            dopts,
+            &mut log,
+        )
+        .unwrap();
+        assert_eq!(r.target, dst2);
+        assert!(dst2.is_file());
+        assert_eq!(std::fs::read(&dst2).unwrap(), b"content-one");
+        assert!(crate::io::scan_stale(&d).unwrap().is_empty());
+        // --force ile var olan dizinin üzerine
+        let r = decrypt(&out, &Output::Path(&dst, true), &p, None, dopts, &mut log).unwrap();
+        assert!(r.archive.is_some());
+        // bozuk arşiv içeriği (END sonrası sıfır olmayan) → 4 ve tmp yok: bunu `archive` testleri kapsar.
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn reserved_byte_rejected_before_kdf() {
-        // KDF çağrı sayacı yerine: 4 GiB'lık (bütçe dışı) KDF parametreli ama reserved≠0 başlık,
-        // KDF çalışsaydı kod 6 verirdi; kod 4 gelmesi KDF'den önce reddedildiğini gösterir.
         let mut b = [0u8; 256];
         b[..6].copy_from_slice(b"LPHY+\0");
         b[6] = 1;

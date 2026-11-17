@@ -1,4 +1,4 @@
-//! `lephycrypy` komut satırı (aşama 1: tek dosya / stdin, `content_type = 0`).
+//! `lephycrypy` komut satırı (aşama 2: dosya/klasör arşivi, PADMÉ, ham akış).
 //!
 //! Çıkış kodları PLAN › Çıkış kodu tablosu; kod 2 yalnızca clap. Parola argv/env'den asla
 //! okunmaz (D3). Süreç başı: `harden()` → panik hook'u → sinyal işleyici → clap →
@@ -16,11 +16,16 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode as ProcessExit;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use lephy_core::archive::{ExtractOptions, Report, SymlinkPolicy};
 use lephy_core::cipher::AlgId;
 use lephy_core::entropy::OsEntropy;
 use lephy_core::error::{Error, ExitCode, Result};
+use lephy_core::header::ContentType;
 use lephy_core::kdf::KdfParams;
-use lephy_core::ops::{self, EncryptOptions, Input, NewCredentials, Output, UnlockOptions};
+use lephy_core::names::escape_display;
+use lephy_core::ops::{
+    self, DecryptOptions, EncryptOptions, Input, NewCredentials, Output, UnlockOptions,
+};
 use lephy_core::password::{self, Source};
 use lephy_sys::mem::SecretBytes;
 
@@ -101,6 +106,26 @@ impl KdfArgs {
     }
 }
 
+/// Çözme/çıkarma politikası.
+#[derive(Args, Clone, Copy)]
+struct UnlockArgs {
+    /// KDF bütçesi aşımına izin ver (RAM eşiği yine uygulanır).
+    #[arg(long)]
+    allow_large_kdf: bool,
+    /// Bellek kilitlenemezse hata ver.
+    #[arg(long)]
+    strict_memory: bool,
+}
+
+impl UnlockArgs {
+    const fn opts(self) -> UnlockOptions {
+        UnlockOptions {
+            allow_large_kdf: self.allow_large_kdf,
+            strict_memory: self.strict_memory,
+        }
+    }
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum Alg {
     /// XChaCha20-Poly1305 (varsayılan).
@@ -135,11 +160,20 @@ impl ChunkSize {
     }
 }
 
+#[derive(Clone, Copy, ValueEnum, Default)]
+enum RestoreSymlinks {
+    /// Yalnızca güvenli (göreli, `..`'siz) hedefler.
+    #[default]
+    Safe,
+    /// Güvensiz hedefler de (her biri için uyarı).
+    Unsafe,
+}
+
 #[derive(Subcommand)]
 enum Command {
-    /// Dosyayı (ya da "-" ile stdin'i) şifreler.
+    /// Dosya ya da klasörü şifreler ("-" = stdin, ham akış).
     Encrypt {
-        /// Kaynak dosya ("-" = stdin).
+        /// Kaynak dosya/klasör ("-" = stdin).
         input: PathBuf,
         /// Çıktı yolu (varsayılan: <8 rastgele hex>.lphy).
         #[arg(short, long, value_name = "YOL")]
@@ -154,6 +188,18 @@ enum Command {
         kdf: KdfArgs,
         #[command(flatten)]
         pw: PasswordArgs,
+        /// Dosyayı arşiv yerine ham akış olarak yaz (ad gizlenmez; stdin her zaman ham).
+        #[arg(long)]
+        raw: bool,
+        /// PADMÉ boyut dolgusu (ham akışta; stdin ile kullanılamaz).
+        #[arg(long, conflicts_with = "no_pad")]
+        pad: bool,
+        /// Arşivde PADMÉ dolgusunu kapat.
+        #[arg(long)]
+        no_pad: bool,
+        /// Atlanan giriş (FIFO/soket/aygıt, okunamayan) hata say (kod 4).
+        #[arg(long)]
+        strict: bool,
         /// Hedef varsa üzerine yaz.
         #[arg(long)]
         force: bool,
@@ -164,27 +210,35 @@ enum Command {
         #[arg(long)]
         delete_original: bool,
     },
-    /// `.lphy` dosyasını çözer.
+    /// `.lphy` dosyasını çözer (arşiv → klasör ya da tek dosya; ham → dosya/stdout).
     Decrypt {
         /// Şifreli dosya.
         input: PathBuf,
         /// Çıktı yolu (varsayılan: giriş adından `.lphy` kaldırılmış ya da `<giriş>.out`).
         #[arg(short, long, value_name = "YOL", conflicts_with = "stdout")]
         output: Option<PathBuf>,
-        /// Düz metni stdout'a yaz (son chunk doğrulanana kadar kesme tespit edilemez).
+        /// Düz metni stdout'a yaz (yalnızca ham akış; kesme son chunk'a kadar tespit edilemez).
         #[arg(long)]
         stdout: bool,
         #[command(flatten)]
         pw: PasswordArgs,
-        /// Hedef varsa üzerine yaz.
+        #[command(flatten)]
+        unlock: UnlockArgs,
+        /// Hedef varsa üzerine yaz (klasörse silinir).
         #[arg(long)]
         force: bool,
-        /// KDF bütçesi aşımına izin ver (RAM eşiği yine uygulanır).
+        /// Symlink'leri kur (varsayılan: hiç kurulmaz).
+        #[arg(long, value_enum, value_name = "safe|unsafe", num_args = 0..=1, default_missing_value = "safe")]
+        restore_symlinks: Option<RestoreSymlinks>,
+        /// Yinelenen (büyük/küçük harf, NFC) adlarda `_2`, `_3` …
         #[arg(long)]
-        allow_large_kdf: bool,
-        /// Bellek kilitlenemezse hata ver.
+        rename_conflicts: bool,
+        /// Atlanan/değiştirilen giriş hata say (biçim/politika → 4, ayrıcalık → 1).
         #[arg(long)]
-        strict_memory: bool,
+        strict: bool,
+        /// Bilinen bulut senkron klasörlerine çıkarmaya onay istemeden izin ver.
+        #[arg(long)]
+        allow_cloud_dir: bool,
     },
     /// Dosyayı yazmadan doğrular.
     Verify {
@@ -192,12 +246,8 @@ enum Command {
         input: PathBuf,
         #[command(flatten)]
         pw: PasswordArgs,
-        /// KDF bütçesi aşımına izin ver.
-        #[arg(long)]
-        allow_large_kdf: bool,
-        /// Bellek kilitlenemezse hata ver.
-        #[arg(long)]
-        strict_memory: bool,
+        #[command(flatten)]
+        unlock: UnlockArgs,
     },
     /// Açık başlık meta verisini gösterir (KDF çalıştırmaz).
     Info {
@@ -212,18 +262,14 @@ enum Command {
         pw: PasswordArgs,
         #[command(flatten)]
         new: NewPasswordArgs,
-        /// Yeni KDF parametreleri (verilmezse eski başlıktaki).
+        /// Yeni KDF belleği (MiB); verilmezse eski başlıktaki parametreler.
         #[arg(long, value_name = "MiB")]
         kdf_memory: Option<u32>,
         /// Sonucu tam doğrula.
         #[arg(long)]
         verify: bool,
-        /// KDF bütçesi aşımına izin ver.
-        #[arg(long)]
-        allow_large_kdf: bool,
-        /// Bellek kilitlenemezse hata ver.
-        #[arg(long)]
-        strict_memory: bool,
+        #[command(flatten)]
+        unlock: UnlockArgs,
     },
     /// Yeni dosya anahtarı ile tüm chunk'ları yeniden şifreler (yerinde, atomik).
     Reencrypt {
@@ -233,14 +279,10 @@ enum Command {
         pw: PasswordArgs,
         #[command(flatten)]
         new: NewPasswordArgs,
-        /// KDF bütçesi aşımına izin ver.
-        #[arg(long)]
-        allow_large_kdf: bool,
-        /// Bellek kilitlenemezse hata ver.
-        #[arg(long)]
-        strict_memory: bool,
+        #[command(flatten)]
+        unlock: UnlockArgs,
     },
-    /// Bir dizindeki bayat `.lphy-tmp-*` dosyalarını onayla siler.
+    /// Bir dizindeki bayat `.lphy-tmp-*` dosya/dizinlerini onayla siler.
     Cleanup {
         /// Taranacak dizin.
         dir: PathBuf,
@@ -370,19 +412,55 @@ fn default_output_name() -> Result<PathBuf> {
     )))
 }
 
-fn escape_for_display(s: &str) -> String {
-    // C6: kontrol, ANSI, bidi ve format karakterleri `\u{…}` olarak.
-    s.chars()
-        .map(|c| {
-            let cp = c as u32;
-            let bidi = (0x202A..=0x202E).contains(&cp) || (0x2066..=0x2069).contains(&cp);
-            if c.is_control() || bidi || (0x200B..=0x200F).contains(&cp) || cp == 0xFEFF {
-                format!("\\u{{{cp:x}}}")
-            } else {
-                c.to_string()
-            }
-        })
-        .collect()
+fn disp(p: &Path) -> String {
+    escape_display(&p.display().to_string())
+}
+
+fn print_report(rep: &Report, log: &mut dyn FnMut(&str)) {
+    for (p, why) in &rep.skipped {
+        eprintln!("uyarı: atlandı: {} ({why})", escape_display(p));
+    }
+    for (a, b) in &rep.renamed {
+        eprintln!(
+            "uyarı: yeniden adlandırıldı: {} → {}",
+            escape_display(a),
+            escape_display(b)
+        );
+    }
+    for w in &rep.warnings {
+        eprintln!("uyarı: {w}");
+    }
+    log(&format!(
+        "{} giriş, {} symlink kuruldu",
+        rep.entries, rep.symlinks_created
+    ));
+}
+
+/// Bulut senkron klasörü denetimi (R5-05): onay ya da `--allow-cloud-dir`; non-tty → kod 5.
+fn cloud_check(target: &Path, allow: bool) -> Result<()> {
+    if allow {
+        return Ok(());
+    }
+    let Some(root) = lephy_sys::fs::cloud_root_of(target) else {
+        return Ok(());
+    };
+    eprintln!(
+        "uyarı: hedef bir bulut senkron klasörünün altında ({}); düz metin buluta yüklenebilir. Liste sezgiseldir, eksik olabilir.",
+        disp(&root)
+    );
+    let stdin = std::io::stdin();
+    if !lephy_sys::term::is_tty(&stdin) {
+        return Err(Error::Cancelled(
+            "bulut klasörüne çıkarma için onay gerekli (--allow-cloud-dir)".into(),
+        ));
+    }
+    eprint!("Devam edilsin mi? [evet/hayır]: ");
+    let mut line = String::new();
+    stdin.read_line(&mut line)?;
+    if line.trim() != "evet" {
+        return Err(Error::Cancelled("bulut klasörü onayı reddedildi".into()));
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -395,11 +473,20 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             chunk_size,
             kdf,
             pw,
+            raw,
+            pad,
+            no_pad,
+            strict,
             force,
             strict_memory,
             delete_original,
         } => {
             let is_stdin = input.as_os_str() == "-";
+            if is_stdin && *pad {
+                return Err(Error::Environment(
+                    "--pad stdin girişiyle kullanılamaz".into(),
+                ));
+            }
             if *delete_original && is_stdin {
                 return Err(Error::Environment(
                     "--delete-original stdin ile kullanılamaz".into(),
@@ -418,7 +505,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 if !is_stdin && d.contains(&*s) {
                     log(&format!(
                         "bilgi: çıktı adı kaynak adını içeriyor ({})",
-                        escape_for_display(&d)
+                        escape_display(&d)
                     ));
                 }
             }
@@ -436,6 +523,15 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 kdf,
                 force: *force,
                 strict_memory: *strict_memory,
+                raw: *raw,
+                pad: if *pad {
+                    Some(true)
+                } else if *no_pad {
+                    Some(false)
+                } else {
+                    None
+                },
+                strict: *strict,
             };
             let inp = if is_stdin {
                 Input::Stdin
@@ -456,10 +552,17 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                     "uyarı: dosya sistemi atomik noclobber desteklemiyor; kontrol-sonra-rename kullanıldı"
                 );
             }
+            if let Some(a) = &rep.archive {
+                print_report(a, log);
+            }
             log(&format!(
-                "{} bayt şifrelendi → {}",
+                "{} bayt ({}) şifrelendi → {}",
                 rep.plain_len,
-                escape_for_display(&out.display().to_string())
+                match rep.content_type {
+                    ContentType::Raw => "ham akış",
+                    ContentType::Archive => "arşiv",
+                },
+                disp(&out)
             ));
             if *delete_original {
                 let u = UnlockOptions {
@@ -474,7 +577,11 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                         d
                     });
                 }
-                std::fs::remove_file(input)?;
+                if input.symlink_metadata()?.is_dir() {
+                    std::fs::remove_dir_all(input)?;
+                } else {
+                    std::fs::remove_file(input)?;
+                }
                 eprintln!(
                     "uyarı: orijinal silindi; disk/snapshot/VSS/bulut sürüm geçmişinde kalıntı olabilir"
                 );
@@ -486,24 +593,36 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             output,
             stdout,
             pw,
+            unlock,
             force,
-            allow_large_kdf,
-            strict_memory,
+            restore_symlinks,
+            rename_conflicts,
+            strict,
+            allow_cloud_dir,
         } => {
             let keyfile = keyfile_of(pw.keyfile.as_ref())?;
             let source = source_of(pw);
             let nfc = read_password(&source, "Parola: ", false, false)?;
-            memory_warning(*strict_memory)?;
-            let u = UnlockOptions {
-                allow_large_kdf: *allow_large_kdf,
-                strict_memory: *strict_memory,
+            memory_warning(unlock.strict_memory)?;
+            let dopts = DecryptOptions {
+                unlock: unlock.opts(),
+                extract: ExtractOptions {
+                    strict: *strict,
+                    symlinks: match restore_symlinks {
+                        None => SymlinkPolicy::None,
+                        Some(RestoreSymlinks::Safe) => SymlinkPolicy::Safe,
+                        Some(RestoreSymlinks::Unsafe) => SymlinkPolicy::Unsafe,
+                    },
+                    rename_conflicts: *rename_conflicts,
+                    padded: false,
+                },
             };
             if *stdout {
                 eprintln!(
                     "uyarı: --stdout: son chunk doğrulanana kadar kesme tespit edilemez; çıktı kısmen yazılmış olabilir"
                 );
-                let n = ops::decrypt(input, &Output::Stdout, &nfc, keyfile.as_ref(), u, log)?;
-                log(&format!("{n} bayt çözüldü (stdout)"));
+                let r = ops::decrypt(input, &Output::Stdout, &nfc, keyfile.as_ref(), dopts, log)?;
+                log(&format!("{} bayt çözüldü (stdout)", r.plain_len));
                 return Ok(());
             }
             let out = output.clone().unwrap_or_else(|| {
@@ -516,51 +635,49 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                     .map_or_else(|| format!("{s}.out"), str::to_string);
                 input.with_file_name(base)
             });
-            let n = ops::decrypt(
+            cloud_check(&out, *allow_cloud_dir)?;
+            let r = ops::decrypt(
                 input,
                 &Output::Path(&out, *force),
                 &nfc,
                 keyfile.as_ref(),
-                u,
+                dopts,
                 log,
             )?;
+            if r.noclobber_fallback {
+                eprintln!(
+                    "uyarı: dosya sistemi atomik noclobber desteklemiyor; kontrol-sonra-rename kullanıldı"
+                );
+            }
+            if let Some(a) = &r.archive {
+                print_report(a, log);
+            }
             log(&format!(
-                "{n} bayt çözüldü → {}",
-                escape_for_display(&out.display().to_string())
+                "{} bayt çözüldü → {}",
+                r.plain_len,
+                disp(&r.target)
             ));
             Ok(())
         }
-        Command::Verify {
-            input,
-            pw,
-            allow_large_kdf,
-            strict_memory,
-        } => {
+        Command::Verify { input, pw, unlock } => {
             let keyfile = keyfile_of(pw.keyfile.as_ref())?;
             let source = source_of(pw);
             let nfc = read_password(&source, "Parola: ", false, false)?;
-            memory_warning(*strict_memory)?;
-            let u = UnlockOptions {
-                allow_large_kdf: *allow_large_kdf,
-                strict_memory: *strict_memory,
-            };
-            let n = ops::verify(input, &nfc, keyfile.as_ref(), u, log)?;
+            memory_warning(unlock.strict_memory)?;
+            let n = ops::verify(input, &nfc, keyfile.as_ref(), unlock.opts(), log)?;
             println!("doğrulandı: {n} bayt");
             Ok(())
         }
         Command::Info { input } => {
             let h = ops::info(input)?;
-            println!(
-                "dosya:        {}",
-                escape_for_display(&input.display().to_string())
-            );
+            println!("dosya:        {}", disp(input));
             println!("sürüm:        {}", lephy_core::FORMAT_VERSION);
             println!("algoritma:    {}", h.alg.name());
             println!(
                 "içerik:       {}",
                 match h.content_type {
-                    lephy_core::header::ContentType::Raw => "ham akış",
-                    lephy_core::header::ContentType::Archive => "arşiv",
+                    ContentType::Raw => "ham akış",
+                    ContentType::Archive => "arşiv",
                 }
             );
             println!("dolgu:        {}", if h.padded { "PADMÉ" } else { "yok" });
@@ -596,8 +713,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             new,
             kdf_memory,
             verify,
-            allow_large_kdf,
-            strict_memory,
+            unlock,
         } => {
             let old_kf = keyfile_of(pw.keyfile.as_ref())?;
             let new_kf = keyfile_of(new.new_keyfile.as_ref())?;
@@ -611,11 +727,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             let old = read_password(&old_src, "Eski parola: ", false, false)?;
             let newp = read_password(&new_src, "Yeni parola: ", true, false)?;
             password::check_encrypt_policy(&newp)?;
-            memory_warning(*strict_memory)?;
-            let u = UnlockOptions {
-                allow_large_kdf: *allow_large_kdf,
-                strict_memory: *strict_memory,
-            };
+            memory_warning(unlock.strict_memory)?;
             let kdf = kdf_memory.map(|m| KdfParams {
                 m_kib: m.saturating_mul(1024),
                 ..KdfParams::DEFAULT
@@ -633,22 +745,18 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 &old,
                 old_kf.as_ref(),
                 &creds,
-                u,
+                unlock.opts(),
                 *verify,
                 &mut OsEntropy,
                 log,
             )?;
-            eprintln!(
-                "uyarı: eski parola ve eski dosyanın başlık kopyasına sahip biri bu dosyayı hâlâ açabilir; gerçek rotasyon için `reencrypt`"
-            );
             Ok(())
         }
         Command::Reencrypt {
             input,
             pw,
             new,
-            allow_large_kdf,
-            strict_memory,
+            unlock,
         } => {
             let old_kf = keyfile_of(pw.keyfile.as_ref())?;
             let new_kf = keyfile_of(new.new_keyfile.as_ref())?;
@@ -663,17 +771,21 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             let old = read_password(&old_src, "Eski parola: ", false, false)?;
             let newp = read_password(&new_src, "Yeni parola: ", true, false)?;
             password::check_encrypt_policy(&newp)?;
-            memory_warning(*strict_memory)?;
-            let u = UnlockOptions {
-                allow_large_kdf: *allow_large_kdf,
-                strict_memory: *strict_memory,
-            };
+            memory_warning(unlock.strict_memory)?;
             let creds = NewCredentials {
                 pwd_nfc: &newp,
                 keyfile_digest: new_kf.as_ref(),
                 kdf: None,
             };
-            let n = ops::reencrypt(input, &old, old_kf.as_ref(), &creds, u, &mut OsEntropy, log)?;
+            let n = ops::reencrypt(
+                input,
+                &old,
+                old_kf.as_ref(),
+                &creds,
+                unlock.opts(),
+                &mut OsEntropy,
+                log,
+            )?;
             log(&format!("{n} bayt yeniden şifrelendi"));
             Ok(())
         }
@@ -684,7 +796,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 return Ok(());
             }
             for p in &stale {
-                println!("{}", escape_for_display(&p.display().to_string()));
+                println!("{}", disp(p));
             }
             eprintln!("uyarı: çözme tmp'leri düz metin içerebilir; silme kalıntı bırakabilir");
             if !*yes {
@@ -692,9 +804,9 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 if !lephy_sys::term::is_tty(&stdin) {
                     return Err(Error::Cancelled("onay gerekli (--yes)".into()));
                 }
-                eprint!("{} dosya silinsin mi? [evet/hayır]: ", stale.len());
+                eprint!("{} öğe silinsin mi? [evet/hayır]: ", stale.len());
                 let mut line = String::new();
-                std::io::stdin().read_line(&mut line)?;
+                stdin.read_line(&mut line)?;
                 if line.trim() != "evet" {
                     return Err(Error::Cancelled("kullanıcı reddetti".into()));
                 }
@@ -743,10 +855,12 @@ mod tests {
     }
 
     #[test]
-    fn escape_hides_ansi_and_bidi() {
-        assert_eq!(
-            escape_for_display("a\x1b[31mb\u{202e}c"),
-            "a\\u{1b}[31mb\\u{202e}c"
-        );
+    fn pad_and_no_pad_conflict_is_clap_error() {
+        let r = Cli::try_parse_from(["lephycrypy", "encrypt", "x", "--pad", "--no-pad"]);
+        assert!(r.is_err());
+        let r = Cli::try_parse_from(["lephycrypy", "decrypt", "x", "--restore-symlinks"]);
+        assert!(r.is_ok());
+        let r = Cli::try_parse_from(["lephycrypy", "decrypt", "x", "--restore-symlinks", "unsafe"]);
+        assert!(r.is_ok());
     }
 }

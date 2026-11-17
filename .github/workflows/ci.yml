@@ -30,7 +30,9 @@ jobs:
       - name: unsafe only in lephy-sys (R5-01)
         run: |
           set -euo pipefail
-          if grep -rnE '\bunsafe\b' crates --include='*.rs' | grep -v '^crates/lephy-sys/' | grep -v 'forbid(unsafe_code)' | grep -v '^\S*:[0-9]*:\s*//' ; then
+          # Anahtar sözcük kullanımı ve lint gevşetme aranır; dizge içindeki "unsafe"
+          # (ör. --restore-symlinks unsafe) sayılmaz. Asıl zorlama #![forbid(unsafe_code)].
+          if grep -rnE '\bunsafe[[:space:]]*(\{|fn\b|impl\b|trait\b|extern\b)|allow\(unsafe_code' crates --include='*.rs' | grep -v '^crates/lephy-sys/'; then
             echo "::error::unsafe outside lephy-sys"; exit 1; fi
       - name: workflow lint (SHA pin + permissions)
         run: |

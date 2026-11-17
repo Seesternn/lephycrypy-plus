@@ -105,6 +105,10 @@ Düz metin akışının içinde, ardışık girişler:
 - Dosya verisi: `[u32 len][bytes]…[u32 0]` çerçeveleri; `len` 1..=16 MiB.
 - Symlink: hedef tek çerçevede `[u32 len][hedef][u32 0]`, 1..=4096 B, NUL yok, `/` ayırıcı, NFC uygulanmaz; `mode`/`mtime` yazıcı 0 yazar, okuyucu yok sayar.
 - Dizin: veri yok. END: yol_len 0, mode 0, mtime 0, veri yok.
+- Sıra: yazıcı bir dizinin girişini çocuklarından önce yazar; okuyucu üst dizin girişi olmayan
+  bir yolu reddeder (kod 4). Çocuklar ad baytlarına göre artan sırada yazılır (tekrarlanabilirlik).
+- Kök adı arşive girmez: klasör şifrelenirken girişler klasörün içeriğine görelidir; tek dosya
+  şifrelenirken tek giriş dosyanın adıdır.
 - `mode`: POSIX; okuyucu setuid/setgid/sticky siler, `& 0o777`. `mtime`: Unix saniye, ∈ [−2^40, 2^40].
 
 Sınırlar (ihlal → kod 4): çerçeve ≤ 16 MiB; bileşen ≤ 255 B; yol ≤ 4096 B; derinlik ≤ 256; giriş ≤ 1 000 000; toplam yol baytı (symlink hedefleri dahil) ≤ 64 MiB; yolda `..`, boş bileşen, `/` ile başlama, `\`, NUL, sürücü harfi (`[A-Za-z]:`) yasak; yinelenen (NFC + harf katlama) yasak.

@@ -36,6 +36,7 @@ blake3 = { version = "1.8", default-features = false, features = ["zeroize", "pu
 getrandom = { version = "0.4", default-features = false }
 unicode-normalization = { version = "0.1", default-features = false }
 crossbeam-channel = { version = "0.5", default-features = false, features = ["std"] }
+cap-std = "4"
 
 # R5-01: unsafe yalnızca lephy-sys'te. lephy-sys kendi [lints] tablosunu kullanır,
 # `workspace = true` yazmaz; diğer tüm crate'ler bu tabloyu devralır.

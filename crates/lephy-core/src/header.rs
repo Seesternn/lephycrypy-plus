@@ -21,10 +21,11 @@ pub const WRAP_AAD_END: usize = 144;
 pub const MAC_END: usize = 224;
 
 /// İçerik türü (ofset 9).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum ContentType {
     /// Ham akış (tek dosya/stdin).
+    #[default]
     Raw = 0,
     /// Arşiv (aşama 2).
     Archive = 1,

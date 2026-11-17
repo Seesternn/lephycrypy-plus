@@ -93,6 +93,10 @@ desteklenmez; kimlik yeniden doğrulaması ile çağrı arasında TOCTOU pencere
 sistem/boot/Time Machine dışlanır.
 
 ## Arşiv
+Harf katlama erken uyarısı `char::to_lowercase` ile yapılır (CaseFolding.txt C+S ile tam eşdeğerlik
+DOĞRULANMADI); otorite dosya sistemidir. Yazıcı çerçeve verisini ≤ 1 MiB'lık sıfırlanan ara
+tampondan geçirir (plandaki "ayrı çerçeve tamponu yok" ifadesinden küçük sapma). mtime/izin
+uygulaması best-effort'tur (başarısızlık sessizdir). Windows'ta tmp dizin ACL kısıtlaması yoktur.
 xattr, ACL, resource fork, sahiplik, sert bağlar (kopya), FIFO/soket/aygıt desteklenmez;
 `--stdout` kısmi çıktı; harf katlama erken uyarı, otorite FS. Symlink'ler varsayılan kurulmaz;
 `--restore-symlinks` yalnızca göreli/`..`'siz hedefler; `--restore-symlinks=unsafe` ile kurulan

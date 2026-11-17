@@ -11,7 +11,7 @@
 use lephy_core::cipher::AlgId;
 use lephy_core::header::{ContentType, NewHeaderParams};
 use lephy_core::kdf::{self, KdfParams};
-use lephy_core::ops::{self, EncryptOptions, Input, Reuse};
+use lephy_core::ops::{self, DecryptOptions, EncryptOptions, Input, Reuse};
 use lephy_core::password;
 use lephy_core::testvec::FixedEntropy;
 use lephy_sys::mem::SecretBytes;
@@ -21,6 +21,8 @@ const V1: &[u8] = include_bytes!("../../../tests/kat/vectors/v1.lphy");
 const V2: &[u8] = include_bytes!("../../../tests/kat/vectors/v2.lphy");
 const V3: &[u8] = include_bytes!("../../../tests/kat/vectors/v3.lphy");
 const V4: &[u8] = include_bytes!("../../../tests/kat/vectors/v4.lphy");
+const V5: &[u8] = include_bytes!("../../../tests/kat/vectors/v5.lphy");
+const V6: &[u8] = include_bytes!("../../../tests/kat/vectors/v6.lphy");
 const V9: &[u8] = include_bytes!("../../../tests/kat/vectors/v9.lphy");
 const META: &str = include_str!("../../../tests/kat/vectors/vectors.json");
 
@@ -47,36 +49,42 @@ fn json_hex(key: &str) -> Vec<u8> {
     hex::decode(v).unwrap()
 }
 
-fn run_vector(
-    num: u32,
-    alg: AlgId,
-    chunk_code: u8,
-    plain: &[u8],
-    keyfile: Option<&[u8]>,
-    expected: &[u8],
-) {
-    let dir = std::env::temp_dir().join(format!("lphy-vec-{num}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let src = dir.join("in");
-    std::fs::write(&src, plain).unwrap();
-    let out: PathBuf = dir.join("out.lphy");
-    let kf = keyfile.map(kdf::keyfile_digest);
-    let opts = EncryptOptions {
+fn opts(alg: AlgId, chunk_code: u8, raw: bool, pad: Option<bool>) -> EncryptOptions {
+    EncryptOptions {
         alg,
         chunk_code,
         kdf: common_kdf(),
         force: false,
         strict_memory: false,
-    };
+        raw,
+        pad,
+        strict: false,
+    }
+}
+
+fn tmp(num: u32) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("lphy-vec-{num}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Ham akış vektörü: şifrele (sabit entropi), Python çıktısıyla karşılaştır, çöz.
+fn run_raw(num: u32, alg: AlgId, plain: &[u8], keyfile: Option<&[u8]>, pad: bool, expected: &[u8]) {
+    let dir = tmp(num);
+    let src = dir.join("in");
+    std::fs::write(&src, plain).unwrap();
+    let out = dir.join("out.lphy");
+    let kf = keyfile.map(kdf::keyfile_digest);
     let mut ent = FixedEntropy::format_defaults(alg);
     let p = pwd("test");
+    let o = opts(alg, 0, true, Some(pad));
     ops::encrypt(
         &Input::Path(&src),
         &out,
         &p,
         kf.as_ref(),
-        &opts,
+        &o,
         &mut ent,
         &mut |_| {},
     )
@@ -85,48 +93,108 @@ fn run_vector(
     assert_eq!(got.len(), expected.len(), "v{num} uzunluk");
     assert_eq!(&got[..256], &expected[..256], "v{num} başlık");
     assert_eq!(got, expected, "v{num} gövde");
-    // Python çıktısı Rust ile çözülebilmeli.
     let dec = dir.join("dec");
-    let n = ops::decrypt(
+    let r = ops::decrypt(
         &out,
         &ops::Output::Path(&dec, false),
         &p,
         kf.as_ref(),
-        ops::UnlockOptions::default(),
+        DecryptOptions::default(),
         &mut |_| {},
     )
     .unwrap();
-    assert_eq!(n, plain.len() as u64);
+    assert_eq!(r.plain_len, plain.len() as u64);
     assert_eq!(std::fs::read(&dec).unwrap(), plain);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn v1_empty() {
-    run_vector(1, AlgId::XChaCha20Poly1305, 0, b"", None, V1);
+    run_raw(1, AlgId::XChaCha20Poly1305, b"", None, false, V1);
 }
 
 #[test]
 fn v2_exact_multiple() {
     let plain: Vec<u8> = (0..64 * 1024usize).map(|i| (i % 251) as u8).collect();
-    run_vector(2, AlgId::XChaCha20Poly1305, 0, &plain, None, V2);
+    run_raw(2, AlgId::XChaCha20Poly1305, &plain, None, false, V2);
 }
 
 #[test]
 fn v3_exact_multiple_plus_one() {
     let plain: Vec<u8> = (0..=64 * 1024usize).map(|i| (i % 251) as u8).collect();
-    run_vector(3, AlgId::XChaCha20Poly1305, 0, &plain, None, V3);
+    run_raw(3, AlgId::XChaCha20Poly1305, &plain, None, false, V3);
 }
 
 #[test]
 fn v4_aes_hello() {
-    run_vector(4, AlgId::Aes256Gcm, 0, b"hello", None, V4);
+    run_raw(4, AlgId::Aes256Gcm, b"hello", None, false, V4);
+}
+
+#[test]
+fn v5_archive_single_file_padded() {
+    // a.txt="hi", mode 0644, mtime 0: kaynak dosyanın mode/mtime'ı ayarlanır (Unix).
+    let dir = tmp(5);
+    let src = dir.join("a.txt");
+    std::fs::write(&src, b"hi").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    std::fs::File::options()
+        .write(true)
+        .open(&src)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH)
+        .unwrap();
+    let out = dir.join("out.lphy");
+    let mut ent = FixedEntropy::format_defaults(AlgId::XChaCha20Poly1305);
+    let p = pwd("test");
+    let o = opts(AlgId::XChaCha20Poly1305, 0, false, None);
+    let rep = ops::encrypt(
+        &Input::Path(&src),
+        &out,
+        &p,
+        None,
+        &o,
+        &mut ent,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(rep.content_type, ContentType::Archive);
+    let got = std::fs::read(&out).unwrap();
+    if cfg!(unix) {
+        assert_eq!(got, V5, "v5 (arşiv + PADMÉ) Python ile eşleşmeli");
+    } else {
+        assert_eq!(got.len(), V5.len());
+    }
+    // Python çıktısı Rust ile çözülür ve düzleştirilir.
+    let py = dir.join("py.lphy");
+    std::fs::write(&py, V5).unwrap();
+    let dec = dir.join("dec.txt");
+    ops::decrypt(
+        &py,
+        &ops::Output::Path(&dec, false),
+        &p,
+        None,
+        DecryptOptions::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert!(dec.is_file());
+    assert_eq!(std::fs::read(&dec).unwrap(), b"hi");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn v6_raw_padded_hello() {
+    run_raw(6, AlgId::XChaCha20Poly1305, b"hello", None, true, V6);
 }
 
 #[test]
 fn v9_keyfile() {
     let kf: Vec<u8> = (0u8..0x40).collect();
-    run_vector(9, AlgId::XChaCha20Poly1305, 0, b"hello", Some(&kf), V9);
+    run_raw(9, AlgId::XChaCha20Poly1305, b"hello", Some(&kf), false, V9);
 }
 
 #[test]
