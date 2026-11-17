@@ -82,7 +82,7 @@ fn main() -> ExitCode {
     let _ = lephy_sys::fs::tmp_unlink_all_in_hook();
     lephy_sys::signal::mark_cleanup_done();
     match r {
-        Ok(()) if lephy_sys::signal::interrupted() => ExitCode::from(130),
+        Ok(()) if lephy_sys::signal::signalled() => ExitCode::from(130),
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("hata: pencere açılamadı: {e}");

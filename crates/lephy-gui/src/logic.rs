@@ -117,7 +117,6 @@ pub struct Outcome {
 /// # Errors
 /// Çekirdek hataları (mesajı ve çıkış kodu kategorisi arayüzde gösterilir).
 pub fn run(job: Job) -> Result<Outcome> {
-    lephy_sys::signal::reset_interrupted();
     let nfc = password::normalize_nfc(&job.password)?;
     drop(job.password);
     let keyfile = job

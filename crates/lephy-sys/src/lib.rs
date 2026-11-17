@@ -18,6 +18,7 @@ pub mod fdio;
 pub mod fs;
 pub mod mem;
 pub mod platform;
+pub mod secure_input;
 pub mod signal;
 pub mod term;
 pub mod vol;

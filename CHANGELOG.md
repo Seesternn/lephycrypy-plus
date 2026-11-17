@@ -29,6 +29,19 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Keys are no longer copied to unwiped stack memory; key-file digests are wiped after use.
 - A symlink target spread over several frames is rejected, as the format requires.
 - `verify` now checks the archive structure and padding as well, without writing anything.
+- USB wipe also empties `.Trashes`, `.Spotlight-V100`, `.fseventsd` and `System Volume
+  Information` (old deleted files and indexed text lived there); the dry run lists them.
+- USB wipe checks the device identity on the opened folder handle, so another device mounted at
+  the same place after the check is never touched; macOS formatting targets the volume UUID.
+- Windows USB targets must be a drive root such as `E:\`; relative paths are rejected.
+- The desktop app's Cancel uses its own flag: a later Ctrl+C or SIGTERM still cleans up instead of
+  exiting at once, and Cancel pressed while the size is being measured is no longer lost.
+- The panic hook can no longer write into a buffer that another thread is unmapping.
+- The signal handler preserves `errno`.
+- `--password-fd` duplicates the descriptor instead of taking ownership, and refuses the
+  program's own internal descriptors.
+- macOS: secure keyboard input is on while a password field has focus, so processes with input
+  monitoring permission cannot read the keystrokes.
 
 ### Added
 - Private-data guard (`scripts/check-private.sh`) run before every commit, and a CI job that

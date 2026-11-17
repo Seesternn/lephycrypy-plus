@@ -196,6 +196,10 @@ impl App {
             keyfile: self.keyfile.clone(),
         };
         self.confirm.clear();
+        // Önceki işten kalan iptal, iş başlamadan (UI iş parçacığında) temizlenir; böylece boyut
+        // tahmini sırasında basılan İptal kaybolmaz.
+        lephy_sys::signal::reset_cancel();
+        self.cancel_requested = false;
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx2 = ctx.clone();
         self.total.store(0, Ordering::Relaxed);
@@ -206,7 +210,14 @@ impl App {
                 logic::estimate_total(job.mode, &job.input),
                 Ordering::Relaxed,
             );
-            let r = logic::run(job).map_err(|e| logic::describe_error(&e));
+            let r = if lephy_sys::signal::interrupted() {
+                // Boyut tahmini sırasında iptal edildi: anahtar türetmeye hiç başlanmaz.
+                Err(logic::describe_error(
+                    &lephy_core::error::Error::Interrupted,
+                ))
+            } else {
+                logic::run(job).map_err(|e| logic::describe_error(&e))
+            };
             let _ = tx.send(r);
             ctx2.request_repaint();
         });
@@ -238,7 +249,7 @@ impl App {
         }
         if self.job.is_none() && self.cancel_requested {
             // İptal düğmesi: bayrak temizlenir, uygulama açık kalır.
-            lephy_sys::signal::reset_interrupted();
+            lephy_sys::signal::reset_cancel();
             self.cancel_requested = false;
         }
     }
@@ -246,7 +257,7 @@ impl App {
     /// SIGINT/SIGTERM/Ctrl+C: boştaysa pencereyi kapat; iş sürüyorsa iş önce durur (tmp
     /// temizlenir), sonra kapanır. Boşta sinyali fark etmek için düzenli yeniden çizim.
     fn handle_signal(&mut self, ctx: &egui::Context) {
-        if lephy_sys::signal::interrupted() && !self.running() && !self.cancel_requested {
+        if lephy_sys::signal::signalled() && !self.running() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         // Pencere kapatma isteği iş sürerken gelirse: iş iptal edilir, yarım dosya silinir,
@@ -255,7 +266,7 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.close_after_job = true;
             self.cancel_requested = true;
-            lephy_sys::signal::request_interrupt();
+            lephy_sys::signal::request_cancel();
         }
         if self.close_after_job && !self.running() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -827,7 +838,7 @@ impl App {
                     ui.label(RichText::new("Durduruluyor…").color(pal.muted).size(13.0));
                 } else if link_button(ui, pal, "İptal").clicked() {
                     self.cancel_requested = true;
-                    lephy_sys::signal::request_interrupt();
+                    lephy_sys::signal::request_cancel();
                 }
             });
         });

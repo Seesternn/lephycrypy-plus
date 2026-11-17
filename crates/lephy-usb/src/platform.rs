@@ -271,6 +271,19 @@ mod mac {
         }
     }
 
+    /// `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` (onaltılık) biçiminde mi.
+    pub(crate) fn is_uuid(s: &str) -> bool {
+        let b = s.as_bytes();
+        b.len() == 36
+            && b.iter().enumerate().all(|(i, c)| {
+                if matches!(i, 8 | 13 | 18 | 23) {
+                    *c == b'-'
+                } else {
+                    c.is_ascii_hexdigit()
+                }
+            })
+    }
+
     impl Platform for MacPlatform {
         fn list(&self) -> Result<Vec<Device>> {
             let bytes = Self::run(&["list", "-plist", "external", "physical"])?;
@@ -322,7 +335,14 @@ mod mac {
                     "bütün disk biçimlendirilmez: {r}"
                 )));
             }
-            Self::run(&["eraseVolume", "ExFAT", label, r])?;
+            // Birim UUID ile hedeflenir: `diskXsY` adı aygıt değişince yeniden atanabilir, UUID
+            // atanmaz. UUID yoksa (bazı MBR birimleri) aygıt adına düşülür.
+            let target = if is_uuid(&dev.identity.volume) {
+                dev.identity.volume.as_str()
+            } else {
+                r.as_str()
+            };
+            Self::run(&["eraseVolume", "ExFAT", label, target])?;
             Ok(())
         }
 
@@ -397,6 +417,30 @@ mod win {
             })
     }
 
+    /// Yalnızca `X:`, `X:\\` ya da `X:/` kabul edilir (X harf). Göreli yollar ilk harflerinden
+    /// sürücüye çevrilmez.
+    fn drive_root(s: &str) -> Option<PathBuf> {
+        let b = s.as_bytes();
+        let ok = matches!(b.len(), 2 | 3)
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b.len() == 2 || b[2] == b'\\' || b[2] == b'/');
+        ok.then(|| PathBuf::from(format!("{}:\\", char::from(b[0].to_ascii_uppercase()))))
+    }
+
+    #[cfg(test)]
+    mod drive_tests {
+        #[test]
+        fn only_drive_roots_are_accepted() {
+            for good in ["E:", "e:\\", "E:/"] {
+                assert!(super::drive_root(good).is_some(), "{good}");
+            }
+            for bad in ["data", "fixed", "E:\\dir", "\\\\server\\share", "", "1:"] {
+                assert!(super::drive_root(bad).is_none(), "{bad}");
+            }
+        }
+    }
+
     impl Platform for WinPlatform {
         fn list(&self) -> Result<Vec<Device>> {
             let sys = system_drive();
@@ -413,8 +457,12 @@ mod win {
         }
 
         fn describe(&self, mount: &Path) -> Result<Device> {
-            let s = mount.to_string_lossy();
-            let root = PathBuf::from(format!("{}:\\", s.chars().next().unwrap_or('?')));
+            let root = drive_root(&mount.to_string_lossy()).ok_or_else(|| {
+                Error::Environment(
+                    "hedef bir sürücü kökü olmalı (ör. E:\\); göreli ya da alt klasör yolu kabul edilmez"
+                        .into(),
+                )
+            })?;
             let v = wv::volume_info(&root)?;
             Ok(to_device(&v, system_drive()))
         }

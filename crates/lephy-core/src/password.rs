@@ -152,8 +152,8 @@ pub fn read_raw(source: &Source, prompt: &str, input_is_stdin: bool) -> Result<S
             if *fd < 3 {
                 return Err(Error::Environment("--password-fd 0, 1, 2 olamaz".into()));
             }
-            // lephy-core unsafe içeremez; fd sahipliğini lephy-sys devralır ve doğrular.
-            let f = lephy_sys::fdio::file_from_raw_fd(*fd)
+            // lephy-core unsafe içeremez; lephy-sys fd'yi doğrular ve bir kopyasını verir.
+            let f = lephy_sys::fdio::dup_inherited_fd(*fd)
                 .ok_or_else(|| Error::Environment(format!("--password-fd {fd} geçersiz")))?;
             read_bounded(f)
         }

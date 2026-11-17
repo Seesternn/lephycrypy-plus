@@ -15,25 +15,46 @@
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Kesinti bayrağı. Her chunk sınırında [`interrupted`] ile yoklanır.
+/// Sinyal bayrağı (SIGINT/SIGTERM/SIGHUP, Windows konsol olayları). İkinci gerçek sinyal
+/// `_exit(130)` ile çıkar.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+/// Uygulama içi iptal (GUI "İptal" düğmesi). Sinyal bayrağından ayrıdır: iptalden sonra gelen
+/// ilk sinyal temizliği atlayan `_exit` yolunu tetiklemez.
+static CANCELLED: AtomicBool = AtomicBool::new(false);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
-/// Kesinti istendi mi.
+/// Durulmalı mı: sinyal alındı ya da iptal istendi. Hat her chunk sınırında yoklar.
 #[must_use]
 pub fn interrupted() -> bool {
+    INTERRUPTED.load(Ordering::SeqCst) || CANCELLED.load(Ordering::SeqCst)
+}
+
+/// Yalnızca gerçek bir sinyal alındı mı (uygulama içi iptal hariç).
+#[must_use]
+pub fn signalled() -> bool {
     INTERRUPTED.load(Ordering::SeqCst)
 }
 
-/// Kesinti ister (GUI "İptal" düğmesi): hat bir sonraki chunk sınırında `Interrupted` ile
-/// durur, tmp dosyaları normal yoldan silinir.
-pub fn request_interrupt() {
-    INTERRUPTED.store(true, Ordering::SeqCst);
+/// Uygulama içi iptal ister (GUI "İptal" düğmesi, pencere kapatma): hat bir sonraki chunk
+/// sınırında `Interrupted` ile durur, tmp dosyaları normal yoldan silinir.
+pub fn request_cancel() {
+    CANCELLED.store(true, Ordering::SeqCst);
 }
 
-/// Bayrağı sıfırlar (yalnızca testler ve ardışık komutlar için).
+/// Uygulama içi iptali temizler (sinyal bayrağına dokunmaz).
+pub fn reset_cancel() {
+    CANCELLED.store(false, Ordering::SeqCst);
+}
+
+/// Eski ad: [`request_cancel`].
+pub fn request_interrupt() {
+    request_cancel();
+}
+
+/// İki bayrağı da sıfırlar (yalnızca testler ve ardışık komutlar için).
 pub fn reset_interrupted() {
     INTERRUPTED.store(false, Ordering::SeqCst);
+    CANCELLED.store(false, Ordering::SeqCst);
 }
 
 /// İşleyiciyi kurar; tekrar çağrılması zararsızdır.
@@ -45,6 +66,12 @@ pub fn install() -> io::Result<()> {
         return Ok(());
     }
     imp::install()
+}
+
+/// `fd` sinyal işleyicinin kendi self-pipe uçlarından biri mi (Unix; diğerlerinde `false`).
+#[must_use]
+pub fn is_internal_fd(fd: i32) -> bool {
+    imp::is_internal_fd(fd)
 }
 
 /// Unix: self-pipe okuma ucu (poll için). Windows: `None`.
@@ -78,7 +105,24 @@ mod imp {
 
     const SIGNALS: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
 
+    /// Bu iş parçacığının `errno` konumu.
+    fn errno_ptr() -> *mut libc::c_int {
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+        // SAFETY: `__error` argüman almaz, iş parçacığına özgü geçerli bir işaretçi döndürür ve
+        // async-signal-safe'dir.
+        let p = unsafe { libc::__error() };
+        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "freebsd")))]
+        // SAFETY: `__errno_location` argüman almaz, iş parçacığına özgü geçerli bir işaretçi
+        // döndürür ve async-signal-safe'dir.
+        let p = unsafe { libc::__errno_location() };
+        p
+    }
+
     extern "C" fn handler(_sig: libc::c_int) {
+        // Kesilen kodun errno'su korunur (işleyicideki `write` onu değiştirebilir).
+        let ep = errno_ptr();
+        // SAFETY: `ep` bu iş parçacığının geçerli, hizalı errno konumu.
+        let saved = unsafe { ep.read() };
         if INTERRUPTED.swap(true, Ordering::SeqCst) {
             // İkinci sinyal: hemen çık (async-signal-safe).
             // SAFETY: `_exit` async-signal-safe'dir ve argüman almaz.
@@ -92,6 +136,8 @@ mod imp {
             // olabilir, bayrak zaten kalktı).
             let _ = unsafe { libc::write(wr, b.as_ptr().cast::<libc::c_void>(), 1) };
         }
+        // SAFETY: `ep` bu iş parçacığının geçerli, hizalı errno konumu.
+        unsafe { ep.write(saved) };
     }
 
     fn set_flags(fd: libc::c_int) -> io::Result<()> {
@@ -141,6 +187,10 @@ mod imp {
     pub(super) fn self_pipe_read_fd() -> Option<i32> {
         let fd = PIPE_RD.load(Ordering::SeqCst);
         (fd >= 0).then_some(fd)
+    }
+
+    pub(super) fn is_internal_fd(fd: i32) -> bool {
+        fd >= 0 && (fd == PIPE_RD.load(Ordering::SeqCst) || fd == PIPE_WR.load(Ordering::SeqCst))
     }
 
     pub(super) fn mask_signals_on_this_thread() -> io::Result<()> {
@@ -253,6 +303,10 @@ mod imp {
 
     pub(super) fn self_pipe_read_fd() -> Option<i32> {
         None
+    }
+
+    pub(super) const fn is_internal_fd(_fd: i32) -> bool {
+        false
     }
 
     #[allow(clippy::unnecessary_wraps)]

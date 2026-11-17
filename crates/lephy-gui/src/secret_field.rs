@@ -68,6 +68,8 @@ pub fn apply_event(buf: &mut SecretBytes, ev: &Event) -> Effect {
 pub struct SecretField {
     buf: SecretBytes,
     label: &'static str,
+    /// Alan odaktayken macOS güvenli klavye girişi açık (girdi izleme yapan süreçler okuyamaz).
+    secure: Option<lephy_sys::secure_input::SecureInputGuard>,
 }
 
 impl SecretField {
@@ -81,6 +83,7 @@ impl SecretField {
         Self {
             buf: SecretBytes::with_capacity(MAX_RAW_LEN).expect("kilitli arena"),
             label,
+            secure: None,
         }
     }
 
@@ -131,6 +134,11 @@ impl SecretField {
             response.request_focus();
         }
         let mut submit = false;
+        match (enabled && response.has_focus(), self.secure.is_some()) {
+            (true, false) => self.secure = Some(lephy_sys::secure_input::SecureInputGuard::new()),
+            (false, true) => self.secure = None,
+            _ => {}
+        }
         if enabled && response.has_focus() {
             ui.input_mut(|i| {
                 let buf = &mut self.buf;

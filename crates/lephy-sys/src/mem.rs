@@ -21,7 +21,7 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 use std::io;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 
 use zeroize::Zeroize;
 
@@ -690,31 +690,64 @@ impl<T> fmt::Debug for SecretBox<T> {
 // LargeSecretBuf<T>
 // ---------------------------------------------------------------------------------------------
 
-/// Hook kayıt tablosu: (taban, bayt uzunluğu). Taban NULL = boş slot.
-static REGIONS: [(AtomicPtr<u8>, AtomicUsize); MAX_REGIONS] =
-    [const { (AtomicPtr::new(core::ptr::null_mut()), AtomicUsize::new(0)) }; MAX_REGIONS];
+/// Hook kayıt yuvası. `state` hook ile `Drop` arasındaki yarışı önler: hook yalnızca ACTIVE
+/// yuvayı HOOK'a alıp sıfırlar; Drop yuvayı ACTIVE→RETIRING alamazsa (hook sıfırlıyor) hook
+/// bitene kadar bekler. Böylece hook eşlemesi kaldırılmış belleğe hiç yazmaz.
+struct Slot {
+    state: AtomicU8,
+    ptr: AtomicPtr<u8>,
+    len: AtomicUsize,
+}
+
+const S_FREE: u8 = 0;
+const S_SETUP: u8 = 1;
+const S_ACTIVE: u8 = 2;
+const S_HOOK: u8 = 3;
+const S_RETIRING: u8 = 4;
+
+static REGIONS: [Slot; MAX_REGIONS] = [const {
+    Slot {
+        state: AtomicU8::new(S_FREE),
+        ptr: AtomicPtr::new(core::ptr::null_mut()),
+        len: AtomicUsize::new(0),
+    }
+}; MAX_REGIONS];
 
 fn register_region(p: NonNull<u8>, len: usize) -> Result<usize, MemError> {
-    for (i, (ptr, l)) in REGIONS.iter().enumerate() {
-        if ptr
-            .compare_exchange(
-                core::ptr::null_mut(),
-                p.as_ptr(),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
+    for (i, slot) in REGIONS.iter().enumerate() {
+        if slot
+            .state
+            .compare_exchange(S_FREE, S_SETUP, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            l.store(len, Ordering::Release);
+            slot.ptr.store(p.as_ptr(), Ordering::Release);
+            slot.len.store(len, Ordering::Release);
+            slot.state.store(S_ACTIVE, Ordering::Release);
             return Ok(i);
         }
     }
     Err(MemError::RegistryFull)
 }
 
-fn unregister_region(i: usize) {
-    REGIONS[i].1.store(0, Ordering::Release);
-    REGIONS[i].0.store(core::ptr::null_mut(), Ordering::Release);
+/// Yuvayı emekliye ayırır; bölge ancak bundan sonra unmap edilebilir.
+fn retire_region(i: usize) {
+    let slot = &REGIONS[i];
+    while slot
+        .state
+        .compare_exchange(S_ACTIVE, S_RETIRING, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        // Hook bu bölgeyi sıfırlıyor (ardından abort gelir): bitmesini bekle.
+        std::thread::yield_now();
+    }
+}
+
+/// Unmap sonrası yuvayı boşaltır.
+fn free_region(i: usize) {
+    let slot = &REGIONS[i];
+    slot.len.store(0, Ordering::Release);
+    slot.ptr.store(core::ptr::null_mut(), Ordering::Release);
+    slot.state.store(S_FREE, Ordering::Release);
 }
 
 /// `mmap`/`VirtualAlloc` ile ayrılmış, best-effort kilitli büyük bölge. `T: Copy` olduğundan
@@ -832,8 +865,9 @@ impl<T: Copy> Drop for LargeSecretBuf<T> {
         if self.locked {
             os::unlock(raw, self.map_len);
         }
-        unregister_region(self.slot);
+        retire_region(self.slot);
         os::unmap(raw, self.map_len);
+        free_region(self.slot);
     }
 }
 
@@ -862,14 +896,23 @@ pub fn zeroize_all_registered() -> (usize, usize) {
         arena = len;
     }
     let mut regions = 0;
-    for (ptr, len) in &REGIONS {
-        let l = len.load(Ordering::Acquire);
-        if let Some(p) = NonNull::new(ptr.load(Ordering::Acquire)).filter(|_| l > 0) {
-            // SAFETY (kabul edilen yarış): kayıt yalnızca eşlenmiş bölgeleri içerir; Drop
-            // önce uzunluğu 0'lar sonra unmap eder; yukarıdaki gerekçe geçerlidir.
+    for slot in &REGIONS {
+        // Yalnızca ACTIVE yuva alınır; HOOK durumundayken Drop unmap edemez (retire_region bekler).
+        if slot
+            .state
+            .compare_exchange(S_ACTIVE, S_HOOK, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            continue;
+        }
+        let l = slot.len.load(Ordering::Acquire);
+        if let Some(p) = NonNull::new(slot.ptr.load(Ordering::Acquire)).filter(|_| l > 0) {
+            // HOOK durumu bölgenin eşlenmiş kalmasını garanti eder; eşzamanlı okuyucular olabilir
+            // (abort izler, veri yarışı kabul edilir).
             zero_bytes(p, l);
             regions += 1;
         }
+        slot.state.store(S_ACTIVE, Ordering::Release);
     }
     (arena, regions)
 }
@@ -995,7 +1038,7 @@ mod tests {
         buf.as_mut_slice()[5] = Blk([9; 16]);
         let registered = REGIONS
             .iter()
-            .filter(|(p, _)| !p.load(Ordering::Acquire).is_null())
+            .filter(|s| s.state.load(Ordering::Acquire) == S_ACTIVE)
             .count();
         assert!(registered >= 1);
         let (_, regions) = zeroize_all_registered();

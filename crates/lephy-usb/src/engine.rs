@@ -18,7 +18,8 @@ use lephy_core::names::escape_display;
 use crate::device::Device;
 use crate::platform::Platform;
 
-/// Kökte atlanan sistem klasörleri (silinmez, sayılmaz).
+/// Kökteki sistem klasörleri: klasörün kendisi korunur, içeriği (çöp kutusu, Spotlight dizini,
+/// olay günlüğü — eski kullanıcı verisi ya da ondan türetilmiş metin) silinir.
 pub const SYSTEM_DIRS: [&str; 4] = [
     "System Volume Information",
     ".Spotlight-V100",
@@ -62,7 +63,15 @@ pub fn dry_run(root: &Path) -> Result<DryRun> {
     for e in std::fs::read_dir(root)? {
         let e = e?;
         let name = e.file_name().to_string_lossy().into_owned();
-        if !is_system(&name) {
+        if is_system(&name) {
+            // Klasör kalır; içindekiler sayılır (erişilemiyorsa atlanır).
+            if let Ok(rd) = std::fs::read_dir(e.path()) {
+                for k in rd.filter_map(std::result::Result::ok) {
+                    let n = k.file_name().to_string_lossy().into_owned();
+                    stack.push((k.path(), format!("{name}/{n}")));
+                }
+            }
+        } else {
             stack.push((e.path(), name));
         }
     }
@@ -93,19 +102,33 @@ pub fn dry_run(root: &Path) -> Result<DryRun> {
     Ok(out)
 }
 
-/// Kullanıcı dosyalarını siler (kök handle üzerinden; symlink takip edilmez; sistem klasörleri
-/// atlanır). Silinen üst düzey giriş sayısı.
+/// Kullanıcı dosyalarını siler (kök handle üzerinden; symlink takip edilmez; sistem
+/// klasörlerinin yalnızca içi boşaltılır). Silinen giriş sayısı.
 ///
 /// # Errors
 /// G/Ç.
-pub fn wipe(root: &Path) -> Result<u64> {
+pub fn wipe(root: &Path, expect_dev: Option<u64>) -> Result<u64> {
     let dir = cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())?;
+    // Kimlik açılmış tutamaçtan denetlenir: kontrol sonrası bağlama noktasına başka bir aygıt
+    // gelse bile silme yalnızca doğrulanan tutamaç üzerinden yapılır.
+    #[cfg(unix)]
+    if let Some(want) = expect_dev {
+        use cap_std::fs::MetadataExt;
+        if dir.dir_metadata()?.dev() != want {
+            return Err(Error::Cancelled(
+                "hedef aygıt kimliği değişti; hiçbir şey silinmedi".into(),
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = expect_dev;
     let mut n = 0;
     for e in dir.entries()? {
         let e = e?;
         let name = e.file_name();
         let name_s = name.to_string_lossy();
         if is_system(&name_s) {
+            n += clear_contents(&dir, &name);
             continue;
         }
         let ft = e.file_type()?;
@@ -122,6 +145,28 @@ pub fn wipe(root: &Path) -> Result<u64> {
     }
     let _ = lephy_sys::fs::fsync_dir(root);
     Ok(n)
+}
+
+/// Sistem klasörünün içini en iyi çabayla boşaltır (klasör kalır; symlink takip edilmez).
+/// Erişilemeyen öğeler (ör. Windows'ta ACL korumalı `System Volume Information`) atlanır.
+fn clear_contents(root: &cap_std::fs::Dir, name: &std::ffi::OsStr) -> u64 {
+    let Ok(sub) = root.open_dir(name) else {
+        return 0;
+    };
+    let Ok(rd) = sub.entries() else {
+        return 0;
+    };
+    let mut n = 0;
+    for e in rd.filter_map(std::result::Result::ok) {
+        let child = e.file_name();
+        let removed = match e.file_type() {
+            Ok(ft) if ft.is_dir() && !ft.is_symlink() => sub.remove_dir_all(&child).is_ok(),
+            Ok(_) => sub.remove_file(&child).is_ok() || sub.remove_dir(&child).is_ok(),
+            Err(_) => false,
+        };
+        n += u64::from(removed);
+    }
+    n
 }
 
 /// Boş alan doldurma seçenekleri.
@@ -410,7 +455,7 @@ pub fn execute(
     } else {
         steps.push("wipe");
         log("kullanıcı dosyaları siliniyor…");
-        wipe(&cur.mount)?
+        wipe(&cur.mount, Some(cur.identity.dev_id))?
     };
 
     // 2) boş alan doldurma
@@ -483,8 +528,11 @@ mod tests {
 
     impl Fake {
         fn new(root: &Path) -> Self {
+            let mut d = sample(root.to_path_buf());
+            // Silme açılan tutamacın aygıt kimliğini denetler: test birimi gerçek klasördür.
+            d.identity.dev_id = lephy_sys::vol::device_id(root).unwrap_or(42);
             Self {
-                dev: RefCell::new(sample(root.to_path_buf())),
+                dev: RefCell::new(d),
                 describes: Cell::new(0),
                 change_identity_at: None,
                 remount: false,
@@ -581,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_and_wipe_keep_system_dirs_and_do_not_follow_symlinks() {
+    fn dry_run_and_wipe_empty_system_dirs_and_do_not_follow_symlinks() {
         let base = tmp("wipe");
         let vol = base.join("vol");
         std::fs::create_dir(&vol).unwrap();
@@ -595,21 +643,25 @@ mod tests {
         }
         let dr = dry_run(&vol).unwrap();
         assert!(dr.first.iter().any(|p| p == "belgeler/alt/b.bin"));
+        // Sistem klasörlerinin içeriği (eski çöp kutusu, Spotlight dizini) silinecekler arasında.
         assert!(
-            !dr.first
-                .iter()
-                .any(|p| p.contains("Spotlight") || p.contains("keep"))
+            dr.first.iter().any(|p| p == ".Trashes/keep"),
+            "{:?}",
+            dr.first
         );
         assert!(dr.bytes >= 1005);
-        let n = wipe(&vol).unwrap();
+        let n = wipe(&vol, Some(lephy_sys::vol::device_id(&vol).unwrap())).unwrap();
         assert!(n >= 2);
         let left: Vec<String> = std::fs::read_dir(&vol)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         for s in SYSTEM_DIRS {
-            assert!(left.contains(&s.to_string()), "{s} silinmemeli");
-            assert!(vol.join(s).join("keep").exists());
+            assert!(left.contains(&s.to_string()), "{s} klasörü kalmalı");
+            assert!(
+                !vol.join(s).join("keep").exists(),
+                "{s} içeriği silinmeli (eski kullanıcı verisi)"
+            );
         }
         assert_eq!(
             left.len(),
@@ -622,6 +674,21 @@ mod tests {
             "symlink hedefi silinmemeli"
         );
         assert!(base.join("vol").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wipe_refuses_other_device() {
+        let base = tmp("wipedev");
+        std::fs::write(base.join("a"), b"a").unwrap();
+        let real = lephy_sys::vol::device_id(&base).unwrap();
+        let e = wipe(&base, Some(real.wrapping_add(1))).unwrap_err();
+        assert_eq!(e.exit_code(), lephy_core::error::ExitCode::Cancelled);
+        assert!(
+            base.join("a").exists(),
+            "farklı aygıtta hiçbir şey silinmemeli"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
