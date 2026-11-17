@@ -2,6 +2,7 @@
 //! Yollar argv'ye gitmez (THREAT-MODEL › açık meta veri): GUI argümansız başlar, kaynak
 //! sürükle-bırak ya da dosya seçme penceresiyle gelir.
 
+use crate::i18n::tr;
 use std::path::{Path, PathBuf};
 
 use lephy_core::cipher::AlgId;
@@ -128,13 +129,15 @@ pub fn run(job: Job) -> Result<Outcome> {
     let mut log = |_: &str| {};
     match job.mode {
         Mode::Encrypt => {
-            let confirm = job
-                .confirm
-                .ok_or_else(|| Error::Environment("parolayı tekrar girin".into()))?;
+            let confirm = job.confirm.ok_or_else(|| {
+                Error::Environment(tr("parolayı tekrar girin", "enter the password again").into())
+            })?;
             let c = password::normalize_nfc(&confirm)?;
             drop(confirm);
             if c.expose() != nfc.expose() {
-                return Err(Error::Environment("parolalar eşleşmiyor".into()));
+                return Err(Error::Environment(
+                    tr("parolalar eşleşmiyor", "passwords do not match").into(),
+                ));
             }
             password::check_encrypt_policy(&nfc)?;
             let kdf = KdfParams {
@@ -172,7 +175,7 @@ pub fn run(job: Job) -> Result<Outcome> {
         Mode::Decrypt => {
             if !job.allow_cloud && lephy_sys::fs::cloud_root_of(&job.output).is_some() {
                 return Err(Error::Cancelled(
-                    "hedef bir bulut senkron klasöründe; devam etmek için onay kutusunu işaretleyin".into(),
+                    tr("hedef bir bulut senkron klasöründe; devam etmek için onay kutusunu işaretleyin", "the destination is in a cloud-sync folder; tick the box to continue").into(),
                 ));
             }
             let rep = ops::decrypt(
@@ -226,27 +229,46 @@ pub fn estimate_total(mode: Mode, input: &Path) -> u64 {
 #[must_use]
 pub fn describe_error(e: &Error) -> String {
     match (e, e.exit_code()) {
-        (Error::KeyfileRequired, _) => {
-            "Bu dosya bir anahtar dosyasıyla şifrelenmiş. Anahtar dosyasını seçin.".into()
-        }
-        (Error::KeyfileNotUsed, _) => {
-            "Bu dosya anahtar dosyası kullanmıyor. Seçili anahtar dosyasını kaldırın.".into()
-        }
-        (_, ExitCode::WrongPassword) => {
-            "Parola yanlış. Büyük/küçük harf ve klavye düzenini kontrol edip yeniden deneyin."
-                .into()
-        }
-        (_, ExitCode::Corrupt) => {
-            "Dosya bozuk ya da değiştirilmiş; içeriği güvenle açılamıyor.".into()
-        }
-        (_, ExitCode::Exists) => {
-            "Kayıt yerinde aynı adla bir dosya var. Başka bir kayıt yeri seçin.".into()
-        }
-        (_, ExitCode::DiskSpace) => "Diskte yeterli boş alan yok.".into(),
-        (_, ExitCode::KdfBudget) => {
-            "Bu ayar için bellek yetmiyor. Gelişmiş ayarlardan bellek miktarını düşürün.".into()
-        }
-        (_, ExitCode::Interrupted) => "İşlem durduruldu. Yarım kalan dosya silindi.".into(),
+        (Error::KeyfileRequired, _) => tr(
+            "Bu dosya bir anahtar dosyasıyla şifrelenmiş. Anahtar dosyasını seçin.",
+            "This file was encrypted with a key file. Choose the key file.",
+        )
+        .into(),
+        (Error::KeyfileNotUsed, _) => tr(
+            "Bu dosya anahtar dosyası kullanmıyor. Seçili anahtar dosyasını kaldırın.",
+            "This file does not use a key file. Remove the selected key file.",
+        )
+        .into(),
+        (_, ExitCode::WrongPassword) => tr(
+            "Parola yanlış. Büyük/küçük harf ve klavye düzenini kontrol edip yeniden deneyin.",
+            "Wrong password. Check upper/lower case and the keyboard layout, then try again.",
+        )
+        .into(),
+        (_, ExitCode::Corrupt) => tr(
+            "Dosya bozuk ya da değiştirilmiş; içeriği güvenle açılamıyor.",
+            "The file is damaged or was modified; its contents cannot be opened safely.",
+        )
+        .into(),
+        (_, ExitCode::Exists) => tr(
+            "Kayıt yerinde aynı adla bir dosya var. Başka bir kayıt yeri seçin.",
+            "A file with the same name already exists there. Choose another location.",
+        )
+        .into(),
+        (_, ExitCode::DiskSpace) => tr(
+            "Diskte yeterli boş alan yok.",
+            "There is not enough free disk space.",
+        )
+        .into(),
+        (_, ExitCode::KdfBudget) => tr(
+            "Bu ayar için bellek yetmiyor. Gelişmiş ayarlardan bellek miktarını düşürün.",
+            "Not enough memory for this setting. Lower the memory in the advanced settings.",
+        )
+        .into(),
+        (_, ExitCode::Interrupted) => tr(
+            "İşlem durduruldu. Yarım kalan dosya silindi.",
+            "Stopped. The partial file was removed.",
+        )
+        .into(),
         _ => sentence(&e.to_string()),
     }
 }
@@ -274,10 +296,14 @@ pub fn describe_source(path: &Path, mode: Mode) -> (String, String) {
     );
     let md = path.metadata().ok();
     let detail = match (mode, md) {
-        (_, Some(m)) if m.is_dir() => "Klasör".to_string(),
-        (Mode::Decrypt, Some(m)) => format!("Şifreli dosya, {}", human_size(m.len())),
+        (_, Some(m)) if m.is_dir() => tr("Klasör", "Folder").to_string(),
+        (Mode::Decrypt, Some(m)) => format!(
+            "{}, {}",
+            tr("Şifreli dosya", "Encrypted file"),
+            human_size(m.len())
+        ),
         (Mode::Encrypt, Some(m)) => human_size(m.len()),
-        (_, None) => "Okunamıyor".to_string(),
+        (_, None) => tr("Okunamıyor", "Cannot be read").to_string(),
     };
     (name, detail)
 }
@@ -286,9 +312,10 @@ pub fn describe_source(path: &Path, mode: Mode) -> (String, String) {
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
 pub fn human_size(n: u64) -> String {
-    const UNITS: [&str; 5] = ["bayt", "KB", "MB", "GB", "TB"];
+    const UNITS: [&str; 5] = ["", "KB", "MB", "GB", "TB"];
+    let tr_lang = crate::i18n::lang() == crate::i18n::Lang::Tr;
     if n < 1000 {
-        return format!("{n} bayt");
+        return format!("{n} {}", tr("bayt", "bytes"));
     }
     let mut v = n as f64;
     let mut u = 0;
@@ -301,7 +328,8 @@ pub fn human_size(n: u64) -> String {
     } else {
         format!("{v:.0}")
     };
-    format!("{} {}", s.replace('.', ","), UNITS[u])
+    let s = if tr_lang { s.replace('.', ",") } else { s };
+    format!("{s} {}", UNITS[u])
 }
 
 /// Klasör yolunu kısaltır: ev dizini `~` olur.

@@ -16,6 +16,7 @@
 pub mod alloc;
 pub mod fdio;
 pub mod fs;
+pub mod locale;
 pub mod mem;
 pub mod platform;
 pub mod secure_input;

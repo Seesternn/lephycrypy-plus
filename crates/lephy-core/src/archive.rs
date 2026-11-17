@@ -1096,17 +1096,22 @@ pub const SAFE_MODE_MASK: u32 = 0o755;
 
 /// mode/mtime best-effort (izinler `SAFE_MODE_MASK` ile kısıtlanmıştır).
 fn apply_metadata(root: &cap_std::fs::Dir, path: &str, mode: u32, mtime: i64) {
+    // Platformun zaman aralığını aşan değer (Windows'ta Unix'ten dar) atlanır: `+`/`-` taşmada
+    // panikler, bu da kötü niyetli bir arşivle çıkarmayı çökertebilirdi.
+    let d = std::time::Duration::from_secs(mtime.unsigned_abs());
     let t = if mtime >= 0 {
-        std::time::UNIX_EPOCH + std::time::Duration::from_secs(mtime.unsigned_abs())
+        std::time::UNIX_EPOCH.checked_add(d)
     } else {
-        std::time::UNIX_EPOCH - std::time::Duration::from_secs(mtime.unsigned_abs())
+        std::time::UNIX_EPOCH.checked_sub(d)
     };
     let is_dir = root.metadata(path).is_ok_and(|m| m.is_dir());
     if is_dir {
-        if let Ok(d) = root.open_dir(path) {
+        if let Some(t) = t
+            && let Ok(d) = root.open_dir(path)
+        {
             let _ = d.into_std_file().set_modified(t);
         }
-    } else {
+    } else if let Some(t) = t {
         let mut oo = cap_std::fs::OpenOptions::new();
         oo.write(true);
         if let Ok(f) = root.open_with(path, &oo) {
@@ -1356,6 +1361,24 @@ mod tests {
             ex.write_all(chunk).map_err(Error::from_io)?;
         }
         ex.finish()
+    }
+
+    #[test]
+    fn extreme_mtimes_do_not_panic() {
+        // Biçimin izin verdiği uç değerler, platformun zaman aralığını aşsa bile (Windows)
+        // çıkarmayı durdurmamalı; zaman yalnızca atlanır.
+        let bytes = [
+            record(T_FILE, "ileri", 0o644, MAX_MTIME_ABS),
+            frames(b"a"),
+            record(T_FILE, "geri", 0o644, -MAX_MTIME_ABS),
+            frames(b"b"),
+            end(),
+        ]
+        .concat();
+        let (out, r) = extract_all(&bytes, ExtractOptions::default(), "mtime");
+        r.unwrap();
+        assert_eq!(std::fs::read(out.join("root/ileri")).unwrap(), b"a");
+        let _ = std::fs::remove_dir_all(out);
     }
 
     #[test]

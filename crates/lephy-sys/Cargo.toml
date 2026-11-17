@@ -30,6 +30,7 @@ features = [
     "Win32_System_IO",
     "Win32_System_Ioctl",   # vol.rs (USB 1.1): STORAGE_DEVICE_DESCRIPTOR, aygıt numarası
     "Win32_Security",       # vol.rs: TokenElevation
+    "Win32_Globalization",  # locale.rs: GetUserDefaultUILanguage
 ]
 
 # workspace tablosu `unsafe_code = "forbid"` içerir; bu crate kendi tablosunu kullanır.

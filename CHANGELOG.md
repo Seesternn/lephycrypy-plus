@@ -42,6 +42,8 @@ Fixes from the November 2026 internal review (not an independent audit):
   program's own internal descriptors.
 - macOS: secure keyboard input is on while a password field has focus, so processes with input
   monitoring permission cannot read the keystrokes.
+- An archive entry with an extreme modification time no longer crashes extraction on Windows,
+  whose time range is narrower; the time is simply not applied.
 
 ### Changed
 - Supply chain: audits imported from more sources (ISRG, Zcash, Embark, Ariel OS); unnecessary
@@ -49,6 +51,8 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Desktop app in English and Turkish, chosen from the system language and switchable in the
+  window.
 - Internal security review report: `docs/SECURITY-REVIEW-2026-11.md`.
 - Private-data guard (`scripts/check-private.sh`) run before every commit, and a CI job that
   scans the whole history with gitleaks and checks that every commit uses a noreply address.

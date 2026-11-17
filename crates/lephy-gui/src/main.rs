@@ -16,6 +16,8 @@ mod app;
 #[cfg(any(target_os = "macos", windows))]
 mod fonts;
 #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+mod i18n;
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 mod logic;
 #[cfg(any(target_os = "macos", windows))]
 mod secret_field;
@@ -75,6 +77,7 @@ fn main() -> ExitCode {
         Box::new(move |cc| {
             fonts::install(&cc.egui_ctx, font);
             theme::apply(&cc.egui_ctx);
+            i18n::set_lang(i18n::detect());
             Ok(app::boxed())
         }),
     );

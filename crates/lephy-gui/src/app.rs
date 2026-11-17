@@ -1,6 +1,7 @@
 //! Tek pencere arayüzü. Akış: bırak/seç → parola → şifrele/çöz → sonuç.
 //! Görsel dil `theme.rs`'de; ikonlar resim değil, birkaç çizgiyle çizilir.
 
+use crate::i18n::{Lang, lang, tr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,12 +23,12 @@ use crate::theme::{self, Palette};
 /// İçerik sütununun en büyük genişliği.
 const COLUMN_W: f32 = 460.0;
 
-/// Parola türetme belleği seçenekleri (MiB, ad).
-const KDF_PRESETS: [(u32, &str); 4] = [
-    (256, "Hızlı"),
-    (512, "Önerilen"),
-    (1024, "Güçlü"),
-    (2048, "En güçlü"),
+/// Parola türetme belleği seçenekleri (MiB, Türkçe ad, İngilizce ad).
+const KDF_PRESETS: [(u32, &str, &str); 4] = [
+    (256, "Hızlı", "Fast"),
+    (512, "Önerilen", "Recommended"),
+    (1024, "Güçlü", "Strong"),
+    (2048, "En güçlü", "Strongest"),
 ];
 
 /// Seçilen kaynak.
@@ -62,7 +63,7 @@ pub struct App {
     show_advanced: bool,
     error: Option<String>,
     job: Option<Receiver<JobResult>>,
-    /// Kesinti "İptal" düğmesinden mi geldi (sinyal değil → pencere kapanmaz).
+    /// Kesinti tr("İptal", "Cancel") düğmesinden mi geldi (sinyal değil → pencere kapanmaz).
     cancel_requested: bool,
     /// Seçili anahtar dosyası.
     keyfile: Option<PathBuf>,
@@ -86,8 +87,8 @@ impl Default for App {
             source: None,
             output: None,
             stage: Stage::Pick,
-            password: SecretField::new("Parola"),
-            confirm: SecretField::new("Parolayı tekrar girin"),
+            password: SecretField::new("Parola", "Password"),
+            confirm: SecretField::new("Parolayı tekrar girin", "Repeat the password"),
             kdf_mib: 512,
             aes: false,
             pad: true,
@@ -242,7 +243,13 @@ impl App {
             }
             Err(TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(16)),
             Err(TryRecvError::Disconnected) => {
-                self.error = Some("İşlem beklenmedik biçimde sona erdi.".into());
+                self.error = Some(
+                    tr(
+                        "İşlem beklenmedik biçimde sona erdi.",
+                        "The operation ended unexpectedly.",
+                    )
+                    .into(),
+                );
                 self.stage = Stage::Ready;
                 self.job = None;
             }
@@ -285,14 +292,20 @@ impl App {
     }
 
     fn pick_file(&mut self) {
-        if let Some(p) = rfd::FileDialog::new().set_title("Dosya seçin").pick_file() {
+        if let Some(p) = rfd::FileDialog::new()
+            .set_title(tr("Dosya seçin", "Choose a file"))
+            .pick_file()
+        {
             self.set_source(&p);
         }
     }
 
     fn pick_folder(&mut self) {
         if let Some(p) = rfd::FileDialog::new()
-            .set_title("Şifrelenecek klasörü seçin")
+            .set_title(tr(
+                "Şifrelenecek klasörü seçin",
+                "Choose a folder to encrypt",
+            ))
             .pick_folder()
         {
             self.set_source(&p);
@@ -301,7 +314,8 @@ impl App {
 
     fn choose_output(&mut self) {
         let Some(cur) = &self.output else { return };
-        let mut d = rfd::FileDialog::new().set_title("Kaydedilecek yeri seçin");
+        let mut d =
+            rfd::FileDialog::new().set_title(tr("Kaydedilecek yeri seçin", "Choose where to save"));
         if let Some(dir) = cur.parent() {
             d = d.set_directory(dir);
         }
@@ -347,11 +361,29 @@ impl App {
                         ui.set_width(w);
                         ui.add_space(top);
                         let r = ui.vertical(|ui| {
-                            ui.label(
-                                RichText::new("lephycrypy+")
-                                    .font(fonts::semibold(15.0))
-                                    .color(pal.ink),
-                            );
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("lephycrypy+")
+                                        .font(fonts::semibold(15.0))
+                                        .color(pal.ink),
+                                );
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    // Diğer dilin adı, o dilde yazılır.
+                                    let (label, next) = match lang() {
+                                        Lang::Tr => ("English", Lang::En),
+                                        Lang::En => ("Türkçe", Lang::Tr),
+                                    };
+                                    if link_button(ui, pal, label).clicked() {
+                                        crate::i18n::set_lang(next);
+                                        if let Some(src) = &mut self.source {
+                                            let (n, d) =
+                                                logic::describe_source(&src.path, src.mode);
+                                            src.name = n;
+                                            src.detail = d;
+                                        }
+                                    }
+                                });
+                            });
                             ui.add_space(18.0);
                             match self.stage {
                                 Stage::Pick => self.pick_view(ui, pal),
@@ -400,14 +432,20 @@ impl App {
                 draw_lock(ui.painter(), g.center(), 1.0, pal.accent);
                 ui.add_space(12.0);
                 ui.label(
-                    RichText::new("Bir dosya ya da klasörü buraya bırakın")
-                        .font(fonts::semibold(17.0))
-                        .color(pal.ink),
+                    RichText::new(tr(
+                        "Bir dosya ya da klasörü buraya bırakın",
+                        "Drop a file or folder here",
+                    ))
+                    .font(fonts::semibold(17.0))
+                    .color(pal.ink),
                 );
                 ui.label(
-                    RichText::new("Şifreli .lphy dosyaları açılır, diğer her şey şifrelenir.")
-                        .color(pal.muted)
-                        .size(13.5),
+                    RichText::new(tr(
+                        "Şifreli .lphy dosyaları açılır, diğer her şey şifrelenir.",
+                        "Encrypted .lphy files are opened; everything else is encrypted.",
+                    ))
+                    .color(pal.muted)
+                    .size(13.5),
                 );
                 ui.add_space(14.0);
                 let bw = 124.0;
@@ -422,11 +460,15 @@ impl App {
                             .layout(Layout::left_to_right(Align::Center)),
                     );
                     {
-                        if secondary_button(ui, pal, "Dosya seç", bw, 34.0).clicked() {
+                        if secondary_button(ui, pal, tr("Dosya seç", "Choose file"), bw, 34.0)
+                            .clicked()
+                        {
                             self.pick_file();
                         }
                         ui.add_space(2.0);
-                        if secondary_button(ui, pal, "Klasör seç", bw, 34.0).clicked() {
+                        if secondary_button(ui, pal, tr("Klasör seç", "Choose folder"), bw, 34.0)
+                            .clicked()
+                        {
                             self.pick_folder();
                         }
                     }
@@ -435,9 +477,10 @@ impl App {
         }
         ui.add_space(12.0);
         ui.label(
-            RichText::new(
+            RichText::new(tr(
                 "Dosyalarınız bu bilgisayardan çıkmaz; parolanız hiçbir yere kaydedilmez.",
-            )
+                "Your files never leave this computer; your password is never stored.",
+            ))
             .color(pal.muted)
             .size(12.5),
         );
@@ -492,7 +535,7 @@ impl App {
                     );
                     if can_change {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            change = link_button(ui, pal, "Değiştir").clicked();
+                            change = link_button(ui, pal, tr("Değiştir", "Change")).clicked();
                         });
                     }
                 });
@@ -509,10 +552,19 @@ impl App {
 
         let (title, sub) = match mode {
             Mode::Encrypt => (
-                "Bir parola belirleyin",
-                "Bu parolayı unutursanız dosya açılamaz; kurtarma yolu yoktur.",
+                tr("Bir parola belirleyin", "Choose a password"),
+                tr(
+                    "Bu parolayı unutursanız dosya açılamaz; kurtarma yolu yoktur.",
+                    "If you forget this password the file cannot be opened; there is no recovery.",
+                ),
             ),
-            Mode::Decrypt => ("Parolayı girin", "Dosya şifrelenirken kullanılan parola."),
+            Mode::Decrypt => (
+                tr("Parolayı girin", "Enter the password"),
+                tr(
+                    "Dosya şifrelenirken kullanılan parola.",
+                    "The password used when the file was encrypted.",
+                ),
+            ),
         };
         ui.label(
             RichText::new(title)
@@ -544,14 +596,24 @@ impl App {
         if let Some(root) = self.cloud_root() {
             ui.add_space(6.0);
             ui.label(
-                RichText::new(format!(
-                    "Bu konum bir bulut senkron klasöründe ({}). Çözülen dosyalar buluta yüklenebilir.",
-                    escape_display(&root.display().to_string())
-                ))
+                RichText::new({
+                    let r = escape_display(&root.display().to_string());
+                    match lang() {
+                        Lang::Tr => format!(
+                            "Bu konum bir bulut senkron klasöründe ({r}). Çözülen dosyalar buluta yüklenebilir."
+                        ),
+                        Lang::En => format!(
+                            "This location is in a cloud-sync folder ({r}). Decrypted files may be uploaded."
+                        ),
+                    }
+                })
                 .color(pal.danger)
                 .size(13.0),
             );
-            ui.checkbox(&mut self.allow_cloud, "Yine de bu konuma çöz");
+            ui.checkbox(
+                &mut self.allow_cloud,
+                tr("Yine de bu konuma çöz", "Decrypt to this location anyway"),
+            );
         }
 
         if mode == Mode::Encrypt {
@@ -561,8 +623,8 @@ impl App {
 
         ui.add_space(18.0);
         let label = match mode {
-            Mode::Encrypt => "Şifrele",
-            Mode::Decrypt => "Şifreyi çöz",
+            Mode::Encrypt => tr("Şifrele", "Encrypt"),
+            Mode::Decrypt => tr("Şifreyi çöz", "Decrypt"),
         };
         let enabled = self.can_start();
         if primary_button(ui, pal, label, enabled).clicked() || (submit && enabled) {
@@ -577,21 +639,40 @@ impl App {
     fn password_hint(&self, ui: &mut Ui, pal: Palette) {
         let n = self.password.char_count();
         let (text, color) = if n == 0 {
-            (format!("En az {MIN_SCALARS} karakter."), pal.muted)
+            (
+                match lang() {
+                    Lang::Tr => format!("En az {MIN_SCALARS} karakter."),
+                    Lang::En => format!("At least {MIN_SCALARS} characters."),
+                },
+                pal.muted,
+            )
         } else if n < MIN_SCALARS {
             (
-                format!("En az {MIN_SCALARS} karakter (şu an {n})."),
+                match lang() {
+                    Lang::Tr => format!("En az {MIN_SCALARS} karakter (şu an {n})."),
+                    Lang::En => format!("At least {MIN_SCALARS} characters (now {n})."),
+                },
                 pal.muted,
             )
         } else if self.confirm.is_empty() {
             (
-                "Doğrulamak için parolayı tekrar girin.".to_string(),
+                tr(
+                    "Doğrulamak için parolayı tekrar girin.",
+                    "Enter the password again to confirm.",
+                )
+                .to_string(),
                 pal.muted,
             )
         } else if self.password.same_as(&self.confirm) {
-            ("Parolalar eşleşiyor.".to_string(), pal.ok)
+            (
+                tr("Parolalar eşleşiyor.", "Passwords match.").to_string(),
+                pal.ok,
+            )
         } else {
-            ("Parolalar eşleşmiyor.".to_string(), pal.danger)
+            (
+                tr("Parolalar eşleşmiyor.", "Passwords do not match.").to_string(),
+                pal.danger,
+            )
         };
         ui.label(RichText::new(text).color(color).size(13.0));
     }
@@ -607,7 +688,7 @@ impl App {
             .map(|d| escape_display(&logic::short_dir(d)))
             .unwrap_or_default();
         ui.label(
-            RichText::new("Kaydedilecek yer")
+            RichText::new(tr("Kaydedilecek yer", "Save to"))
                 .color(pal.muted)
                 .size(13.0),
         );
@@ -637,7 +718,7 @@ impl App {
                         },
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        change = link_button(ui, pal, "Değiştir").clicked();
+                        change = link_button(ui, pal, tr("Değiştir", "Change")).clicked();
                     });
                 });
             });
@@ -648,9 +729,9 @@ impl App {
 
     fn advanced(&mut self, ui: &mut Ui, pal: Palette) {
         let label = if self.show_advanced {
-            "Gelişmiş ayarları gizle"
+            tr("Gelişmiş ayarları gizle", "Hide advanced settings")
         } else {
-            "Gelişmiş ayarlar"
+            tr("Gelişmiş ayarlar", "Advanced settings")
         };
         if link_button(ui, pal, label).clicked() {
             self.show_advanced = !self.show_advanced;
@@ -666,7 +747,11 @@ impl App {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Algoritma").color(pal.muted).size(13.0));
+                    ui.label(
+                        RichText::new(tr("Algoritma", "Algorithm"))
+                            .color(pal.muted)
+                            .size(13.0),
+                    );
                     if help_button(ui, pal, self.show_help).clicked() {
                         self.show_help = !self.show_help;
                     }
@@ -685,16 +770,25 @@ impl App {
                 );
                 ui.add_space(12.0);
                 ui.label(
-                    RichText::new(format!("Parola türetme belleği: {} MiB", self.kdf_mib))
-                        .color(pal.muted)
-                        .size(13.0),
+                    RichText::new(match lang() {
+                        Lang::Tr => format!("Parola türetme belleği: {} MiB", self.kdf_mib),
+                        Lang::En => format!("Password derivation memory: {} MiB", self.kdf_mib),
+                    })
+                    .color(pal.muted)
+                    .size(13.0),
                 );
                 // Fiziksel belleğin %75'ini aşan seçenek sunulmaz (CLI'deki bütçe kuralı).
                 let fits = |m: u32| self.ram_mib == 0 || u64::from(m) * 4 <= self.ram_mib * 3;
-                let opts = KDF_PRESETS.map(|(m, l)| (m, l, fits(m)));
+                let opts = KDF_PRESETS.map(|(m, t, e)| (m, tr(t, e), fits(m)));
                 segmented(ui, pal, &mut self.kdf_mib, &opts);
                 ui.add_space(12.0);
-                ui.checkbox(&mut self.pad, "Dosya boyutunu gizle (PADMÉ dolgusu)");
+                ui.checkbox(
+                    &mut self.pad,
+                    tr(
+                        "Dosya boyutunu gizle (PADMÉ dolgusu)",
+                        "Hide the file size (PADMÉ padding)",
+                    ),
+                );
                 ui.add_space(12.0);
                 self.keyfile_row(ui, pal, false);
             });
@@ -702,9 +796,12 @@ impl App {
 
     fn keyfile_row(&mut self, ui: &mut Ui, pal: Palette, required: bool) {
         let title = if required {
-            "Anahtar dosyası (bu dosya için gerekli)"
+            tr(
+                "Anahtar dosyası (bu dosya için gerekli)",
+                "Key file (required for this file)",
+            )
         } else {
-            "Anahtar dosyası (isteğe bağlı)"
+            tr("Anahtar dosyası (isteğe bağlı)", "Key file (optional)")
         };
         ui.label(RichText::new(title).color(pal.muted).size(13.0));
         let name = self.keyfile.as_ref().map(|k| {
@@ -740,25 +837,27 @@ impl App {
                                     egui::Label::new(RichText::new(n).color(pal.ink).size(14.0))
                                         .truncate(),
                                 ),
-                                None => {
-                                    ui.label(RichText::new("Seçilmedi").color(pal.muted).size(14.0))
-                                }
+                                None => ui.label(
+                                    RichText::new(tr("Seçilmedi", "None selected"))
+                                        .color(pal.muted)
+                                        .size(14.0),
+                                ),
                             };
                         },
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if name.is_some() {
-                            clear = link_button(ui, pal, "Kaldır").clicked();
-                            pick = link_button(ui, pal, "Değiştir").clicked();
+                            clear = link_button(ui, pal, tr("Kaldır", "Remove")).clicked();
+                            pick = link_button(ui, pal, tr("Değiştir", "Change")).clicked();
                         } else {
-                            pick = link_button(ui, pal, "Seç").clicked();
+                            pick = link_button(ui, pal, tr("Seç", "Choose")).clicked();
                         }
                     });
                 });
             });
         if pick
             && let Some(p) = rfd::FileDialog::new()
-                .set_title("Anahtar dosyasını seçin")
+                .set_title(tr("Anahtar dosyasını seçin", "Choose the key file"))
                 .pick_file()
         {
             self.keyfile = Some(p);
@@ -774,8 +873,8 @@ impl App {
         self.source_card(ui, pal, false);
         ui.add_space(28.0);
         let verb = match mode {
-            Mode::Encrypt => "Şifreleniyor",
-            Mode::Decrypt => "Şifre çözülüyor",
+            Mode::Encrypt => tr("Şifreleniyor", "Encrypting"),
+            Mode::Decrypt => tr("Şifre çözülüyor", "Decrypting"),
         };
         let total = self.total.load(Ordering::Relaxed);
         let done = lephy_core::pipeline::progress();
@@ -783,11 +882,18 @@ impl App {
         let frac = (total > 0 && done > 0).then(|| (done as f32 / total as f32).clamp(0.0, 0.99));
         let (title, sub) = match frac {
             Some(f) if f >= 0.99 => (
-                "Diske yazılıyor…".to_string(),
-                "Son veriler kalıcı olarak kaydediliyor.".to_string(),
+                tr("Diske yazılıyor…", "Writing to disk…").to_string(),
+                tr(
+                    "Son veriler kalıcı olarak kaydediliyor.",
+                    "Saving the last data permanently.",
+                )
+                .to_string(),
             ),
             Some(f) => (
-                format!("{verb}… %{}", (f * 100.0).floor()),
+                match lang() {
+                    Lang::Tr => format!("{verb}… %{}", (f * 100.0).floor()),
+                    Lang::En => format!("{verb}… {}%", (f * 100.0).floor()),
+                },
                 format!(
                     "{} / {}",
                     logic::human_size(done.min(total)),
@@ -796,7 +902,11 @@ impl App {
             ),
             None => (
                 format!("{verb}…"),
-                "Parolanın anahtara dönüştürülmesi birkaç saniye sürer.".to_string(),
+                tr(
+                    "Parolanın anahtara dönüştürülmesi birkaç saniye sürer.",
+                    "Turning the password into a key takes a few seconds.",
+                )
+                .to_string(),
             ),
         };
         ui.label(
@@ -835,8 +945,12 @@ impl App {
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if self.cancel_requested {
-                    ui.label(RichText::new("Durduruluyor…").color(pal.muted).size(13.0));
-                } else if link_button(ui, pal, "İptal").clicked() {
+                    ui.label(
+                        RichText::new(tr("Durduruluyor…", "Stopping…"))
+                            .color(pal.muted)
+                            .size(13.0),
+                    );
+                } else if link_button(ui, pal, tr("İptal", "Cancel")).clicked() {
                     self.cancel_requested = true;
                     lephy_sys::signal::request_cancel();
                 }
@@ -859,8 +973,8 @@ impl App {
             ui.add_space(14.0);
             ui.label(
                 RichText::new(match mode {
-                    Mode::Encrypt => "Şifrelendi",
-                    Mode::Decrypt => "Şifre çözüldü",
+                    Mode::Encrypt => tr("Şifrelendi", "Encrypted"),
+                    Mode::Decrypt => tr("Şifre çözüldü", "Decrypted"),
                 })
                 .font(fonts::semibold(22.0))
                 .color(pal.ink),
@@ -873,23 +987,29 @@ impl App {
             ui.label(RichText::new(name).color(pal.muted).size(14.0));
             if out.skipped > 0 {
                 ui.label(
-                    RichText::new(format!(
-                        "{} öğe atlandı (özel dosyalar ya da kısayol bağlantıları).",
-                        out.skipped
-                    ))
+                    RichText::new(match lang() {
+                        Lang::Tr => format!(
+                            "{} öğe atlandı (özel dosyalar ya da kısayol bağlantıları).",
+                            out.skipped
+                        ),
+                        Lang::En => format!(
+                            "{} items skipped (special files or shortcuts).",
+                            out.skipped
+                        ),
+                    })
                     .color(pal.muted)
                     .size(12.5),
                 );
             }
             ui.add_space(24.0);
-            reveal = primary_button(ui, pal, "Klasörde göster", true).clicked();
+            reveal = primary_button(ui, pal, tr("Klasörde göster", "Show in folder"), true).clicked();
             ui.add_space(4.0);
-            again = secondary_button(ui, pal, "Yeni işlem", ui.available_width(), 42.0).clicked();
+            again = secondary_button(ui, pal, tr("Yeni işlem", "New"), ui.available_width(), 42.0).clicked();
             if mode == Mode::Encrypt {
                 ui.add_space(14.0);
                 ui.label(
                     RichText::new(
-                        "Özgün dosya yerinde duruyor. Artık gerekmiyorsa kendiniz silebilirsiniz.",
+                        tr("Özgün dosya yerinde duruyor. Artık gerekmiyorsa kendiniz silebilirsiniz.", "The original is still in place. Delete it yourself if you no longer need it."),
                     )
                     .color(pal.muted)
                     .size(12.5),
@@ -897,7 +1017,10 @@ impl App {
             }
         });
         if reveal && let Err(e) = logic::reveal_in_folder(&out.output) {
-            self.error = Some(format!("Klasör açılamadı: {e}."));
+            self.error = Some(match lang() {
+                Lang::Tr => format!("Klasör açılamadı: {e}."),
+                Lang::En => format!("Could not open the folder: {e}."),
+            });
         }
         if again {
             self.reset();
@@ -1071,7 +1194,10 @@ fn segmented<T: PartialEq + Copy>(
         if enabled {
             let _ = resp.on_hover_cursor(CursorIcon::PointingHand);
         } else {
-            let _ = resp.on_hover_text("Bu bilgisayarın belleği bu seçenek için yetmiyor.");
+            let _ = resp.on_hover_text(tr(
+                "Bu bilgisayarın belleği bu seçenek için yetmiyor.",
+                "This computer does not have enough memory for this option.",
+            ));
         }
     }
 }
@@ -1079,7 +1205,13 @@ fn segmented<T: PartialEq + Copy>(
 /// Daire içinde "?" düğmesi.
 fn help_button(ui: &mut Ui, pal: Palette, open: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
-    resp.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, "Terimleri açıkla"));
+    resp.widget_info(|| {
+        WidgetInfo::labeled(
+            egui::Role::Button,
+            true,
+            tr("Terimleri açıkla", "Explain the terms"),
+        )
+    });
     let c = rect.center();
     let (fill, fg) = if open {
         (pal.accent, pal.on_accent)
@@ -1103,31 +1235,44 @@ fn help_button(ui: &mut Ui, pal: Palette, open: bool) -> Response {
     );
     focus_ring(ui, &resp, rect, pal);
     resp.on_hover_cursor(CursorIcon::PointingHand)
-        .on_hover_text("Bu ayarlar ne anlama geliyor?")
+        .on_hover_text(tr(
+            "Bu ayarlar ne anlama geliyor?",
+            "What do these settings mean?",
+        ))
 }
 
 /// Terim açıklamaları.
 fn help_card(ui: &mut Ui, pal: Palette) {
-    const TERMS: [(&str, &str); 5] = [
+    const TERMS: [(&str, &str, &str, &str); 5] = [
         (
             "XChaCha20-Poly1305",
+            "XChaCha20-Poly1305",
             "Varsayılan şifreleme yöntemi. Her işlemcide hızlıdır ve yanlış kullanıma karşı daha dayanıklıdır.",
+            "The default cipher. Fast on every processor and more forgiving of misuse.",
         ),
         (
             "AES-256-GCM",
+            "AES-256-GCM",
             "Yaygın kullanılan standart. Donanım desteği olan işlemcilerde çok hızlıdır. İki yöntem de aynı güvenlik düzeyindedir.",
+            "The widely used standard. Very fast on processors with hardware support. Both ciphers offer the same level of security.",
         ),
         (
             "Parola türetme belleği (Argon2id)",
+            "Password derivation memory (Argon2id)",
             "Parolanız şifreleme anahtarına dönüştürülürken kullanılan bellek. Arttıkça parola tahmin denemeleri pahalılaşır; dosyayı açan bilgisayarda da bu kadar boş bellek gerekir.",
+            "Memory used while turning your password into the encryption key. More memory makes password guessing more expensive; the computer that opens the file needs the same amount free.",
         ),
         (
             "Boyut gizleme (PADMÉ)",
+            "Size hiding (PADMÉ)",
             "Şifreli dosyanın boyutunu yuvarlayarak gerçek boyutun anlaşılmasını zorlaştırır. Dosya en fazla yaklaşık %12 büyür.",
+            "Rounds up the size of the encrypted file so the real size is harder to tell. The file grows by about 12% at most.",
         ),
         (
             "Anahtar dosyası",
+            "Key file",
             "Parolaya ek olarak seçtiğiniz herhangi bir dosya (32 bayt ile 1 MiB arası). Şifreli dosyayı açmak için hem parola hem bu dosya gerekir; bu dosyayı kaybederseniz verinize ulaşamazsınız.",
+            "Any file you choose in addition to the password (32 bytes to 1 MiB). Opening the encrypted file needs both; if you lose this file you lose access to your data.",
         ),
     ];
     egui::Frame::new()
@@ -1136,16 +1281,17 @@ fn help_card(ui: &mut Ui, pal: Palette) {
         .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            for (i, (term, desc)) in TERMS.iter().enumerate() {
+            for (i, (tt, te, dt, de)) in TERMS.iter().enumerate() {
+                let (term, desc) = (tr(tt, te), tr(dt, de));
                 if i > 0 {
                     ui.add_space(6.0);
                 }
                 ui.label(
-                    RichText::new(*term)
+                    RichText::new(term)
                         .font(fonts::semibold(13.5))
                         .color(pal.ink),
                 );
-                ui.label(RichText::new(*desc).color(pal.muted).size(13.0));
+                ui.label(RichText::new(desc).color(pal.muted).size(13.0));
             }
         });
     ui.add_space(8.0);

@@ -67,7 +67,8 @@ pub fn apply_event(buf: &mut SecretBytes, ev: &Event) -> Effect {
 /// Parola alanı.
 pub struct SecretField {
     buf: SecretBytes,
-    label: &'static str,
+    label_tr: &'static str,
+    label_en: &'static str,
     /// Alan odaktayken macOS güvenli klavye girişi açık (girdi izleme yapan süreçler okuyamaz).
     secure: Option<lephy_sys::secure_input::SecureInputGuard>,
 }
@@ -79,10 +80,11 @@ impl SecretField {
     /// Kilitli arena kurulamazsa (süreç başında; gerçekte başarısız olmaz).
     #[must_use]
     #[allow(clippy::expect_used)]
-    pub fn new(label: &'static str) -> Self {
+    pub fn new(label_tr: &'static str, label_en: &'static str) -> Self {
         Self {
             buf: SecretBytes::with_capacity(MAX_RAW_LEN).expect("kilitli arena"),
-            label,
+            label_tr,
+            label_en,
             secure: None,
         }
     }
@@ -152,7 +154,7 @@ impl SecretField {
                 });
             });
         }
-        let label = self.label;
+        let label = crate::i18n::tr(self.label_tr, self.label_en);
         response.widget_info(|| {
             let mut w = WidgetInfo::labeled(egui::accesskit::Role::PasswordInput, enabled, label);
             w.current_text_value = Some(String::new());
@@ -176,7 +178,7 @@ impl SecretField {
         );
         let count = self.char_count();
         let (text, color) = if count == 0 {
-            (self.label.to_string(), pal.muted)
+            (label.to_string(), pal.muted)
         } else {
             (
                 "\u{2022}".repeat(count.min(48)),
@@ -254,7 +256,7 @@ mod tests {
     #[test]
     fn headless_widget_consumes_text_only_when_focused() {
         let ctx = egui::Context::default();
-        let mut field = SecretField::new("Parola");
+        let mut field = SecretField::new("Parola", "Password");
         let mut id = None;
         // Kare 1: çiz, odakla.
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
