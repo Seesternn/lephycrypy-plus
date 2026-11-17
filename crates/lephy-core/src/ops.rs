@@ -49,7 +49,8 @@ pub struct Unlocked {
     pub data_key: SecretBytes,
 }
 
-fn key32(s: &SecretBytes) -> Result<[u8; KEY_LEN]> {
+/// Kilitli bellekteki anahtarı kopyalamadan 32 baytlık diziye ödünç verir.
+fn key32(s: &SecretBytes) -> Result<&[u8; KEY_LEN]> {
     s.expose()
         .try_into()
         .map_err(|_| Error::Environment("anahtar 32 bayt değil".into()))
@@ -105,7 +106,7 @@ pub fn unlock_header(
         return Err(Error::WrongPassword);
     }
     // 6 unwrap
-    let wrapper = SharedCipher::new(header.alg, &key32(&wrap_key)?)?;
+    let wrapper = SharedCipher::new(header.alg, key32(&wrap_key)?)?;
     drop(wrap_key);
     let mut fk = SecretBytes::with_capacity(KEY_LEN).map_err(arena_err)?;
     fk.push_slice(&header.wrapped_fk[..KEY_LEN])
@@ -214,7 +215,7 @@ pub fn build_header(
         header_mac: [0u8; 32],
     };
     let partial = header.to_bytes();
-    let wrapper = SharedCipher::new(params.alg, &key32(&wrap_key)?)?;
+    let wrapper = SharedCipher::new(params.alg, key32(&wrap_key)?)?;
     drop(wrap_key);
     let mut wrapped = [0u8; 48];
     wrapped[..KEY_LEN].copy_from_slice(fk.expose());
@@ -266,6 +267,65 @@ pub enum Input<'a> {
     Path(&'a Path),
     /// Standart girdi (ham akış; boyut bilinmez; PADMÉ kullanılamaz).
     Stdin,
+}
+
+/// Orijinal silme sonucu.
+#[derive(Debug, Default)]
+pub struct DeleteReport {
+    /// Silinen öğe sayısı.
+    pub removed: usize,
+    /// Silinmeyenler: arşivden sonra değişen ya da boş olmayan dizinler (yeni dosya eklenmiş).
+    pub kept: Vec<PathBuf>,
+}
+
+/// Yalnızca arşive gerçekten alınmış kaynak öğeleri siler. Atlanan bir giriş varsa hiçbir şey
+/// silinmez (kod 5). Her dosya için okunduğu andaki (aygıt, inode) yeniden denetlenir; değişen
+/// öğe ve boş olmayan dizin yerinde bırakılır. Önce dosyalar, sonra dizinler en derinden.
+///
+/// # Errors
+/// Atlanan giriş varsa kod 5.
+pub fn delete_archived(rep: &Report) -> Result<DeleteReport> {
+    if !rep.skipped.is_empty() {
+        return Err(Error::Cancelled(format!(
+            "{} giriş arşive alınmadı; orijinal hiç silinmedi",
+            rep.skipped.len()
+        )));
+    }
+    let mut out = DeleteReport::default();
+    for a in rep.archived.iter().filter(|a| !a.is_dir) {
+        if same_item(a) && std::fs::remove_file(&a.path).is_ok() {
+            out.removed += 1;
+        } else {
+            out.kept.push(a.path.clone());
+        }
+    }
+    for a in rep.archived.iter().rev().filter(|a| a.is_dir) {
+        if same_item(a) && std::fs::remove_dir(&a.path).is_ok() {
+            out.removed += 1;
+        } else {
+            out.kept.push(a.path.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// Yol hâlâ arşive alınan öğeyi mi gösteriyor (tür ve, Unix'te, aygıt + inode).
+fn same_item(a: &crate::archive::Archived) -> bool {
+    let Ok(md) = a.path.symlink_metadata() else {
+        return false;
+    };
+    if md.is_dir() != a.is_dir {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        a.id.is_none_or(|(dev, ino)| md.dev() == dev && md.ino() == ino)
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 /// Şifreleme raporu.
@@ -370,7 +430,7 @@ pub fn encrypt(
         opts.strict_memory,
         log,
     )?;
-    let cipher = SharedCipher::new(opts.alg, &key32(&unlocked.data_key)?)?;
+    let cipher = SharedCipher::new(opts.alg, key32(&unlocked.data_key)?)?;
     let aad = chunk_aad(&unlocked.bytes);
     let mut w = AtomicWriter::create(output, opts.force)?;
     w.file().write_all(&unlocked.bytes)?;
@@ -521,12 +581,15 @@ pub struct DecryptOptions {
 
 /// Dizin oluşturur (0700) ve Windows'ta indeksleme dışı bırakır.
 fn create_tmp_dir(dir: &Path) -> Result<()> {
-    std::fs::create_dir(dir)?;
+    // Doğrudan 0700 ile oluşturulur (umask sonrası chmod arasında açık kalmaz).
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut b = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
     }
+    b.create(dir)?;
     let _ = lephy_sys::fs::mark_not_content_indexed(dir);
     Ok(())
 }
@@ -544,7 +607,7 @@ pub fn decrypt(
     log: &mut dyn FnMut(&str),
 ) -> Result<DecryptReport> {
     let (mut f, u) = open_and_unlock(path, pwd_nfc, keyfile_digest, opts.unlock, log)?;
-    let cipher = SharedCipher::new(u.header.alg, &key32(&u.data_key)?)?;
+    let cipher = SharedCipher::new(u.header.alg, key32(&u.data_key)?)?;
     let aad = chunk_aad(&u.bytes);
     let sp = StreamParams {
         cipher: &cipher,
@@ -599,14 +662,8 @@ pub fn decrypt(
                 .unwrap_or(Path::new("."));
             crate::io::precheck_space(parent, total)?;
             let mut ent = OsEntropy;
-            let tmp_name = format!(
-                "{}{}",
-                out.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                crate::io::tmp_name(&mut ent)?
-            );
-            let tmp = parent.join(tmp_name);
+            // Ad `.lphy-tmp-` ile başlar: `cleanup` bulur, çıktı adı sızmaz.
+            let tmp = parent.join(crate::io::tmp_name(&mut ent)?);
             create_tmp_dir(&tmp)?;
             let guard = TmpDirGuard {
                 path: tmp.clone(),
@@ -651,15 +708,62 @@ impl Drop for TmpDirGuard {
     }
 }
 
-/// Noclobber (ya da `--force`: var olan hedef önce kaldırılır) rename; geri dönüş bayrağı.
-fn move_into_place(src: &Path, dst: &Path, force: bool) -> Result<bool> {
-    if force && let Ok(md) = dst.symlink_metadata() {
-        if md.is_dir() && !md.file_type().is_symlink() {
-            std::fs::remove_dir_all(dst)?;
-        } else {
-            std::fs::remove_file(dst)?;
+/// rekey/reencrypt yerinde değiştirir: symlink'te bağlantının kendisi, hardlink'te yalnızca bu ad
+/// değişir, eski başlık/parola gerçek dosyada ya da diğer adlarda kalırdı. Bu yüzden reddedilir.
+fn require_plain_file(path: &Path) -> Result<std::fs::Metadata> {
+    let md = path.symlink_metadata()?;
+    if md.file_type().is_symlink() {
+        return Err(Error::Environment(
+            "dosya bir symlink; gerçek dosyanın yolunu verin (yoksa eski parola gerçek dosyada kalır)"
+                .into(),
+        ));
+    }
+    if !md.is_file() {
+        return Err(Error::Environment("normal bir dosya değil".into()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if md.nlink() > 1 {
+            return Err(Error::Environment(format!(
+                "dosyanın {} sabit bağlantısı (hardlink) var; diğer adlar eski parolayla açılmaya devam eder",
+                md.nlink()
+            )));
         }
     }
+    Ok(md)
+}
+
+/// Noclobber rename; geri dönüş bayrağı. `--force`: var olan hedef önce rastgele bir tmp adına
+/// taşınır, yeni çıktı yerine konunca silinir; yerine koyma başarısız olursa geri alınır. Böylece
+/// hiçbir anda hedef de yedek de kaybolmaz.
+fn move_into_place(src: &Path, dst: &Path, force: bool) -> Result<bool> {
+    let mut backup: Option<(PathBuf, bool)> = None;
+    if force && let Ok(md) = dst.symlink_metadata() {
+        let parent = dst
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let b = parent.join(crate::io::tmp_name(&mut OsEntropy)?);
+        std::fs::rename(dst, &b)?;
+        backup = Some((b, md.is_dir() && !md.file_type().is_symlink()));
+    }
+    let r = place(src, dst);
+    if let Some((b, is_dir)) = backup {
+        if r.is_ok() {
+            let _ = if is_dir {
+                std::fs::remove_dir_all(&b)
+            } else {
+                std::fs::remove_file(&b)
+            };
+        } else {
+            let _ = std::fs::rename(&b, dst);
+        }
+    }
+    r
+}
+
+fn place(src: &Path, dst: &Path) -> Result<bool> {
     match lephy_sys::fs::rename_noclobber(src, dst) {
         Ok(()) => Ok(false),
         Err(lephy_sys::fs::NoclobberError::Exists) => Err(Error::Exists(dst.display().to_string())),
@@ -674,7 +778,9 @@ fn move_into_place(src: &Path, dst: &Path, force: bool) -> Result<bool> {
     }
 }
 
-/// Doğrulama (yazmadan). Döner: düz metin akış uzunluğu.
+/// Doğrulama (diske yazmadan). Etiketlerin yanında içerik yapısı da denetlenir: arşivde yol
+/// kuralları, yinelenen adlar, sınırlar, END ve dolgu; ham akışta PADMÉ dolgusu. Böylece
+/// `verify` geçen bir dosya `decrypt`'te biçim hatası vermez. Döner: düz metin akış uzunluğu.
 ///
 /// # Errors
 /// 3, 4, 6, 1, 130.
@@ -686,7 +792,7 @@ pub fn verify(
     log: &mut dyn FnMut(&str),
 ) -> Result<u64> {
     let (mut f, u) = open_and_unlock(path, pwd_nfc, keyfile_digest, opts, log)?;
-    let cipher = SharedCipher::new(u.header.alg, &key32(&u.data_key)?)?;
+    let cipher = SharedCipher::new(u.header.alg, key32(&u.data_key)?)?;
     let aad = chunk_aad(&u.bytes);
     let sp = StreamParams {
         cipher: &cipher,
@@ -694,7 +800,24 @@ pub fn verify(
         aad: &aad,
         chunk_size: u.header.chunk_size(),
     };
-    verify_stream(&sp, &mut f)
+    match u.header.content_type {
+        ContentType::Archive => {
+            let eo = ExtractOptions {
+                padded: u.header.padded,
+                ..ExtractOptions::default()
+            };
+            let mut ex = Extractor::verifier(eo);
+            let n = decrypt_stream(&sp, &mut f, &mut ex).map_err(map_adaptor)?;
+            ex.finish()?;
+            Ok(n)
+        }
+        ContentType::Raw if u.header.padded => {
+            let mut pw = RawPadWriter::new(std::io::sink());
+            decrypt_stream(&sp, &mut f, &mut pw).map_err(map_adaptor)?;
+            Ok(pw.finish().map_err(Error::from_io)?.1)
+        }
+        ContentType::Raw => verify_stream(&sp, &mut f),
+    }
 }
 
 /// Yeni kimlik bilgileri (rekey/reencrypt).
@@ -723,6 +846,7 @@ pub fn rekey(
     entropy: &mut dyn Entropy,
     log: &mut dyn FnMut(&str),
 ) -> Result<()> {
+    let orig_md = require_plain_file(path)?;
     let (mut f, u) = open_and_unlock(path, old_pwd, old_keyfile, opts, log)?;
     let params = NewHeaderParams {
         alg: u.header.alg,
@@ -753,6 +877,8 @@ pub fn rekey(
     // Windows açık bir dosyanın üzerine yeniden adlandırmaya izin vermez: kaynak önce kapanır.
     drop(f);
     w.commit(true)?;
+    // Yeni dosya 0600 oluşur; özgün izinler korunur.
+    let _ = std::fs::set_permissions(path, orig_md.permissions());
     log(
         "uyarı: eski parola ve eski dosyanın başlık kopyasına sahip biri bu dosyayı hâlâ açabilir; gerçek rotasyon için `reencrypt`",
     );
@@ -784,44 +910,6 @@ fn copy_rest(src: &mut File, dst: &mut File) -> Result<()> {
     Ok(())
 }
 
-/// Bellek içi boru: çözücü yazar, şifreleyici okur (düz metin diske inmez).
-struct PipeWriter(crossbeam_channel::Sender<zeroize::Zeroizing<Vec<u8>>>);
-struct PipeReader {
-    rx: crossbeam_channel::Receiver<zeroize::Zeroizing<Vec<u8>>>,
-    cur: zeroize::Zeroizing<Vec<u8>>,
-    pos: usize,
-}
-
-impl Write for PipeWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .send(zeroize::Zeroizing::new(buf.to_vec()))
-            .map_err(|_| std::io::Error::other("boru kapandı"))?;
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl Read for PipeReader {
-    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        if self.pos >= self.cur.len() {
-            match self.rx.recv() {
-                Ok(v) => {
-                    self.cur = v;
-                    self.pos = 0;
-                }
-                Err(_) => return Ok(0),
-            }
-        }
-        let n = (self.cur.len() - self.pos).min(out.len());
-        out[..n].copy_from_slice(&self.cur[self.pos..self.pos + n]);
-        self.pos += n;
-        Ok(n)
-    }
-}
-
 /// `reencrypt`: yeni FK ve `stream_nonce_prefix`, tüm chunk'lar yeniden şifrelenir; atomik.
 /// İçerik türü ve dolgu aynen korunur (düz metin akışı geçirilir, ayrıştırılmaz).
 ///
@@ -836,6 +924,7 @@ pub fn reencrypt(
     entropy: &mut dyn Entropy,
     log: &mut dyn FnMut(&str),
 ) -> Result<u64> {
+    let orig_md = require_plain_file(path)?;
     let (mut f, u) = open_and_unlock(path, old_pwd, old_keyfile, opts, log)?;
     let params = NewHeaderParams {
         alg: u.header.alg,
@@ -854,19 +943,12 @@ pub fn reencrypt(
         opts.strict_memory,
         log,
     )?;
-    let old_cipher = SharedCipher::new(u.header.alg, &key32(&u.data_key)?)?;
+    let old_cipher = SharedCipher::new(u.header.alg, key32(&u.data_key)?)?;
     let old_aad = chunk_aad(&u.bytes);
-    let new_cipher = SharedCipher::new(nu.header.alg, &key32(&nu.data_key)?)?;
+    let new_cipher = SharedCipher::new(nu.header.alg, key32(&nu.data_key)?)?;
     let new_aad = chunk_aad(&nu.bytes);
     let mut w = AtomicWriter::create(path, true)?;
     w.file().write_all(&nu.bytes)?;
-    let (tx, rx) = crossbeam_channel::bounded(4);
-    let mut pw = PipeWriter(tx);
-    let mut pr = PipeReader {
-        rx,
-        cur: zeroize::Zeroizing::new(Vec::new()),
-        pos: 0,
-    };
     let old_sp = StreamParams {
         cipher: &old_cipher,
         prefix: &u.header.stream_nonce_prefix,
@@ -879,31 +961,12 @@ pub fn reencrypt(
         aad: &new_aad,
         chunk_size: nu.header.chunk_size(),
     };
-    let out_file = w.file();
-    let (dec, enc) = std::thread::scope(|s| {
-        let dec = s.spawn(move || {
-            let _ = lephy_sys::signal::mask_signals_on_this_thread();
-            let r = decrypt_stream(&old_sp, &mut f, &mut pw);
-            drop(pw);
-            r
-        });
-        let enc = encrypt_stream(&new_sp, &mut pr, out_file);
-        drop(pr);
-        (
-            dec.join().unwrap_or_else(|_| {
-                Err(Error::Environment("çözücü iş parçacığı panikledi".into()))
-            }),
-            enc,
-        )
-    });
-    let n = dec?;
-    let m = enc?;
-    if n != m {
-        return Err(Error::Environment(
-            "yeniden şifrelemede uzunluk uyuşmazlığı".into(),
-        ));
-    }
+    let n = crate::pipeline::reencrypt_stream(&old_sp, &new_sp, &mut f, w.file())?;
+    // Windows açık bir dosyanın üzerine yeniden adlandırmaya izin vermez: kaynak önce kapanır.
+    drop(f);
     w.commit(true)?;
+    // Yeni dosya 0600 oluşur; özgün izinler korunur.
+    let _ = std::fs::set_permissions(path, orig_md.permissions());
     Ok(n)
 }
 
@@ -943,6 +1006,143 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    fn encrypt_dir(d: &Path, src: &Path, out: &str) -> Report {
+        let rep = encrypt(
+            &Input::Path(src),
+            &d.join(out),
+            &pwd("silme testi parola"),
+            None,
+            &opts(false, Some(false)),
+            &mut OsEntropy,
+            &mut |_| {},
+        )
+        .unwrap();
+        rep.archive.unwrap()
+    }
+
+    #[test]
+    fn force_replace_restores_backup_on_failure() {
+        let d = tmpdir("forceswap");
+        let dst = d.join("hedef");
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(dst.join("eski.txt"), b"eski").unwrap();
+        // Kaynak yok: yerine koyma başarısız olur, eski hedef geri gelmeli.
+        assert!(move_into_place(&d.join("yok"), &dst, true).is_err());
+        assert_eq!(std::fs::read(dst.join("eski.txt")).unwrap(), b"eski");
+        // Başarılı değiştirme: yeni içerik, yedek kalmaz.
+        let src = d.join("yeni");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("yeni.txt"), b"yeni").unwrap();
+        move_into_place(&src, &dst, true).unwrap();
+        assert!(dst.join("yeni.txt").exists() && !dst.join("eski.txt").exists());
+        assert!(
+            crate::io::scan_stale(&d).unwrap().is_empty(),
+            "yedek kalmamalı"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rekey_refuses_symlink_and_hardlink() {
+        let d = tmpdir("rekeylink");
+        let rep_path = d.join("f.lphy");
+        std::fs::write(d.join("a.txt"), b"a").unwrap();
+        encrypt(
+            &Input::Path(&d.join("a.txt")),
+            &rep_path,
+            &pwd("rekey parola 1234"),
+            None,
+            &opts(false, None),
+            &mut OsEntropy,
+            &mut |_| {},
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&rep_path, d.join("link.lphy")).unwrap();
+        assert!(require_plain_file(&d.join("link.lphy")).is_err());
+        std::fs::hard_link(&rep_path, d.join("hard.lphy")).unwrap();
+        assert!(require_plain_file(&rep_path).is_err());
+        std::fs::remove_file(d.join("hard.lphy")).unwrap();
+        assert!(require_plain_file(&rep_path).is_ok());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn delete_archived_removes_only_what_was_archived() {
+        let d = tmpdir("delarch");
+        let src = d.join("kaynak");
+        std::fs::create_dir_all(src.join("alt")).unwrap();
+        std::fs::write(src.join("a.txt"), b"a").unwrap();
+        std::fs::write(src.join("alt/b.txt"), b"b").unwrap();
+        let rep = encrypt_dir(&d, &src, "o1.lphy");
+        assert_eq!(rep.archived.len(), 4, "{:?}", rep.archived); // kök, a.txt, alt, alt/b.txt
+        // Arşivden sonra eklenen dosya korunur; içinde olduğu dizin de (boş değil) korunur.
+        std::fs::write(src.join("alt/yeni.txt"), b"yeni").unwrap();
+        let del = delete_archived(&rep).unwrap();
+        assert!(src.join("alt/yeni.txt").exists());
+        assert!(!src.join("a.txt").exists());
+        assert!(!src.join("alt/b.txt").exists());
+        assert!(del.kept.iter().any(|k| k.ends_with("alt")));
+        assert!(del.kept.contains(&src), "boş olmayan kök korunur");
+        // Yeni dosya yokken her şey (kök dahil) silinir.
+        std::fs::write(src.join("c.txt"), b"c").unwrap();
+        let rep = encrypt_dir(&d, &src, "o1b.lphy");
+        delete_archived(&rep).unwrap();
+        assert!(!src.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_archived_refuses_when_entries_were_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmpdir("delskip");
+        let src = d.join("kaynak");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("ok.txt"), b"ok").unwrap();
+        std::fs::write(src.join("kilitli.txt"), b"gizli").unwrap();
+        std::fs::set_permissions(
+            src.join("kilitli.txt"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        if std::fs::File::open(src.join("kilitli.txt")).is_ok() {
+            // root olarak çalışıyor: okunamaz dosya üretilemez.
+            let _ = std::fs::remove_dir_all(&d);
+            return;
+        }
+        let rep = encrypt_dir(&d, &src, "o2.lphy");
+        assert_eq!(rep.skipped.len(), 1);
+        let e = delete_archived(&rep).unwrap_err();
+        assert_eq!(e.exit_code(), crate::error::ExitCode::Cancelled);
+        assert!(src.join("ok.txt").exists(), "hiçbir şey silinmemeli");
+        assert!(src.join("kilitli.txt").exists());
+        std::fs::set_permissions(
+            src.join("kilitli.txt"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_archived_keeps_replaced_file() {
+        let d = tmpdir("delswap");
+        let src = d.join("kaynak");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.txt"), b"a").unwrap();
+        let rep = encrypt_dir(&d, &src, "o3.lphy");
+        // Arşivden sonra aynı adla başka bir dosya (farklı inode) konur: silinmemeli.
+        std::fs::remove_file(src.join("a.txt")).unwrap();
+        std::fs::write(src.join("b.tmp"), b"tut").unwrap();
+        std::fs::write(src.join("a.txt"), b"baska").unwrap();
+        let del = delete_archived(&rep).unwrap();
+        assert!(src.join("a.txt").exists());
+        assert!(del.kept.iter().any(|k| k.ends_with("a.txt")));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

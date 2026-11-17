@@ -432,7 +432,7 @@ fn read_password(
     Ok(nfc)
 }
 
-fn keyfile_of(path: Option<&PathBuf>) -> Result<Option<[u8; 32]>> {
+fn keyfile_of(path: Option<&PathBuf>) -> Result<Option<zeroize::Zeroizing<[u8; 32]>>> {
     path.map(|p| password::keyfile_digest_from_path(p))
         .transpose()
 }
@@ -577,7 +577,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 &inp,
                 &out,
                 &nfc,
-                keyfile.as_ref(),
+                keyfile.as_deref(),
                 &opts,
                 &mut OsEntropy,
                 log,
@@ -604,7 +604,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                     allow_large_kdf: true,
                     strict_memory: *strict_memory,
                 };
-                ops::verify(&out, &nfc, keyfile.as_ref(), u, log)?;
+                ops::verify(&out, &nfc, keyfile.as_deref(), u, log)?;
                 if let Some(d) = out.parent() {
                     let _ = lephy_sys::fs::fsync_dir(if d.as_os_str().is_empty() {
                         Path::new(".")
@@ -612,9 +612,16 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                         d
                     });
                 }
-                if input.symlink_metadata()?.is_dir() {
-                    std::fs::remove_dir_all(input)?;
-                } else {
+                if let Some(a) = &rep.archive {
+                    // Yalnızca arşive alınan öğeler silinir; atlanan varsa hiçbir şey silinmez.
+                    let d = ops::delete_archived(a)?;
+                    for k in &d.kept {
+                        eprintln!(
+                            "uyarı: silinmedi (arşivden sonra değişti ya da boş değil): {}",
+                            disp(k)
+                        );
+                    }
+                } else if input.symlink_metadata()?.is_file() {
                     std::fs::remove_file(input)?;
                 }
                 eprintln!(
@@ -656,7 +663,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 eprintln!(
                     "uyarı: --stdout: son chunk doğrulanana kadar kesme tespit edilemez; çıktı kısmen yazılmış olabilir"
                 );
-                let r = ops::decrypt(input, &Output::Stdout, &nfc, keyfile.as_ref(), dopts, log)?;
+                let r = ops::decrypt(input, &Output::Stdout, &nfc, keyfile.as_deref(), dopts, log)?;
                 log(&format!("{} bayt çözüldü (stdout)", r.plain_len));
                 return Ok(());
             }
@@ -675,7 +682,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 input,
                 &Output::Path(&out, *force),
                 &nfc,
-                keyfile.as_ref(),
+                keyfile.as_deref(),
                 dopts,
                 log,
             )?;
@@ -699,7 +706,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             let source = source_of(pw);
             let nfc = read_password(&source, "Parola: ", false, false)?;
             memory_warning(unlock.strict_memory)?;
-            let n = ops::verify(input, &nfc, keyfile.as_ref(), unlock.opts(), log)?;
+            let n = ops::verify(input, &nfc, keyfile.as_deref(), unlock.opts(), log)?;
             println!("doğrulandı: {n} bayt");
             Ok(())
         }
@@ -772,13 +779,13 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             }
             let creds = NewCredentials {
                 pwd_nfc: &newp,
-                keyfile_digest: new_kf.as_ref(),
+                keyfile_digest: new_kf.as_deref(),
                 kdf,
             };
             ops::rekey(
                 input,
                 &old,
-                old_kf.as_ref(),
+                old_kf.as_deref(),
                 &creds,
                 unlock.opts(),
                 *verify,
@@ -809,13 +816,13 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             memory_warning(unlock.strict_memory)?;
             let creds = NewCredentials {
                 pwd_nfc: &newp,
-                keyfile_digest: new_kf.as_ref(),
+                keyfile_digest: new_kf.as_deref(),
                 kdf: None,
             };
             let n = ops::reencrypt(
                 input,
                 &old,
-                old_kf.as_ref(),
+                old_kf.as_deref(),
                 &creds,
                 unlock.opts(),
                 &mut OsEntropy,

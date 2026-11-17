@@ -124,8 +124,7 @@ pub fn run(job: Job) -> Result<Outcome> {
         .keyfile
         .as_deref()
         .map(password::keyfile_digest_from_path)
-        .transpose()?
-        .map(zeroize::Zeroizing::new);
+        .transpose()?;
     let kf = keyfile.as_deref();
     let mut log = |_: &str| {};
     match job.mode {

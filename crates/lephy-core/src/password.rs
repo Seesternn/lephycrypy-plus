@@ -262,7 +262,7 @@ pub fn check_encrypt_policy(nfc: &SecretBytes) -> Result<()> {
 ///
 /// # Errors
 /// Boyut sınırı ya da G/Ç → kod 1.
-pub fn keyfile_digest_from_path(path: &Path) -> Result<[u8; 32]> {
+pub fn keyfile_digest_from_path(path: &Path) -> Result<zeroize::Zeroizing<[u8; 32]>> {
     let md = std::fs::metadata(path)?;
     if !md.is_file() {
         return Err(Error::Environment(
@@ -297,7 +297,7 @@ pub fn keyfile_digest_from_path(path: &Path) -> Result<[u8; 32]> {
             "anahtar dosyası en az {KEYFILE_MIN} bayt olmalı"
         )));
     }
-    let out = *h.finalize().as_bytes();
+    let out = zeroize::Zeroizing::new(*h.finalize().as_bytes());
     zeroize::Zeroize::zeroize(&mut h);
     Ok(out)
 }
@@ -358,7 +358,7 @@ mod tests {
         std::fs::write(&p, (0u8..64).collect::<Vec<_>>()).unwrap();
         let d = keyfile_digest_from_path(&p).unwrap();
         assert_eq!(
-            d,
+            *d,
             crate::kdf::keyfile_digest(&(0u8..64).collect::<Vec<_>>())
         );
         let _ = std::fs::remove_file(&p);

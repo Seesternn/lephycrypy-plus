@@ -52,6 +52,32 @@ pub struct Report {
     pub symlinks_created: usize,
     /// Giriş sayısı (END hariç).
     pub entries: usize,
+    /// Arşive gerçekten alınan kaynak öğeler (yalnızca yazıcı doldurur). `--delete-original`
+    /// yalnızca bunları siler.
+    pub archived: Vec<Archived>,
+}
+
+/// Arşive alınmış bir kaynak öğe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Archived {
+    /// Kaynaktaki mutlak yol.
+    pub path: PathBuf,
+    /// Dizin mi.
+    pub is_dir: bool,
+    /// Okunduğu andaki (aygıt, inode); Unix dışında `None`.
+    pub id: Option<(u64, u64)>,
+}
+
+#[cfg(unix)]
+#[allow(clippy::unnecessary_wraps)] // Unix dışında None döner; imza ortak.
+fn id_of(md: &std::fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Some((md.dev(), md.ino()))
+}
+
+#[cfg(not(unix))]
+const fn id_of(_md: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
 }
 
 impl Report {
@@ -110,6 +136,8 @@ enum Kind {
 struct Work {
     rel: String,
     abs: PathBuf,
+    /// Kaynak dizin köküne göre yol (kök dosyaysa boş).
+    sub: PathBuf,
     kind: Kind,
 }
 
@@ -121,6 +149,9 @@ enum WState {
 
 /// Arşiv yazıcı (`Read`): `root` bir dizinse içeriği (kök adı hariç), dosyaysa tek giriş.
 pub struct ArchiveWriter {
+    /// Kaynak bir dizinse kök tutamacı: tüm açma/listeleme köke göre yapılır; kaynak okunurken
+    /// bir öğe symlink ile değiştirilse bile kökün dışına çıkılamaz (cap-std).
+    root: Option<cap_std::fs::Dir>,
     stack: Vec<Work>,
     state: WState,
     pending: Zeroizing<Vec<u8>>,
@@ -141,8 +172,13 @@ impl ArchiveWriter {
     pub fn new(root: &Path, strict: bool) -> Result<Self> {
         let md = root.symlink_metadata()?;
         let mut stack = Vec::new();
+        let mut root_dir = None;
+        let mut root_md = None;
         if md.is_dir() {
-            push_children(&mut stack, root, "")?;
+            let d = cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())?;
+            push_children(&mut stack, &d, root, Path::new(""), "")?;
+            root_md = Some(d.try_clone()?.into_std_file().metadata()?);
+            root_dir = Some(d);
         } else if md.is_file() {
             let name = root
                 .file_name()
@@ -151,6 +187,7 @@ impl ArchiveWriter {
             stack.push(Work {
                 rel,
                 abs: root.to_path_buf(),
+                sub: PathBuf::new(),
                 kind: Kind::File,
             });
         } else {
@@ -159,7 +196,17 @@ impl ArchiveWriter {
                 root.display()
             )));
         }
+        let mut report = Report::default();
+        if let Some(m) = root_md {
+            // Kök dizin listede ilk: dizinler tersten silindiği için en son silinir.
+            report.archived.push(Archived {
+                path: root.to_path_buf(),
+                is_dir: true,
+                id: id_of(&m),
+            });
+        }
         Ok(Self {
+            root: root_dir,
             stack,
             state: WState::Next,
             pending: Zeroizing::new(Vec::with_capacity(WRITE_FRAME + 4)),
@@ -168,8 +215,36 @@ impl ArchiveWriter {
             entries: 0,
             total_path_bytes: 0,
             dedup: HashSet::with_capacity(1 << 16),
-            report: Report::default(),
+            report,
         })
+    }
+
+    /// Dizin girişini kaydeder ve çocuklarını yığına ekler; `Ok(false)` = atlandı.
+    fn dir_entry(&mut self, root: &cap_std::fs::Dir, w: &Work) -> io::Result<bool> {
+        // Meta veri açılmış tutamaçtan: okuma ile kayıt arasında değişemez.
+        let md = root.open_dir(&w.sub)?.into_std_file().metadata()?;
+        if !md.is_dir() {
+            self.report.skip(&w.rel, "dizin değişti", self.strict)?;
+            return Ok(false);
+        }
+        self.account(&w.rel, 0)?;
+        self.put_record(T_DIR, &w.rel, mode_of(&md), mtime_of(&md));
+        push_children(&mut self.stack, root, &w.abs, &w.sub, &w.rel)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        self.report.archived.push(Archived {
+            path: w.abs.clone(),
+            is_dir: true,
+            id: id_of(&md),
+        });
+        Ok(true)
+    }
+
+    /// Dosyayı açar: dizin kaynağında köke göre (cap-std), tek dosya kaynağında yolla.
+    fn open_file(&self, w: &Work) -> io::Result<File> {
+        match &self.root {
+            Some(d) => d.open(&w.sub).map(cap_std::fs::File::into_std),
+            None => File::open(&w.abs),
+        }
     }
 
     fn account(&mut self, rel: &str, extra: usize) -> io::Result<()> {
@@ -201,6 +276,7 @@ impl ArchiveWriter {
     }
 
     /// `pending`'i bir sonraki üretimle doldurur; `Ok(false)` = bitti.
+    #[allow(clippy::too_many_lines)]
     fn refill(&mut self) -> io::Result<bool> {
         self.pending.clear();
         self.pos = 0;
@@ -245,21 +321,26 @@ impl ArchiveWriter {
                     };
                     match w.kind {
                         Kind::Dir => {
-                            let md = w.abs.symlink_metadata()?;
-                            self.account(&w.rel, 0)?;
-                            self.put_record(T_DIR, &w.rel, mode_of(&md), mtime_of(&md));
-                            push_children(&mut self.stack, &w.abs, &w.rel)
-                                .map_err(|e| io::Error::other(e.to_string()))?;
-                            return Ok(true);
+                            let Some(root) = self.root.take() else {
+                                return Err(io::Error::other("dizin girişi kök olmadan"));
+                            };
+                            let r = self.dir_entry(&root, &w);
+                            self.root = Some(root);
+                            if r? {
+                                return Ok(true);
+                            }
                         }
                         Kind::File => {
-                            let md = w.abs.symlink_metadata()?;
-                            if !md.is_file() {
+                            let pre = match &self.root {
+                                Some(d) => d.symlink_metadata(&w.sub)?.is_file(),
+                                None => w.abs.symlink_metadata()?.is_file(),
+                            };
+                            if !pre {
                                 self.report
                                     .skip(&w.rel, "normal dosya değil", self.strict)?;
                                 continue;
                             }
-                            let f = match File::open(&w.abs) {
+                            let f = match self.open_file(&w) {
                                 Ok(f) => f,
                                 Err(e) => {
                                     self.report.skip(
@@ -270,13 +351,31 @@ impl ArchiveWriter {
                                     continue;
                                 }
                             };
+                            // Açılan nesne denetlenir (fstat): kontrol ile açma arasında
+                            // değiştirilen öğe arşive girmez.
+                            let md = f.metadata()?;
+                            if !md.is_file() {
+                                self.report
+                                    .skip(&w.rel, "normal dosya değil", self.strict)?;
+                                continue;
+                            }
                             self.account(&w.rel, 0)?;
                             self.put_record(T_FILE, &w.rel, mode_of(&md), mtime_of(&md));
+                            self.report.archived.push(Archived {
+                                path: w.abs.clone(),
+                                is_dir: false,
+                                id: id_of(&md),
+                            });
                             self.state = WState::File(f);
                             return Ok(true);
                         }
                         Kind::Symlink => {
-                            let target = read_link_bytes(&w.abs)?;
+                            let target = match &self.root {
+                                // Ham hedef (mutlak hedefler de kaydedilir; çıkarma politikası
+                                // ayrıca karar verir).
+                                Some(d) => link_bytes(&d.read_link_contents(&w.sub)?),
+                                None => read_link_bytes(&w.abs)?,
+                            };
                             if names::validate_symlink_target(&target).is_err() {
                                 self.report.skip(
                                     &w.rel,
@@ -291,6 +390,12 @@ impl ArchiveWriter {
                             self.pending.extend_from_slice(&len.to_le_bytes());
                             self.pending.extend_from_slice(&target);
                             self.pending.extend_from_slice(&0u32.to_le_bytes());
+                            let id = self.root.as_ref().and_then(|d| link_id(d, &w.sub));
+                            self.report.archived.push(Archived {
+                                path: w.abs.clone(),
+                                is_dir: false,
+                                id,
+                            });
                             return Ok(true);
                         }
                     }
@@ -306,35 +411,62 @@ impl ArchiveWriter {
     }
 }
 
-fn read_link_bytes(p: &Path) -> io::Result<Vec<u8>> {
-    let t = std::fs::read_link(p)?;
+/// Symlink'in kendisinin (aygıt, inode) kimliği; Unix dışında `None`.
+fn link_id(root: &cap_std::fs::Dir, sub: &Path) -> Option<(u64, u64)> {
+    let m = root.symlink_metadata(sub).ok()?;
     #[cfg(unix)]
     {
-        use std::os::unix::ffi::OsStrExt;
-        Ok(t.as_os_str().as_bytes().to_vec())
+        use cap_std::fs::MetadataExt;
+        Some((m.dev(), m.ino()))
     }
     #[cfg(not(unix))]
     {
-        Ok(t.to_string_lossy().replace('\\', "/").into_bytes())
+        let _ = m;
+        None
     }
 }
 
-/// Dizin çocuklarını (bayt sırasında, tersten yığına) ekler.
-fn push_children(stack: &mut Vec<Work>, dir: &Path, rel_prefix: &str) -> Result<()> {
-    let mut items: Vec<(Vec<u8>, PathBuf)> = Vec::new();
-    for e in std::fs::read_dir(dir)? {
-        let e = e?;
-        let name = e.file_name();
+fn read_link_bytes(p: &Path) -> io::Result<Vec<u8>> {
+    Ok(link_bytes(&std::fs::read_link(p)?))
+}
+
+fn link_bytes(t: &Path) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        t.as_os_str().as_bytes().to_vec()
+    }
+    #[cfg(not(unix))]
+    {
+        t.to_string_lossy().replace('\\', "/").into_bytes()
+    }
+}
+
+/// Dizin çocuklarını (bayt sırasında, tersten yığına) ekler. Listeleme ve sınıflandırma kök
+/// tutamacına göredir (`sub` köke göre yol; `abs` yalnızca rapor ve silme içindir).
+fn push_children(
+    stack: &mut Vec<Work>,
+    root: &cap_std::fs::Dir,
+    abs_dir: &Path,
+    sub: &Path,
+    rel_prefix: &str,
+) -> Result<()> {
+    let mut items: Vec<(Vec<u8>, std::ffi::OsString)> = Vec::new();
+    let rd = if sub.as_os_str().is_empty() {
+        root.entries()?
+    } else {
+        root.read_dir(sub)?
+    };
+    for e in rd {
+        let name = e?.file_name();
         let bytes = name.to_string_lossy().into_owned().into_bytes();
-        items.push((bytes, e.path()));
+        items.push((bytes, name));
     }
     items.sort_by(|a, b| b.0.cmp(&a.0)); // tersten: pop ile artan sıra
-    for (_, abs) in items {
-        let md = abs.symlink_metadata()?;
-        let name = abs
-            .file_name()
-            .ok_or_else(|| Error::Environment("ad yok".into()))?;
-        let comp = names::to_archive_path(Path::new(name))?;
+    for (_, name) in items {
+        let child_sub = sub.join(&name);
+        let md = root.symlink_metadata(&child_sub)?;
+        let comp = names::to_archive_path(Path::new(&name))?;
         let rel = if rel_prefix.is_empty() {
             comp
         } else {
@@ -347,7 +479,12 @@ fn push_children(stack: &mut Vec<Work>, dir: &Path, rel_prefix: &str) -> Result<
         } else {
             Kind::File // FIFO/soket/aygıt: refill'de "normal dosya değil" ile atlanır
         };
-        stack.push(Work { rel, abs, kind });
+        stack.push(Work {
+            rel,
+            abs: abs_dir.join(&name),
+            sub: child_sub,
+            kind,
+        });
     }
     Ok(())
 }
@@ -464,7 +601,12 @@ enum PState {
 
 enum Current {
     File(cap_std::fs::File),
-    Symlink { target: Vec<u8>, frames: usize },
+    /// Yalnızca doğrulama: içerik okunur ve atılır.
+    Discard,
+    Symlink {
+        target: Vec<u8>,
+        frames: usize,
+    },
 }
 
 struct Deferred {
@@ -475,9 +617,10 @@ struct Deferred {
     depth: usize,
 }
 
-/// Arşiv çıkarıcı (`Write`). `root` tmp dizinin cap-std handle'ıdır (0700, çağıran oluşturur).
+/// Arşiv çıkarıcı (`Write`). `root` tmp dizinin cap-std handle'ıdır (0700, çağıran oluşturur);
+/// `None` ise yalnızca yapı doğrulanır, diske hiçbir şey yazılmaz (`Extractor::verifier`).
 pub struct Extractor {
-    root: cap_std::fs::Dir,
+    root: Option<cap_std::fs::Dir>,
     opts: ExtractOptions,
     state: PState,
     hdr: Vec<u8>,
@@ -508,7 +651,18 @@ impl Extractor {
     /// Kod 1.
     pub fn new(tmp_dir: &Path, opts: ExtractOptions) -> Result<Self> {
         let root = cap_std::fs::Dir::open_ambient_dir(tmp_dir, cap_std::ambient_authority())?;
-        Ok(Self {
+        Ok(Self::with_root(Some(root), opts))
+    }
+
+    /// Yalnızca doğrulayan çıkarıcı: yol kuralları, yinelenenler, sınırlar, END ve dolgu
+    /// çıkarmadaki gibi denetlenir; diske yazılmaz, symlink kurulmaz.
+    #[must_use]
+    pub fn verifier(opts: ExtractOptions) -> Self {
+        Self::with_root(None, opts)
+    }
+
+    fn with_root(root: Option<cap_std::fs::Dir>, opts: ExtractOptions) -> Self {
+        Self {
             root,
             opts,
             state: PState::Header,
@@ -528,7 +682,7 @@ impl Extractor {
             report: Report::default(),
             single_file: None,
             top_level: 0,
-        })
+        }
     }
 
     fn violation(d: &str) -> io::Error {
@@ -645,41 +799,48 @@ impl Extractor {
         let path = self.admit_path(&raw, ty)?;
         match ty {
             T_DIR => {
-                self.root.create_dir(&path).map_err(|e| {
-                    if e.kind() == io::ErrorKind::AlreadyExists {
-                        Self::violation(&format!(
-                            "dizin zaten var: {}",
-                            names::escape_display(&path)
-                        ))
-                    } else {
-                        e
-                    }
-                })?;
+                if let Some(root) = &self.root {
+                    root.create_dir(&path).map_err(|e| {
+                        if e.kind() == io::ErrorKind::AlreadyExists {
+                            Self::violation(&format!(
+                                "dizin zaten var: {}",
+                                names::escape_display(&path)
+                            ))
+                        } else {
+                            e
+                        }
+                    })?;
+                }
                 self.dirs.insert(path.clone());
-                self.defer(&path, mode & 0o777, mtime);
+                self.defer(&path, mode & SAFE_MODE_MASK, mtime);
                 self.state = PState::Header;
             }
             T_FILE => {
-                let mut oo = cap_std::fs::OpenOptions::new();
-                oo.write(true).create_new(true);
-                #[cfg(unix)]
-                {
-                    use cap_std::fs::OpenOptionsExt;
-                    oo.mode(0o600);
-                }
-                let f = self.root.open_with(&path, &oo).map_err(|e| {
-                    if e.kind() == io::ErrorKind::AlreadyExists {
-                        Self::violation(&format!(
-                            "dosya zaten var: {}",
-                            names::escape_display(&path)
-                        ))
-                    } else {
-                        e
+                let cur = if let Some(root) = &self.root {
+                    let mut oo = cap_std::fs::OpenOptions::new();
+                    oo.write(true).create_new(true);
+                    #[cfg(unix)]
+                    {
+                        use cap_std::fs::OpenOptionsExt;
+                        oo.mode(0o600);
                     }
-                })?;
-                self.cur = Some(Current::File(f));
+                    let f = root.open_with(&path, &oo).map_err(|e| {
+                        if e.kind() == io::ErrorKind::AlreadyExists {
+                            Self::violation(&format!(
+                                "dosya zaten var: {}",
+                                names::escape_display(&path)
+                            ))
+                        } else {
+                            e
+                        }
+                    })?;
+                    Current::File(f)
+                } else {
+                    Current::Discard
+                };
+                self.cur = Some(cur);
                 self.cur_path = path.clone();
-                self.defer(&path, mode & 0o777, mtime);
+                self.defer(&path, mode & SAFE_MODE_MASK, mtime);
                 self.state = PState::FrameLen;
             }
             T_SYMLINK => {
@@ -701,6 +862,7 @@ impl Extractor {
                 f.sync_all()?;
                 drop(f);
             }
+            Some(Current::Discard) | None => {}
             Some(Current::Symlink { target, frames }) => {
                 if frames != 1 {
                     return Err(Self::violation("symlink hedefi tek çerçevede olmalı"));
@@ -714,7 +876,6 @@ impl Extractor {
                 let p = std::mem::take(&mut self.cur_path);
                 self.symlinks.push((p, target));
             }
-            None => {}
         }
         self.state = PState::Header;
         Ok(())
@@ -759,6 +920,15 @@ impl Extractor {
                         } else if len > MAX_FRAME {
                             return Err(Self::violation("çerçeve > 16 MiB"));
                         } else {
+                            // Symlink hedefi tam olarak bir çerçevedir: her yeni çerçeve sayılır.
+                            if let Some(Current::Symlink { frames, .. }) = self.cur.as_mut() {
+                                *frames += 1;
+                                if *frames > 1 {
+                                    return Err(Self::violation(
+                                        "symlink hedefi tek çerçevede olmalı",
+                                    ));
+                                }
+                            }
                             self.state = PState::FrameData(len);
                         }
                     }
@@ -767,10 +937,8 @@ impl Extractor {
                     let take = remaining.min(rest.len());
                     match self.cur.as_mut() {
                         Some(Current::File(f)) => f.write_all(&rest[..take])?,
-                        Some(Current::Symlink { target, frames }) => {
-                            if target.is_empty() {
-                                *frames += 1;
-                            }
+                        Some(Current::Discard) => {}
+                        Some(Current::Symlink { target, .. }) => {
                             if target.len() + take > names::MAX_SYMLINK_TARGET {
                                 return Err(Self::violation("symlink hedefi > 4096 B"));
                             }
@@ -819,6 +987,10 @@ impl Extractor {
             });
         }
         self.report.entries = self.entries;
+        let Some(root) = self.root.take() else {
+            // Doğrulama: diske dokunulmaz; symlink hedefleri zaten end_entry'de denetlendi.
+            return Ok(self.report);
+        };
         // (2) symlink'ler
         let links = std::mem::take(&mut self.symlinks);
         for (path, target) in links {
@@ -855,7 +1027,7 @@ impl Extractor {
             if self.dedup.contains(&names::fold_key(&path)) {
                 // admit_path zaten ekledi; var olan ad FS tarafından reddedilir.
             }
-            match create_symlink(&self.root, &path, &target) {
+            match create_symlink(&root, &path, &target) {
                 Ok(()) => self.report.symlinks_created += 1,
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                     return Err(Error::Corrupt {
@@ -884,7 +1056,7 @@ impl Extractor {
         deferred.sort_by_key(|d| std::cmp::Reverse(d.depth));
         for d in deferred {
             let path = String::from_utf8_lossy(&self.path_arena[d.off..d.off + d.len]).into_owned();
-            apply_metadata(&self.root, &path, d.mode, d.mtime);
+            apply_metadata(&root, &path, d.mode, d.mtime);
         }
         Ok(self.report)
     }
@@ -917,7 +1089,12 @@ fn create_symlink(root: &cap_std::fs::Dir, path: &str, target: &[u8]) -> io::Res
     }
 }
 
-/// mode/mtime best-effort (C4: setuid/setgid/sticky zaten `& 0o777` ile silinmiştir).
+/// Çıkarılan girişlere uygulanan izin maskesi: setuid/setgid/sticky ve grup/diğerleri için
+/// yazma izni her zaman kaldırılır (arşivi hazırlayan kişi alıcıda dünya-yazılabilir dizin
+/// bırakamaz).
+pub const SAFE_MODE_MASK: u32 = 0o755;
+
+/// mode/mtime best-effort (izinler `SAFE_MODE_MASK` ile kısıtlanmıştır).
 fn apply_metadata(root: &cap_std::fs::Dir, path: &str, mode: u32, mtime: i64) {
     let t = if mtime >= 0 {
         std::time::UNIX_EPOCH + std::time::Duration::from_secs(mtime.unsigned_abs())
@@ -939,7 +1116,7 @@ fn apply_metadata(root: &cap_std::fs::Dir, path: &str, mode: u32, mtime: i64) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let p = std::fs::Permissions::from_mode(mode & 0o777);
+        let p = std::fs::Permissions::from_mode(mode & SAFE_MODE_MASK);
         let _ = root.set_permissions(path, cap_std::fs::Permissions::from_std(p));
     }
     #[cfg(not(unix))]
@@ -1173,6 +1350,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&out);
     }
 
+    fn verify_all(bytes: &[u8], opts: ExtractOptions) -> Result<Report> {
+        let mut ex = Extractor::verifier(opts);
+        for chunk in bytes.chunks(13) {
+            ex.write_all(chunk).map_err(Error::from_io)?;
+        }
+        ex.finish()
+    }
+
+    #[test]
+    fn symlink_target_split_over_two_frames_is_rejected() {
+        let mut two = record(T_SYMLINK, "l", 0, 0);
+        two.extend_from_slice(&1u32.to_le_bytes());
+        two.extend_from_slice(b"a");
+        two.extend_from_slice(&1u32.to_le_bytes());
+        two.extend_from_slice(b"b");
+        two.extend_from_slice(&0u32.to_le_bytes());
+        let bytes = [two, end()].concat();
+        assert!(matches!(
+            verify_all(&bytes, ExtractOptions::default()),
+            Err(Error::Corrupt { .. })
+        ));
+        let (out, r) = extract_all(&bytes, ExtractOptions::default(), "symframes");
+        assert!(matches!(r, Err(Error::Corrupt { .. })));
+        let _ = std::fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn verifier_accepts_what_extraction_accepts_and_writes_nothing() {
+        let good = [
+            record(T_DIR, "d", 0o755, 0),
+            record(T_FILE, "d/a", 0o644, 0),
+            frames(b"veri"),
+            end(),
+        ]
+        .concat();
+        let rep = verify_all(&good, ExtractOptions::default()).unwrap();
+        assert_eq!(rep.entries, 2);
+        // Yinelenen ad, eksik üst dizin, END yok: çıkarmada olduğu gibi reddedilir.
+        let dup = [
+            record(T_FILE, "a", 0o644, 0),
+            frames(b"1"),
+            record(T_FILE, "A", 0o644, 0),
+            frames(b"2"),
+            end(),
+        ]
+        .concat();
+        assert!(verify_all(&dup, ExtractOptions::default()).is_err());
+        let orphan = [record(T_FILE, "yok/a", 0o644, 0), frames(b"1"), end()].concat();
+        assert!(verify_all(&orphan, ExtractOptions::default()).is_err());
+        let no_end = [record(T_FILE, "a", 0o644, 0), frames(b"1")].concat();
+        assert!(verify_all(&no_end, ExtractOptions::default()).is_err());
+    }
+
     #[test]
     fn setuid_cleared_and_rename_conflicts() {
         let bytes = [
@@ -1203,7 +1433,7 @@ mod tests {
                 .permissions()
                 .mode()
                 & 0o7777;
-            assert_eq!(m, 0o777);
+            assert_eq!(m, 0o755, "dünya-yazılabilir izin kaldırılmalı");
             let d = std::fs::metadata(out.join("root/d"))
                 .unwrap()
                 .permissions()

@@ -19,6 +19,7 @@ fault-injection = ["lephy-core/fault-injection"]
 [dependencies]
 lephy-core = { workspace = true }
 lephy-sys = { workspace = true }
+zeroize = { workspace = true }
 lephy-usb = { workspace = true }
 clap = { workspace = true }
 

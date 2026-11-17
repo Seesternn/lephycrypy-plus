@@ -86,7 +86,11 @@ impl KdfParams {
         Ok(())
     }
 
-    /// Bütçe ve RAM denetimi (kod 6). `ram_bytes` = fiziksel RAM; `None` ise RAM denetimi atlanır.
+    /// RAM ölçülemediğinde onaysız kabul edilen en büyük KDF belleği (1 GiB).
+    pub const UNKNOWN_RAM_MAX_KIB: u32 = 1024 * 1024;
+
+    /// Bütçe ve RAM denetimi (kod 6). `ram_bytes` = fiziksel RAM; `None` ise yalnızca
+    /// `UNKNOWN_RAM_MAX_KIB`'a kadar kabul edilir (`allow_large` hariç).
     ///
     /// # Errors
     /// `Error::KdfBudget` — `allow_large` ile bütçe aşılabilir, RAM eşiği aşılamaz.
@@ -99,15 +103,26 @@ impl KdfParams {
                 self.t
             )));
         }
-        if let Some(ram) = ram_bytes {
-            let need = u64::from(self.m_kib) * 1024;
-            if need > ram / 4 * 3 {
+        match ram_bytes {
+            Some(ram) => {
+                let need = u64::from(self.m_kib) * 1024;
+                if need > ram / 4 * 3 {
+                    return Err(Error::KdfBudget(format!(
+                        "~{} MiB bellek, fiziksel RAM'in %75'i ({} MiB) aşılıyor",
+                        self.m_kib / 1024,
+                        ram / 1024 / 1024 / 4 * 3
+                    )));
+                }
+            }
+            // RAM ölçülemedi: güvenli tarafta kal (büyük bellek isteyen başlık bellek tükenmesine
+            // yol açmasın).
+            None if !allow_large && self.m_kib > Self::UNKNOWN_RAM_MAX_KIB => {
                 return Err(Error::KdfBudget(format!(
-                    "~{} MiB bellek, fiziksel RAM'in %75'i ({} MiB) aşılıyor",
-                    self.m_kib / 1024,
-                    ram / 1024 / 1024 / 4 * 3
+                    "fiziksel RAM ölçülemedi; ~{} MiB KDF belleği için onay gerekir",
+                    self.m_kib / 1024
                 )));
             }
+            None => {}
         }
         Ok(())
     }
@@ -316,6 +331,18 @@ mod tests {
             Err(Error::KdfBudget(_))
         ));
         assert!(q.check_budget(false, Some(8 * 1024 * 1024 * 1024)).is_ok());
+        // RAM bilinmiyor: büyük bellek onaysız reddedilir, varsayılan kabul edilir.
+        let big = KdfParams {
+            m_kib: 2 * 1024 * 1024,
+            t: 1,
+            p: 1,
+        };
+        assert!(matches!(
+            big.check_budget(false, None),
+            Err(Error::KdfBudget(_))
+        ));
+        assert!(big.check_budget(true, None).is_ok());
+        assert!(KdfParams::DEFAULT.check_budget(false, None).is_ok());
     }
 
     #[test]

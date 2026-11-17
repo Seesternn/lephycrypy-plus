@@ -142,6 +142,9 @@ enum Mode {
     Encrypt,
     Decrypt,
     Verify,
+    /// Eski anahtarla aç, aynı tamponda yeni anahtarla mühürle: düz metin kilitli havuzdan
+    /// hiç çıkmaz.
+    Reencrypt,
 }
 
 /// Düz metni şifreler; şifreli chunk'ları `output`'a yazar. Döner: düz metin bayt sayısı.
@@ -153,7 +156,27 @@ pub fn encrypt_stream(
     input: &mut (dyn Read + Send),
     output: &mut (dyn Write + Send),
 ) -> Result<u64> {
-    run(p, input, Some(output), Mode::Encrypt)
+    run(p, None, input, Some(output), Mode::Encrypt)
+}
+
+/// Şifreli akışı (`old`) çözüp aynı chunk sınırlarıyla `new` ile yeniden şifreler. Düz metin
+/// yalnızca kilitli havuz tamponlarında bulunur. İki parametre kümesinin chunk boyutu aynı
+/// olmalıdır. Döner: düz metin bayt sayısı.
+///
+/// # Errors
+/// Kod 4 (eski akış bozuk), 1, 130.
+pub fn reencrypt_stream(
+    old: &StreamParams<'_>,
+    new: &StreamParams<'_>,
+    input: &mut (dyn Read + Send),
+    output: &mut (dyn Write + Send),
+) -> Result<u64> {
+    if old.chunk_size != new.chunk_size {
+        return Err(Error::Environment(
+            "yeniden şifrelemede chunk boyutu değişemez".into(),
+        ));
+    }
+    run(old, Some(new), input, Some(output), Mode::Reencrypt)
 }
 
 /// Şifreli akışı çözer; düz metni `output`'a yazar. Döner: düz metin bayt sayısı.
@@ -165,7 +188,7 @@ pub fn decrypt_stream(
     input: &mut (dyn Read + Send),
     output: &mut (dyn Write + Send),
 ) -> Result<u64> {
-    run(p, input, Some(output), Mode::Decrypt)
+    run(p, None, input, Some(output), Mode::Decrypt)
 }
 
 /// Şifreli akışı yazmadan doğrular. Döner: düz metin bayt sayısı.
@@ -173,7 +196,7 @@ pub fn decrypt_stream(
 /// # Errors
 /// Kod 4, 1, 130.
 pub fn verify_stream(p: &StreamParams<'_>, input: &mut (dyn Read + Send)) -> Result<u64> {
-    run(p, input, None, Mode::Verify)
+    run(p, None, input, None, Mode::Verify)
 }
 
 fn chunk_err(index: u32) -> Error {
@@ -186,6 +209,7 @@ fn chunk_err(index: u32) -> Error {
 #[allow(clippy::too_many_lines)]
 fn run(
     p: &StreamParams<'_>,
+    next_params: Option<&StreamParams<'_>>,
     input: &mut (dyn Read + Send),
     output: Option<&mut (dyn Write + Send)>,
     mode: Mode,
@@ -235,6 +259,21 @@ fn run(
                         }
                         Mode::Decrypt | Mode::Verify => {
                             open_chunk(p.cipher, p.prefix, p.aad, index, last, buf.data, len)
+                        }
+                        Mode::Reencrypt => {
+                            match open_chunk(p.cipher, p.prefix, p.aad, index, last, buf.data, len)
+                            {
+                                Ok(Some(plain)) => next_params.map_or_else(
+                                    || Err(Error::Environment("yeni anahtar yok".into())),
+                                    |q| {
+                                        seal_chunk(
+                                            q.cipher, q.prefix, q.aad, index, last, buf.data, plain,
+                                        )
+                                        .map(Some)
+                                    },
+                                ),
+                                other => other,
+                            }
                         }
                     };
                     match r {
@@ -323,6 +362,10 @@ fn run(
     Ok(match mode {
         Mode::Encrypt => plain_in,
         Mode::Decrypt | Mode::Verify => written,
+        Mode::Reencrypt => {
+            let per = (chunk_size + TAG_LEN) as u64;
+            plain_in - plain_in.div_ceil(per) * TAG_LEN as u64
+        }
     })
 }
 
@@ -355,7 +398,7 @@ fn read_loop<'p>(
     // tampona taşınır (carry) ve son chunk tespiti böyle yapılır.
     let unit = match mode {
         Mode::Encrypt => chunk_size,
-        Mode::Decrypt | Mode::Verify => chunk_size + TAG_LEN,
+        Mode::Decrypt | Mode::Verify | Mode::Reencrypt => chunk_size + TAG_LEN,
     };
     let mut carry: Option<u8> = None;
     let mut index: u64 = 0;
@@ -380,7 +423,7 @@ fn read_loop<'p>(
         };
         let idx = u32::try_from(index).map_err(|_| match mode {
             Mode::Encrypt => Error::Environment("girdi 2^32 chunk'ı aşıyor".into()),
-            Mode::Decrypt | Mode::Verify => Error::Corrupt {
+            Mode::Decrypt | Mode::Verify | Mode::Reencrypt => Error::Corrupt {
                 at: "chunk 4294967296".into(),
                 detail: Some("chunk sayısı 2^32'yi aşıyor".into()),
             },

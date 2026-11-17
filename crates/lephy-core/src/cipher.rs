@@ -83,10 +83,13 @@ impl SharedCipher {
     /// # Errors
     /// Arena dolu/kurulamadı.
     pub fn new(alg: AlgId, key: &[u8; KEY_LEN]) -> Result<Self> {
-        let k = aead::Key::<XChaCha20Poly1305>::from(*key);
+        // Anahtar yığına kopyalanmaz: dilimden doğrudan kurulur.
+        let bad = |_| Error::Environment("anahtar uzunluğu".into());
         let inner = match alg {
-            AlgId::XChaCha20Poly1305 => Inner::X(XChaCha20Poly1305::new(&k)),
-            AlgId::Aes256Gcm => Inner::A(Aes256Gcm::new(&k)),
+            AlgId::XChaCha20Poly1305 => {
+                Inner::X(XChaCha20Poly1305::new_from_slice(key).map_err(bad)?)
+            }
+            AlgId::Aes256Gcm => Inner::A(Aes256Gcm::new_from_slice(key).map_err(bad)?),
         };
         let boxed = SecretBox::new(inner).map_err(|e| Error::Environment(e.to_string()))?;
         Ok(Self { inner: boxed, alg })
