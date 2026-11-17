@@ -11,17 +11,30 @@ use std::io::{self, Read, Write};
 
 use crate::error::FormatViolation;
 
-/// PADMÉ hedef uzunluğu.
+/// PADMÉ hedef uzunluğu; `u64` taşarsa `None` (saldırgan denetimli uzunluklar için).
 #[must_use]
-pub const fn padme(len: u64) -> u64 {
+pub const fn padme_checked(len: u64) -> Option<u64> {
     if len < 2 {
-        return len;
+        return Some(len);
     }
     let e = len.ilog2(); // floor(log2 len), len ≥ 2 → e ≥ 1
     let s = e.ilog2() + 1; // floor(log2 e) + 1
     let z = e.saturating_sub(s);
     let m = (1u64 << z) - 1;
-    (len + m) & !m
+    match len.checked_add(m) {
+        Some(v) => Some(v & !m),
+        None => None,
+    }
+}
+
+/// PADMÉ hedef uzunluğu. Yalnızca kendi ürettiğimiz (dosya sistemi kaynaklı) uzunluklar için;
+/// taşma durumunda `u64::MAX` (pratikte erişilemez). Okuyucu tarafı [`padme_checked`] kullanır.
+#[must_use]
+pub const fn padme(len: u64) -> u64 {
+    match padme_checked(len) {
+        Some(v) => v,
+        None => u64::MAX,
+    }
 }
 
 /// Ham akış dolgulayıcı: `[u64 LE L][veri][sıfır]`; `inner` tam `len` bayt vermezse hata (kod 1).
@@ -42,7 +55,7 @@ impl<R: Read> RawPadReader<R> {
         Self {
             inner,
             len,
-            total: padme(len + 8),
+            total: padme(len.saturating_add(8)),
             header: len.to_le_bytes(),
             header_pos: 0,
             body_read: 0,
@@ -110,6 +123,8 @@ pub struct RawPadWriter<W: Write> {
     header: [u8; 8],
     header_pos: usize,
     len: u64,
+    /// `P(L + 8)`; önek tamamlanınca kontrollü hesaplanır.
+    expected_total: u64,
     written: u64,
     total_seen: u64,
 }
@@ -122,6 +137,7 @@ impl<W: Write> RawPadWriter<W> {
             header: [0; 8],
             header_pos: 0,
             len: 0,
+            expected_total: 0,
             written: 0,
             total_seen: 0,
         }
@@ -135,7 +151,7 @@ impl<W: Write> RawPadWriter<W> {
         if self.header_pos < 8 {
             return Err(FormatViolation::io("PADMÉ uzunluk öneki eksik"));
         }
-        if self.total_seen != padme(self.len + 8) {
+        if self.total_seen != self.expected_total {
             return Err(FormatViolation::io("PADMÉ toplam uzunluk uyuşmuyor"));
         }
         self.inner.flush()?;
@@ -154,6 +170,12 @@ impl<W: Write> Write for RawPadWriter<W> {
             rest = &rest[n..];
             if self.header_pos == 8 {
                 self.len = u64::from_le_bytes(self.header);
+                // Saldırgan denetimli L (anahtarı bilen gönderici): taşma → biçim ihlali (kod 4).
+                self.expected_total = self
+                    .len
+                    .checked_add(8)
+                    .and_then(padme_checked)
+                    .ok_or_else(|| FormatViolation::io("PADMÉ uzunluk öneki geçersiz (taşma)"))?;
             }
             if rest.is_empty() {
                 return Ok(buf.len());
@@ -172,7 +194,7 @@ impl<W: Write> Write for RawPadWriter<W> {
                 return Err(FormatViolation::io("PADMÉ dolgusunda sıfır olmayan bayt"));
             }
             self.total_seen += rest.len() as u64;
-            if self.total_seen > padme(self.len + 8) {
+            if self.total_seen > self.expected_total {
                 return Err(FormatViolation::io("PADMÉ dolgusu beklenenden uzun"));
             }
         }
@@ -204,6 +226,24 @@ mod tests {
             let p = padme(l);
             assert!(p >= l && p < l + l / 8 + 64, "{l} → {p}");
         }
+    }
+
+    #[test]
+    fn overflowing_length_prefix_is_format_violation_not_panic() {
+        // Fuzz bulgusu (decrypt_known_key): L ≈ 2^64 önekinde `L + 8` taşıyordu.
+        for l in [
+            u64::MAX,
+            u64::MAX - 7,
+            u64::MAX - 0xff,
+            0xFFFF_FFFF_FFFF_FF00,
+        ] {
+            let mut w = RawPadWriter::new(Vec::new());
+            let e = w.write_all(&l.to_le_bytes()).unwrap_err();
+            assert!(FormatViolation::is(&e), "L={l:#x}");
+        }
+        assert_eq!(padme_checked(u64::MAX), None);
+        assert_eq!(padme_checked(u64::MAX - 1), None);
+        assert_eq!(padme(u64::MAX), u64::MAX);
     }
 
     #[test]

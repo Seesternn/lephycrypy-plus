@@ -38,6 +38,8 @@ allow-git = []
 [bans]
 multiple-versions = "deny"
 wildcards = "deny"
+# İç crate'ler (publish = false) arası path bağımlılıkları wildcard sayılmaz.
+allow-wildcard-paths = true
 highlight = "all"
 deny = [
     # Kaldırılan bağımlılıklar (PLAN › Depo yapısı)
@@ -56,14 +58,35 @@ deny = [
     { crate = "hkdf:<0.13", reason = "R5-03: zeroize için hkdf ≥ 0.13" },
     { crate = "hmac:<0.13", reason = "R5-03: zeroize için hmac ≥ 0.13" },
     { crate = "sha2:<0.11", reason = "R5-03: zeroize için sha2 ≥ 0.11" },
-    # Bağımlılık bütçesi: yalnızca listelenen wrapper'lar doğrudan bağımlı olabilir
-    { crate = "libc", wrappers = ["lephy-sys"], reason = "R5-01: unsafe/FFI yalnızca lephy-sys" },
-    { crate = "windows-sys", wrappers = ["lephy-sys"], reason = "R5-01: unsafe/FFI yalnızca lephy-sys" },
+    # FFI bütçesi (R5-01): iç crate'lerden yalnızca lephy-sys libc/windows-sys'e doğrudan
+    # bağımlı olabilir. Üçüncü taraf wrapper'lar tek tek incelenmiş izin listesidir; yeni bir
+    # crate doğrudan FFI'ya bağlanırsa bu kontrol kırmızı yanar ve inceleme ister.
+    { crate = "libc", wrappers = [
+        "lephy-sys",
+        "getrandom",     # OS RNG
+        "rustix",        # cap-std (Unix sistem çağrıları)
+        "errno",         # rustix
+        "cpufeatures",   # RustCrypto CPU özellik tespiti (AES-NI/ARMv8)
+    ], reason = "R5-01: unsafe/FFI iç crate'lerde yalnızca lephy-sys" },
+    { crate = "windows-sys", wrappers = [
+        "lephy-sys",
+        "rustix", "errno",                       # cap-std zinciri
+        "cap-primitives", "fs-set-times", "io-extras", "winx",
+        "anstyle-wincon", "anstyle-query",       # clap renkli çıktı (Windows konsol)
+    ], reason = "R5-01: unsafe/FFI iç crate'lerde yalnızca lephy-sys" },
+    # Gelecek crate'ler (1.1/1.2): yalnızca kendi crate'lerine ait bağımlılıklar
     { crate = "egui", wrappers = ["lephy-gui"], reason = "GUI yalnızca lephy-gui (1.2)" },
     { crate = "eframe", wrappers = ["lephy-gui"], reason = "GUI yalnızca lephy-gui (1.2)" },
     { crate = "winit", wrappers = ["eframe"], reason = "GUI yalnızca lephy-gui (1.2)" },
     { crate = "plist", wrappers = ["lephy-usb"], reason = "USB yalnızca lephy-usb (1.1)" },
     { crate = "rand_chacha", wrappers = ["lephy-usb"], reason = "USB yalnızca lephy-usb (1.1)" },
 ]
-skip = []
-skip-tree = []
+# Kaçınılmaz çift sürümler (yalnızca Windows hedefinde; cap-std zinciri eski windows-sys'leri
+# çeker). Yukarı akış güncellendiğinde kaldırılır; yeni çift sürüm yine "deny" ile yakalanır.
+skip = [
+    { crate = "io-lifetimes@2.0.4", reason = "fs-set-times 0.20 eski io-lifetimes'e bağlı (cap-std 4)" },
+]
+skip-tree = [
+    { crate = "windows-sys@0.59.0", reason = "winx/fs-set-times (cap-std 4); alt ağaç windows-targets 0.52" },
+    { crate = "windows-sys@0.60.2", reason = "io-extras (cap-std 4); alt ağaç windows-targets 0.53" },
+]

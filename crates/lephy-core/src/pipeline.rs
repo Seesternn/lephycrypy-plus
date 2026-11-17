@@ -271,6 +271,12 @@ fn run(
                         return;
                     }
                     written += out_len as u64;
+                    // R5-04 panik hook testi: 4. chunk'ta bilinçli panik (yalnızca test derlemesi).
+                    #[cfg(feature = "fault-injection")]
+                    assert!(
+                        next != 3,
+                        "LPHY-FAULT-INJECTION: pipeline ortası panik (yalnızca test derlemesi)"
+                    );
                     buf.data.zeroize();
                     next = next.wrapping_add(1);
                     if free_tx.send(buf).is_err() {

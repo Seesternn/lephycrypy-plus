@@ -24,4 +24,7 @@ pub mod testvec;
 /// reddeder.
 pub const TEST_VECTORS_ENABLED: bool = cfg!(feature = "test-vectors");
 
+/// `fault-injection` feature'ı açık mı (R5-04 panik hook testi). Release'te asla açık değildir.
+pub const FAULT_INJECTION_ENABLED: bool = cfg!(feature = "fault-injection");
+
 pub use header::{HEADER_LEN, VERSION as FORMAT_VERSION};

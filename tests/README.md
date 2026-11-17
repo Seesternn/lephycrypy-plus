@@ -8,4 +8,7 @@
 - `ref/lephy_ref.py` — Python referans uygulaması (cryptography + argon2-cffi + blake3; HChaCha20 elle);
   **yalnızca docs/FORMAT.md okunarak yazılmıştır**. `selftest` draft-xchacha vektörlerini doğrular,
   `vectors <dizin>` vektörleri üretir.
-- `regress/` — fuzz ile bulunan girdilerin regresyon testleri. Aşama 3.
+- `regress/<hedef>/` — fuzz'ın bulduğu çökme girdileri. `crates/lephy-core/tests/regress.rs` bunları
+  (ve `fuzz/seeds/`) her `cargo test`te fuzz hedefiyle aynı mantıkla (`fuzz/fuzz_targets/logic.rs`)
+  yeniden oynatır. `decrypt_known_key/pad-length-overflow`: PADMÉ uzunluk öneki taşması (düzeltildi).
+- `fault/panic_hook.sh` — R5-04 panik hook testi (`fault-injection` feature, release/panic=abort).

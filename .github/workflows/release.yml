@@ -46,7 +46,9 @@ jobs:
           [ -f "$bin.exe" ] && bin="$bin.exe"
           cp "$bin" out/
           (cd out && shasum -a 256 * > "SHA256SUMS-${{ matrix.target }}-${{ matrix.attempt }}.txt")
-          if grep -q "LPHY-TEST-VECTORS-BUILD" "$bin"; then echo "::error::test-vectors marker in release binary"; exit 1; fi
+          for m in LPHY-TEST-VECTORS-BUILD LPHY-FAULT-INJECTION; do
+            if grep -q "$m" "$bin"; then echo "::error::$m marker in release binary"; exit 1; fi
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: build-${{ matrix.target }}-${{ matrix.attempt }}

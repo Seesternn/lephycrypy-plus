@@ -57,8 +57,12 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
       - run: cargo build --locked --workspace
+      # Unix'te sinyal/pty testleri (crates/lephy-cli/tests/signals.rs) ve fuzz regresyonları dahil.
       - run: cargo test --locked --workspace
       - run: cargo test --locked -p lephy-core --features test-vectors
+      - name: panic hook (R5-04, fault-injection + release/panic=abort)
+        if: runner.os == 'macOS'
+        run: bash tests/fault/panic_hook.sh
 
   linux-best-effort:
     runs-on: ubuntu-24.04
@@ -70,13 +74,32 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
       - run: cargo check --locked --workspace
-      # Aşama 3: Miri (lephy-sys, cfg(miri) arka ucu; sabit tarihli nightly), fuzz smoke 60 sn/hedef, kanarya taraması.
-      - name: miri (lephy-sys)
+      - name: kanarya taraması (R5-03, I9; /proc/self/mem)
+        run: cargo test --locked -p lephy-core --features test-vectors --test canary -- --nocapture
+      - name: miri (lephy-sys, cfg(miri) arka ucu)
         run: |
           set -euo pipefail
-          rustup toolchain install nightly-2026-11-01 --component miri --profile minimal
+          rustup toolchain install nightly-2026-11-01 --component miri,rust-src --profile minimal
           cargo +nightly-2026-11-01 miri setup
           cargo +nightly-2026-11-01 miri test -p lephy-sys
+      - uses: taiki-e/install-action@328a871ad8f62ecac78390391f463ccabc974b72 # v2.69.9
+        with:
+          tool: cargo-fuzz
+      - name: fuzz smoke (I8, R5-14; 60 sn/hedef)
+        working-directory: fuzz
+        run: |
+          set -euo pipefail
+          for t in header archive_entry names decrypt_known_key; do
+            mkdir -p "corpus/$t"
+            cargo +nightly-2026-11-01 fuzz run "$t" "corpus/$t" "seeds/$t" -- -max_total_time=60
+          done
+      - name: fuzz çökme girdileri (başarısızlıkta)
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
 
   supply-chain:
     runs-on: ubuntu-24.04
@@ -96,11 +119,7 @@ jobs:
           tool: cargo-audit,cargo-vet
       - run: cargo audit --deny warnings
       - name: cargo vet
-        run: |
-          set -euo pipefail
-          # imports.lock henüz üretilmedi (aşama 0 elle başlatıldı); ilk çalıştırma `cargo vet` ile
-          # üretir ve commit edilmesi gerekir. `--locked` yalnızca imports.lock varken anlamlıdır.
-          if [ -f supply-chain/imports.lock ]; then cargo vet --locked; else cargo vet || true; fi
+        run: cargo vet --locked
       - name: exemptions must not grow (PR)
         if: github.event_name == 'pull_request'
         env:
@@ -139,6 +158,13 @@ jobs:
           set -euo pipefail
           if cargo build --locked -p lephy-cli --features lephy-core/test-vectors; then
             echo "::error::lephy-cli built with test-vectors"; exit 1; fi
-      # Aşama 1: zeroize kenarları (chacha20/zeroize, aes/zeroize, ghash/zeroize, hmac/zeroize,
-      # sha2/zeroize, digest/zeroize, blake3/zeroize) `cargo tree -e features` ile denetlenir;
-      # windows-sys feature listesi grep'i eklenir.
+      - name: zeroize kenarları mevcut, Vec döndüren AEAD ve test feature'ları yok (R4-O4, R5-02/03/04)
+        run: |
+          set -euo pipefail
+          cargo tree --locked -p lephy-cli -e features --prefix none --target all > /tmp/feat.txt
+          for f in chacha20 aes ghash hmac sha2 digest blake3; do
+            grep -qF "$f feature \"zeroize\"" /tmp/feat.txt || { echo "::error::$f/zeroize eksik"; exit 1; }
+          done
+          for f in 'aead feature "alloc"' 'lephy-core feature "test-vectors"' 'lephy-core feature "fault-injection"'; do
+            if grep -qF "$f" /tmp/feat.txt; then echo "::error::dağıtım grafiğinde olmamalı: $f"; exit 1; fi
+          done

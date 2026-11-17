@@ -15,6 +15,9 @@ strength = []
 # R5-02: sabit salt/nonce/FK enjeksiyonu + işaret dizgesi. YALNIZCA testler için;
 # lephy-cli/lephy-gui bu feature ile derlenmeyi `const` iddiasıyla reddeder.
 test-vectors = []
+# R5-04: hata enjeksiyonu (pipeline ortasında panik) — YALNIZCA panik hook testi için
+# (tests/fault/panic_hook.sh). Release'te bulunmadığı CI'da işaret dizgesiyle denetlenir.
+fault-injection = []
 
 [dependencies]
 lephy-sys = { workspace = true }
@@ -38,10 +41,17 @@ cap-std = { workspace = true }
 
 [dev-dependencies]
 hex = "0.4"
+# I2: özellik tabanlı testler (yalnızca test; fork/timeout kapalı).
+proptest = { version = "1.12", default-features = false, features = ["std"] }
 
 # I7 (R5-02): deterministik vektör testleri yalnızca `test-vectors` feature'ı ile derlenir.
 [[test]]
 name = "vectors"
+required-features = ["test-vectors"]
+
+# I9: kanarya taraması (yalnızca Linux; dosya `cfg(target_os = "linux")`).
+[[test]]
+name = "canary"
 required-features = ["test-vectors"]
 
 [lints]

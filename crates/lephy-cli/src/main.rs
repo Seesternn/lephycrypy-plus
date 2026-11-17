@@ -302,6 +302,9 @@ fn main() -> ProcessExit {
         eprintln!("uyarı: sinyal işleyici kurulamadı: {e}");
     }
 
+    if lephy_core::FAULT_INJECTION_ENABLED {
+        eprintln!("uyarı: LPHY-FAULT-INJECTION test derlemesi; gerçek veriyle kullanmayın");
+    }
     let cli = Cli::parse();
     if cfg!(all(target_os = "macos", not(debug_assertions))) && !cli.allow_debugger {
         let _ = lephy_sys::platform::deny_debugger();

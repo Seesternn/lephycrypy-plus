@@ -1,0 +1,48 @@
+[package]
+name = "lephy-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Ayrı workspace: ana workspace'in `exclude` listesinde. Yalnızca nightly + cargo-fuzz ile çalışır.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+lephy-core = { path = "../crates/lephy-core" }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "header"
+path = "fuzz_targets/header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive_entry"
+path = "fuzz_targets/archive_entry.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "names"
+path = "fuzz_targets/names.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decrypt_known_key"
+path = "fuzz_targets/decrypt_known_key.rs"
+test = false
+doc = false
+bench = false

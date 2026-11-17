@@ -1,5 +1,4 @@
-# cargo-vet audits file — yerel denetimler buraya eklenir (`cargo vet certify`).
 
-[criteria]
+# cargo-vet audits file
 
 [audits]

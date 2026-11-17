@@ -4,10 +4,11 @@ Açık kaynaklı, Rust ile yazılmış dosya/klasör şifreleme aracı. Hedef: p
 saklama; adlar ve yapı her zaman şifreli; akışlı işleme; atomik yazma; bellekte sır kalıntılarını
 **en iyi çaba ile** en aza indirme.
 
-> **Durum: aşama 2 (arşiv + PADMÉ).** Dosya ve klasörler adları/yapısı gizli bir arşiv olarak
-> şifrelenir (varsayılan PADMÉ dolgusu); stdin ve `--raw` ham akıştır. Çıkarma cap-std kök
-> handle'ı ile tmp dizinine yapılır ve atomik olarak hedefe taşınır. Aşama 3 (fuzz, Miri, kanarya,
-> pty sinyal testleri, dağıtım) henüz yok. Yol haritası ve tüm tasarım kararları [docs/PLAN.md](docs/PLAN.md)'de;
+> **Durum: aşama 3 (sertleştirme) — 1.0 öncesi.** Dosya ve klasörler adları/yapısı gizli bir
+> arşiv olarak şifrelenir (varsayılan PADMÉ); stdin ve `--raw` ham akıştır. Fuzz, Miri, proptest,
+> sinyal/panik testleri ve tedarik zinciri denetimleri yerinde. 1.0 için kalanlar: kripto
+> crate'lerinin yerel cargo-vet denetimi, imzalama/notarization (açık karar 17–19), CI'ın gerçek
+> runner'larda ilk koşusu ve bağımsız inceleme. Yol haritası ve tüm tasarım kararları [docs/PLAN.md](docs/PLAN.md)'de;
 > biçim [docs/FORMAT.md](docs/FORMAT.md)'de; sınırlar [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)'de.
 > **Bağımsız denetim yapılmamıştır; üretim verisi için kullanmayın.**
 
@@ -67,8 +68,17 @@ argv/env'den alınmaz. `rekey` parolayı değiştirir ama dosya anahtarını kor
 | Yanlış parola/keyfile (3), bozuk başlık/chunk (4), hedef var (7), bütçe (6) | `ops` testleri + CLI çıkış kodları | geçiyor |
 | rekey (FK/chunk sabit, R4-Y2) ve reencrypt | `ops` testi | geçiyor |
 | Kilitli arena, sayfa refcount, hook sıfırlaması | `lephy-sys` testleri (macOS) | geçiyor |
-| Windows kodu | yalnızca çapraz `cargo clippy --target x86_64-pc-windows-msvc`; CI'da çalıştırılacak | derleniyor, test edilmedi |
-| pty sinyal testleri, kanarya taraması, Miri, fuzz | aşama 3 | yok |
+| Özellik testleri: STREAM sınırları, bit çevirme/kesme/ek bayt, PADMÉ, arşiv round-trip, bozulmuş arşivin kök dışına yazmaması | proptest (`tests/prop.rs`; yerelde 1500 vaka/test) | geçiyor |
+| Fuzz: `header`, `archive_entry`, `names`, `decrypt_known_key` | cargo-fuzz (`fuzz/`), yerelde 60 sn/hedef + 2 hedef 5 dk | geçiyor; 1 gerçek hata bulundu ve düzeltildi (PADMÉ uzunluk öneki taşması) |
+| Fuzz regresyonları + seed'ler her `cargo test`te | `tests/regress.rs` | geçiyor |
+| Miri (arena, refcount, hizalama, zeroize-sonra-dealloc) | `cargo +nightly-2026-11-01 miri test -p lephy-sys` | geçiyor (FFI testleri hariç) |
+| SIGINT parola isteminde (yankı geri, 130), akış ortasında SIGINT/SIGTERM (tmp yok, 130), KDF'de çift SIGINT | `crates/lephy-cli/tests/signals.rs` (Unix, pty için python3) | geçiyor; gecikme < 40 ms |
+| Panik hook'u: arena + bölge sıfır, tmp silinir, SIGABRT, terminal açık | `tests/fault/panic_hook.sh` (`fault-injection` + release) | geçiyor |
+| Kanarya taraması (`/proc/self/mem`) | `tests/canary.rs` (yalnızca Linux CI) | yazıldı; yerelde çalıştırılamadı |
+| cargo-deny (advisory, bans, lisans, kaynak), cargo-audit | `deny.toml` | geçiyor; yasakların tetiklendiği denendi |
+| cargo-vet | `supply-chain/` | geçiyor; 15 tam, 7 kısmi denetim, **90 istisna (kripto crate'leri dahil)** |
+| Tekrarlanabilir derleme (imzasız) | iki ayrı dizinde release derleme | macOS arm64'te SHA256 eşit; çapraz runner CI'da |
+| Windows kodu | yalnızca çapraz `cargo clippy --target x86_64-pc-windows-msvc`; CI'da çalıştırılacak | derleniyor, test edilmedi; `CTRL_BREAK` testi yazılmadı |
 
 Python referansı için: `python3 -m venv .venv && .venv/bin/pip install cryptography argon2-cffi blake3`,
 sonra `.venv/bin/python -I tests/ref/lephy_ref.py vectors tests/kat/vectors`.
