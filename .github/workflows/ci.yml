@@ -36,7 +36,14 @@ jobs:
           echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/$f" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP" gitleaks
       - name: gitleaks (full history)
-        run: '"$RUNNER_TEMP/gitleaks" git --redact --no-banner --exit-code 1 .' 
+        run: |
+          set -euo pipefail
+          if ! "$RUNNER_TEMP/gitleaks" git --redact --no-banner --exit-code 1 \
+              --report-format csv --report-path "$RUNNER_TEMP/leaks.csv" .; then
+            # Rule and location only; secret values are redacted.
+            cut -d, -f1,3 "$RUNNER_TEMP/leaks.csv" | sort | uniq -c | sort -rn | head -n 60
+            exit 1
+          fi
       - name: author and committer addresses are noreply
         run: |
           set -euo pipefail
@@ -159,16 +166,34 @@ jobs:
       - run: cargo audit --deny warnings
       - name: cargo vet
         run: cargo vet --locked
-      - name: exemptions must not grow (PR)
-        if: github.event_name == 'pull_request'
+      - name: no new crates among vet exemptions
+        # PR: new exempted crate names fail the job. Push to main: they are reported as a warning
+        # so that an intentional, reviewed addition is visible in the run summary.
         env:
           BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          git fetch --depth=1 origin "$BASE_REF"
-          base=$(git show "origin/$BASE_REF:supply-chain/config.toml" 2>/dev/null | grep -c '^\[\[exemptions' || true)
-          head=$(grep -c '^\[\[exemptions' supply-chain/config.toml || true)
-          if [ "$head" -gt "$base" ]; then echo "::error::cargo-vet exemptions increased ($base -> $head)"; exit 1; fi
+          names() { grep -o '^\[\[exemptions\.[^]]*\]\]' | sed -e 's/^\[\[exemptions\.//' -e 's/\]\]$//' | sort -u; }
+          if [ "$EVENT" = "pull_request" ]; then
+            git fetch -q --depth=1 origin "$BASE_REF"
+            base="origin/$BASE_REF"
+          else
+            base="$BEFORE"
+            if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
+                || ! git fetch -q --depth=1 origin "$base" 2>/dev/null; then
+              echo "no comparable base commit; skipping"; exit 0
+            fi
+          fi
+          git show "$base:supply-chain/config.toml" | names > "$RUNNER_TEMP/base.txt" || true
+          names < supply-chain/config.toml > "$RUNNER_TEMP/head.txt"
+          added=$(comm -13 "$RUNNER_TEMP/base.txt" "$RUNNER_TEMP/head.txt")
+          if [ -n "$added" ]; then
+            echo "New exempted crates:"; echo "$added"
+            if [ "$EVENT" = "pull_request" ]; then echo "::error::new crates exempted from cargo-vet"; exit 1; fi
+            echo "::warning::new crates exempted from cargo-vet: $(echo $added | tr '\n' ' ')"
+          fi
 
   budget:
     runs-on: ubuntu-24.04

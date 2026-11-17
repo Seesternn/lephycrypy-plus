@@ -6,6 +6,8 @@
 # Windows derlemelerine girmez. Tür: "unmaintained" (güvenlik açığı değil). deny-gui.toml aynı
 # kenarı `exclude = ["accesskit_unix"]` ile çıkarır. eframe/accesskit güncellendikçe yeniden
 # değerlendirilir.
+# Last reviewed: 2026-11-17 (maintainer). Review again on every eframe/accesskit upgrade or by
+# 2027-05-17, whichever comes first.
 [advisories]
 ignore = [
     "RUSTSEC-2026-0370", # zvariant — unmaintained

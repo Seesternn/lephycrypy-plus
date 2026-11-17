@@ -1,0 +1,16 @@
+# gitleaks configuration: default rules plus an allowlist for published test data.
+# The listed paths hold public known-answer vectors (RFC 9106, RFC 5869, NIST CAVP, draft
+# XChaCha20), fuzz seeds and third-party audit records; none of them are secrets.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Published test vectors, fixtures and supply-chain records"
+paths = [
+  '''^tests/kat/''',
+  '''^tests/ref/''',
+  '''^tests/regress/''',
+  '''^fuzz/seeds/''',
+  '''^supply-chain/''',
+  '''(^|/)Cargo\.lock$''',
+]

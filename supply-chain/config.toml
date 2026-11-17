@@ -4,14 +4,26 @@
 [cargo-vet]
 version = "0.10"
 
+[imports.ariel-os]
+url = "https://raw.githubusercontent.com/ariel-os/ariel-os/main/supply-chain/audits.toml"
+
 [imports.bytecode-alliance]
 url = "https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml"
+
+[imports.embark]
+url = "https://raw.githubusercontent.com/EmbarkStudios/rust-ecosystem/main/audits.toml"
 
 [imports.google]
 url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
 
+[imports.isrg]
+url = "https://raw.githubusercontent.com/divviup/libprio-rs/main/supply-chain/audits.toml"
+
 [imports.mozilla]
 url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
+
+[imports.zcash]
+url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
 
 [policy.lephy-cli]
 criteria = "safe-to-deploy"
@@ -230,14 +242,6 @@ criteria = "safe-to-deploy"
 version = "1.0.5"
 criteria = "safe-to-deploy"
 
-[[exemptions.cfg_aliases]]
-version = "0.1.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.chacha20]]
-version = "0.10.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.chacha20poly1305]]
 version = "0.11.0"
 criteria = "safe-to-deploy"
@@ -338,10 +342,6 @@ criteria = "safe-to-deploy"
 version = "0.5.3"
 criteria = "safe-to-deploy"
 
-[[exemptions.document-features]]
-version = "0.2.12"
-criteria = "safe-to-deploy"
-
 [[exemptions.downcast-rs]]
 version = "1.2.1"
 criteria = "safe-to-deploy"
@@ -438,10 +438,6 @@ criteria = "safe-to-deploy"
 version = "0.20.3"
 criteria = "safe-to-deploy"
 
-[[exemptions.futures-lite]]
-version = "2.6.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.futures-task]]
 version = "0.3.21"
 criteria = "safe-to-deploy"
@@ -456,10 +452,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.getrandom]]
 version = "0.3.4"
-criteria = "safe-to-deploy"
-
-[[exemptions.getrandom]]
-version = "0.4.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.ghash]]
@@ -658,16 +650,8 @@ criteria = "safe-to-deploy"
 version = "0.9.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.ndk-context]]
-version = "0.1.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.ndk-sys]]
 version = "0.6.0+11769913"
-criteria = "safe-to-deploy"
-
-[[exemptions.nohash-hasher]]
-version = "0.2.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.num_enum]]
@@ -866,17 +850,9 @@ criteria = "safe-to-deploy"
 version = "5.2.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.r-efi]]
-version = "5.3.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.rand]]
 version = "0.10.4"
 criteria = "safe-to-run"
-
-[[exemptions.rand_core]]
-version = "0.10.0"
-criteria = "safe-to-deploy"
 
 [[exemptions.rand_xorshift]]
 version = "0.5.0"
@@ -990,10 +966,6 @@ criteria = "safe-to-deploy"
 version = "0.2.2"
 criteria = "safe-to-deploy"
 
-[[exemptions.subtle]]
-version = "2.6.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.syn]]
 version = "2.0.119"
 criteria = "safe-to-deploy"
@@ -1007,15 +979,7 @@ version = "3.3.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.thiserror]]
-version = "1.0.43"
-criteria = "safe-to-deploy"
-
-[[exemptions.thiserror]]
 version = "2.0.21"
-criteria = "safe-to-deploy"
-
-[[exemptions.thiserror-impl]]
-version = "1.0.43"
 criteria = "safe-to-deploy"
 
 [[exemptions.thiserror-impl]]
@@ -1176,10 +1140,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.windows-interface]]
 version = "0.59.3"
-criteria = "safe-to-deploy"
-
-[[exemptions.windows-link]]
-version = "0.2.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.windows-numerics]]

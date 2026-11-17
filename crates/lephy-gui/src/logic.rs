@@ -342,10 +342,13 @@ pub fn reveal_in_folder(path: &Path) -> std::io::Result<()> {
             .map_or_else(|| sys.join("explorer.exe"), |w| w.join("explorer.exe"));
         let mut arg = std::ffi::OsString::from("/select,");
         arg.push(path);
-        std::process::Command::new(explorer)
-            .arg(arg)
-            .spawn()
-            .map(drop)
+        // Ortam devralınmaz (DLL arama yolu vb.); Gezgin için gereken tek değişken geri verilir.
+        let mut cmd = std::process::Command::new(explorer);
+        cmd.arg(arg).env_clear();
+        if let Some(root) = sys.parent() {
+            cmd.env("SystemRoot", root);
+        }
+        cmd.spawn().map(drop)
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {

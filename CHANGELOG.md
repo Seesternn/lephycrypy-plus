@@ -43,7 +43,13 @@ Fixes from the November 2026 internal review (not an independent audit):
 - macOS: secure keyboard input is on while a password field has focus, so processes with input
   monitoring permission cannot read the keystrokes.
 
+### Changed
+- Supply chain: audits imported from more sources (ISRG, Zcash, Embark, Ariel OS); unnecessary
+  `cargo-vet` exemptions pruned (339 to 326); CI fails a pull request that exempts a new crate.
+- Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
+
 ### Added
+- Internal security review report: `docs/SECURITY-REVIEW-2026-11.md`.
 - Private-data guard (`scripts/check-private.sh`) run before every commit, and a CI job that
   scans the whole history with gitleaks and checks that every commit uses a noreply address.
 - macOS app bundle script with hardened runtime; local paths are stripped from the binary.
