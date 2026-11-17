@@ -105,6 +105,15 @@ Masaüstü uygulaması:
 cargo run --release -p lephy-gui
 ```
 
+macOS'ta Finder'dan açılan bir uygulama paketi (`target/macos/lephycrypy+.app`) ve isteğe bağlı
+disk görüntüsü için:
+
+```bash
+scripts/macos-app.sh --dmg
+```
+
+Paket ad-hoc imzalıdır; yalnızca derlendiği Mac'te sorunsuz açılır.
+
 Fuzz hedefleri `fuzz/` altındadır (ayrı workspace, nightly + `cargo-fuzz`). Biçim vektörleri,
 yalnızca FORMAT.md okunarak yazılmış Python referansıyla (`tests/ref/lephy_ref.py`) bayt bayt
 karşılaştırılır: `cargo test -p lephy-core --features test-vectors`.

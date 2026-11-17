@@ -59,7 +59,12 @@ fn main() -> ExitCode {
             .with_title("lephycrypy+")
             .with_inner_size([520.0, 640.0])
             .with_min_inner_size([420.0, 540.0])
-            .with_drag_and_drop(true),
+            .with_drag_and_drop(true)
+            .with_icon(egui::IconData {
+                rgba: include_bytes!("../assets/icon-128.rgba").to_vec(),
+                width: 128,
+                height: 128,
+            }),
         persist_window: false,
         centered: true,
         ..Default::default()
