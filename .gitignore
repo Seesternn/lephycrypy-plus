@@ -7,3 +7,9 @@
 !/tests/kat/vectors/*.lphy
 .lphy-tmp-*
 .DS_Store
+
+# Local-only files and build leftovers
+/.local/
+*.bmp
+.env
+.env.*

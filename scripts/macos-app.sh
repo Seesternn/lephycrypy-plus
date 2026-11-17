@@ -9,6 +9,8 @@ VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
 OUT=target/macos
 APP="$OUT/lephycrypy+.app"
 
+# Strip local paths (home directory, checkout location) from the binary.
+export RUSTFLAGS="--remap-path-prefix=$HOME=~ --remap-path-prefix=$PWD=."
 cargo build --release --locked -p lephy-gui
 
 rm -rf "$APP"
@@ -47,7 +49,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --sign - "$APP" >/dev/null 2>&1
+# Extended attributes (provenance, Finder info) make codesign refuse the bundle.
+xattr -cr "$APP"
+codesign --force --options runtime --sign - "$APP"
 echo "$APP"
 
 if [ "${1:-}" = "--dmg" ]; then
