@@ -73,6 +73,8 @@ pub struct App {
     keyfile: Option<PathBuf>,
     /// Şifreledikten sonra orijinali güvenli sil (Gelişmiş ayarlar).
     secure_delete: bool,
+    /// Parçalara bölme boyutu (MiB; 0 = kapalı).
+    split_mib: u64,
     /// Güvenli silme onayı bekleniyor (Şifrele'ye basıldı).
     confirm_delete: bool,
     /// Üretilen kelime öbeği: kullanıcı not alsın diye bir kez gösterilir (kilitli bellekte).
@@ -111,6 +113,7 @@ impl Default for App {
             keyfile_required: false,
             generated: None,
             secure_delete: false,
+            split_mib: 0,
             confirm_delete: false,
             content_h: 0.0,
             show_help: false,
@@ -289,6 +292,7 @@ impl App {
             allow_cloud: self.allow_cloud,
             keyfile: self.keyfile.clone(),
             secure_delete: self.secure_delete,
+            split: (self.split_mib > 0).then_some(self.split_mib * 1024 * 1024),
         };
         self.confirm_delete = false;
         self.confirm.clear();
@@ -1090,6 +1094,25 @@ impl App {
                         "Hide the file size (PADMÉ padding)",
                     ),
                 );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(tr("Parçalara böl", "Split into parts"))
+                        .color(pal.muted)
+                        .size(13.0),
+                );
+                segmented(
+                    ui,
+                    pal,
+                    &mut self.split_mib,
+                    &[
+                        (0, tr("Kapalı", "Off"), true),
+                        (100, "100 MB", true),
+                        (1024, "1 GB", true),
+                        // FAT32 dosya sınırı 4 GiB − 1 bayt.
+                        (4095, tr("FAT32 (4 GB)", "FAT32 (4 GB)"), true),
+                    ],
+                );
+                ui.add_space(8.0);
                 ui.checkbox(
                     &mut self.secure_delete,
                     tr(

@@ -52,6 +52,10 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Split output into parts (`--split-size 100m|1g|…`, and "Split into parts" in the app, including
+  a FAT32-friendly size). Parts are named `.001`, `.002`, …; decrypting the `.001` file joins them.
+  A missing, truncated or reordered part is detected. Splitting needs at most one extra part of
+  free space.
 - Batch encryption: several files or folders become separate `.lphy` files
   (`lephycrypy encrypt a b c --out-dir DIR`; drop or choose several items in the app). The
   password is asked once; each file still gets its own salt and key. One failing item does not

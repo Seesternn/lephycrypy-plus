@@ -72,6 +72,7 @@ pub fn default_output(input: &Path, mode: Mode) -> PathBuf {
                 .file_name()
                 .map(|f| f.to_string_lossy().into_owned())
                 .unwrap_or_default();
+            let name = name.strip_suffix(".001").unwrap_or(&name).to_string();
             let base = name
                 .strip_suffix(".lphy")
                 .map_or_else(|| format!("{name}.out"), str::to_string);
@@ -112,6 +113,8 @@ pub struct Job {
     pub keyfile: Option<PathBuf>,
     /// Şifreleme doğrulandıktan sonra orijinali üzerine yazarak sil (kullanıcı onayladı).
     pub secure_delete: bool,
+    /// Çıktıyı bu boyutta parçalara böl (bayt).
+    pub split: Option<u64>,
 }
 
 /// İşin sonucu.
@@ -135,6 +138,7 @@ struct Ctx<'a> {
     opts: Option<EncryptOptions>,
     allow_cloud: bool,
     secure_delete: bool,
+    split: Option<u64>,
 }
 
 /// İşi yürütür. Tek öğede hata doğrudan döner; toplu işte başarısız öğeler `failed`'a yazılır,
@@ -189,6 +193,7 @@ pub fn run(job: Job) -> Result<Outcome> {
         opts,
         allow_cloud: job.allow_cloud,
         secure_delete: job.secure_delete && job.mode == Mode::Encrypt,
+        split: job.split.filter(|_| job.mode == Mode::Encrypt),
     };
     let single = job.items.len() == 1;
     let mut out = Outcome::default();
@@ -231,7 +236,14 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
             &mut OsEntropy,
             &mut log,
         )?;
-        out.outputs.push(item.output.clone());
+        let written = match ctx.split {
+            Some(size) => lephy_core::split::split_file(&item.output, size)?
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| item.output.clone()),
+            None => item.output.clone(),
+        };
+        out.outputs.push(written.clone());
         out.skipped += rep.archive.as_ref().map_or(0, |a| a.skipped.len());
         if ctx.secure_delete {
             // Silmeden önce yazılan dosya parolayla baştan sona doğrulanır.
@@ -239,7 +251,7 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
                 allow_large_kdf: true,
                 strict_memory: false,
             };
-            ops::verify(&item.output, ctx.nfc, ctx.kf, u, &mut log)?;
+            ops::verify(&written, ctx.nfc, ctx.kf, u, &mut log)?;
             if let Some(a) = &rep.archive {
                 let d = ops::delete_archived_with(a, true)?;
                 out.deleted += 1;
@@ -290,9 +302,16 @@ pub fn estimate_total(mode: Mode, input: &Path) -> u64 {
         }
     }
     match mode {
-        Mode::Decrypt => input
-            .metadata()
-            .map_or(0, |m| m.len().saturating_sub(HEADER_LEN as u64)),
+        Mode::Decrypt => {
+            let total = if lephy_core::split::is_first_part(input) {
+                lephy_core::split::parts(input)
+                    .and_then(|p| lephy_core::split::total_len(&p))
+                    .unwrap_or(0)
+            } else {
+                input.metadata().map_or(0, |m| m.len())
+            };
+            total.saturating_sub(HEADER_LEN as u64)
+        }
         Mode::Encrypt => {
             let mut acc = 0;
             walk(input, 0, &mut acc);
@@ -485,7 +504,7 @@ pub fn reveal_in_folder(path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::too_many_lines)]
 mod tests {
     use super::*;
 
@@ -523,6 +542,7 @@ mod tests {
             allow_cloud: false,
             keyfile: None,
             secure_delete: false,
+            split: None,
         };
         run(job).unwrap();
         assert_eq!(detect_mode(&d.join("x.lphy")), Mode::Decrypt);
@@ -550,6 +570,7 @@ mod tests {
             allow_cloud: false,
             keyfile: None,
             secure_delete: false,
+            split: None,
         };
         let out = run(job).unwrap();
         assert_eq!(out.outputs, vec![d.join("geri.txt")]);
@@ -571,6 +592,7 @@ mod tests {
                 allow_cloud: false,
                 keyfile: None,
                 secure_delete: false,
+                split: None,
             };
             let e = run(job).unwrap_err();
             assert_eq!(e.exit_code(), ExitCode::Io);
@@ -591,6 +613,7 @@ mod tests {
             allow_cloud: false,
             keyfile: None,
             secure_delete: false,
+            split: None,
         };
         let e = run(job).unwrap_err();
         assert_eq!(e.exit_code(), ExitCode::WrongPassword);
@@ -624,6 +647,7 @@ mod tests {
             allow_cloud: false,
             keyfile: None,
             secure_delete: true,
+            split: None,
         };
         let out = run(job).unwrap();
         assert_eq!(out.outputs.len(), 2);
@@ -642,8 +666,46 @@ mod tests {
             allow_cloud: false,
             keyfile: None,
             secure_delete: false,
+            split: None,
         };
         assert!(run(job).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn split_output_roundtrip() {
+        let d = std::env::temp_dir().join(format!("lphy-gui-split-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let data: Vec<u8> = (0..3_500_000u32).map(|i| (i % 253) as u8).collect();
+        std::fs::write(d.join("a.bin"), &data).unwrap();
+        let mk = |mode, input: &str, output: &str, split| Job {
+            mode,
+            items: vec![Item {
+                input: d.join(input),
+                output: d.join(output),
+            }],
+            password: secret("bolme parola 1234"),
+            confirm: (mode == Mode::Encrypt).then(|| secret("bolme parola 1234")),
+            kdf_mib: 64,
+            aes: false,
+            pad: false,
+            allow_cloud: false,
+            keyfile: None,
+            secure_delete: false,
+            split,
+        };
+        let out = run(mk(Mode::Encrypt, "a.bin", "s.lphy", Some(1024 * 1024))).unwrap();
+        assert_eq!(out.outputs, vec![d.join("s.lphy.001")]);
+        assert!(d.join("s.lphy.004").exists() && !d.join("s.lphy").exists());
+        assert_eq!(detect_mode(&d.join("s.lphy.001")), Mode::Decrypt);
+        assert_eq!(
+            default_output(&d.join("s.lphy.001"), Mode::Decrypt),
+            d.join("s")
+        );
+        assert!(estimate_total(Mode::Decrypt, &d.join("s.lphy.001")) > 3_000_000);
+        run(mk(Mode::Decrypt, "s.lphy.001", "geri.bin", None)).unwrap();
+        assert_eq!(std::fs::read(d.join("geri.bin")).unwrap(), data);
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -668,6 +730,7 @@ mod tests {
             allow_cloud: false,
             keyfile: kf.then(|| d.join("key.bin")),
             secure_delete: false,
+            split: None,
         };
         run(job(Mode::Encrypt, "a.txt", "k.lphy", true)).unwrap();
         assert!(needs_keyfile(&d.join("k.lphy")));

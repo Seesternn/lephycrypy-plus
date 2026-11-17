@@ -219,6 +219,10 @@ enum Command {
         /// yazar. SSD/APFS gibi ortamlarda fiziksel silme garanti edilmez. Onay ister.
         #[arg(long)]
         secure_delete: bool,
+        /// Çıktıyı bu boyutta parçalara böl (ör. 100m, 650m, 4g; en az 1m). Parçalar `.001`,
+        /// `.002` … olarak yazılır; çözerken `.001` verilmesi yeterlidir.
+        #[arg(long, value_name = "BOYUT", value_parser = parse_size)]
+        split_size: Option<u64>,
         /// `--secure-delete` için onay sorma (betikler).
         #[arg(long, requires = "secure_delete")]
         yes: bool,
@@ -476,6 +480,7 @@ enum Remove {
 
 /// Toplu şifrelemede her kaynak için ortak ayarlar (parola bir kez okunur).
 struct EncryptJob<'a> {
+    split: Option<u64>,
     nfc: &'a SecretBytes,
     keyfile: Option<&'a [u8; 32]>,
     opts: &'a EncryptOptions,
@@ -522,6 +527,18 @@ fn encrypt_one(
         },
         disp(out)
     ));
+    let out = if let Some(size) = job.split {
+        let parts = lephy_core::split::split_file(out, size)?;
+        log(&format!(
+            "{} parçaya bölündü: {} …",
+            parts.len(),
+            disp(&parts[0])
+        ));
+        parts[0].clone()
+    } else {
+        out.to_path_buf()
+    };
+    let out = out.as_path();
     if job.remove == Remove::No {
         return Ok(());
     }
@@ -551,6 +568,25 @@ fn encrypt_one(
     }
     eprintln!("uyarı: orijinal silindi; disk/snapshot/VSS/bulut sürüm geçmişinde kalıntı olabilir");
     Ok(())
+}
+
+/// "100m", "4g", "650M", "1048576" → bayt.
+fn parse_size(s: &str) -> std::result::Result<u64, String> {
+    let s = s.trim().to_ascii_lowercase();
+    let (num, mul) = match s.chars().last() {
+        Some('k') => (&s[..s.len() - 1], 1u64 << 10),
+        Some('m') => (&s[..s.len() - 1], 1 << 20),
+        Some('g') => (&s[..s.len() - 1], 1 << 30),
+        _ => (s.as_str(), 1),
+    };
+    let n: u64 = num
+        .parse()
+        .map_err(|_| format!("geçersiz boyut: {s} (ör. 100m, 4g)"))?;
+    let v = n.checked_mul(mul).ok_or("boyut çok büyük")?;
+    if v < lephy_core::split::MIN_PART {
+        return Err("parça boyutu en az 1m olmalı".into());
+    }
+    Ok(v)
 }
 
 fn default_output_name() -> Result<PathBuf> {
@@ -633,6 +669,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             strict_memory,
             delete_original,
             secure_delete,
+            split_size,
             yes,
         } => {
             let is_stdin = inputs.iter().any(|i| i.as_os_str() == "-");
@@ -693,7 +730,13 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 },
                 strict: *strict,
             };
+            if split_size.is_some() && is_stdin {
+                return Err(Error::Environment(
+                    "--split-size stdin ile değil, dosya çıktısıyla kullanılır".into(),
+                ));
+            }
             let job = EncryptJob {
+                split: *split_size,
                 nfc: &nfc,
                 keyfile: keyfile.as_deref(),
                 opts: &opts,
@@ -780,6 +823,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                     .file_name()
                     .map(|f| f.to_string_lossy().into_owned())
                     .unwrap_or_default();
+                let s = s.strip_suffix(".001").unwrap_or(&s);
                 let base = s
                     .strip_suffix(".lphy")
                     .map_or_else(|| format!("{s}.out"), str::to_string);

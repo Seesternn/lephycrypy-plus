@@ -544,7 +544,7 @@ fn map_adaptor(e: Error) -> Error {
 }
 
 /// Başlığı okur (256 B).
-fn read_header(f: &mut File) -> Result<[u8; HEADER_LEN]> {
+fn read_header(f: &mut dyn Read) -> Result<[u8; HEADER_LEN]> {
     let mut b = [0u8; HEADER_LEN];
     let mut n = 0;
     while n < HEADER_LEN {
@@ -606,6 +606,33 @@ fn open_and_unlock(
     Ok((f, u))
 }
 
+/// Şifreli girdi akışı: tek dosya ya da bir parça kümesinin ilki (`….001`). Döner: okuyucu ve
+/// toplam bayt.
+fn open_input(path: &Path) -> Result<(Box<dyn Read + Send>, u64)> {
+    if crate::split::is_first_part(path) {
+        let parts = crate::split::parts(path)?;
+        let total = crate::split::total_len(&parts)?;
+        return Ok((Box::new(crate::split::JoinReader::new(parts)), total));
+    }
+    let f = File::open(path)?;
+    let total = f.metadata()?.len();
+    Ok((Box::new(f), total))
+}
+
+/// [`open_and_unlock`] gibi; parça kümelerini de okur (çözme ve doğrulama).
+fn open_stream_and_unlock(
+    path: &Path,
+    pwd_nfc: &SecretBytes,
+    keyfile_digest: Option<&[u8; 32]>,
+    opts: UnlockOptions,
+    log: &mut dyn FnMut(&str),
+) -> Result<(Box<dyn Read + Send>, u64, Unlocked)> {
+    let (mut r, total) = open_input(path)?;
+    let b = read_header(&mut r)?;
+    let u = unlock_header(&b, pwd_nfc, keyfile_digest, opts, log)?;
+    Ok((r, total, u))
+}
+
 /// Çözme raporu.
 #[derive(Debug, Clone, Default)]
 pub struct DecryptReport {
@@ -655,7 +682,8 @@ pub fn decrypt(
     opts: DecryptOptions,
     log: &mut dyn FnMut(&str),
 ) -> Result<DecryptReport> {
-    let (mut f, u) = open_and_unlock(path, pwd_nfc, keyfile_digest, opts.unlock, log)?;
+    let (mut f, in_len, u) =
+        open_stream_and_unlock(path, pwd_nfc, keyfile_digest, opts.unlock, log)?;
     let cipher = SharedCipher::new(u.header.alg, key32(&u.data_key)?)?;
     let aad = chunk_aad(&u.bytes);
     let sp = StreamParams {
@@ -677,7 +705,7 @@ pub fn decrypt(
             };
         }
         (ContentType::Raw, Output::Path(out, force)) => {
-            let total = std::fs::metadata(path)?.len();
+            let total = in_len;
             let dir = out
                 .parent()
                 .filter(|d| !d.as_os_str().is_empty())
@@ -704,7 +732,7 @@ pub fn decrypt(
             if !force && out.symlink_metadata().is_ok() {
                 return Err(Error::Exists(out.display().to_string()));
             }
-            let total = std::fs::metadata(path)?.len();
+            let total = in_len;
             let parent = out
                 .parent()
                 .filter(|d| !d.as_os_str().is_empty())
@@ -760,6 +788,11 @@ impl Drop for TmpDirGuard {
 /// rekey/reencrypt yerinde değiştirir: symlink'te bağlantının kendisi, hardlink'te yalnızca bu ad
 /// değişir, eski başlık/parola gerçek dosyada ya da diğer adlarda kalırdı. Bu yüzden reddedilir.
 fn require_plain_file(path: &Path) -> Result<std::fs::Metadata> {
+    if crate::split::is_first_part(path) {
+        return Err(Error::Environment(
+            "parçalara bölünmüş dosya yerinde değiştirilemez; önce parçaları birleştirin".into(),
+        ));
+    }
     let md = path.symlink_metadata()?;
     if md.file_type().is_symlink() {
         return Err(Error::Environment(
@@ -840,7 +873,7 @@ pub fn verify(
     opts: UnlockOptions,
     log: &mut dyn FnMut(&str),
 ) -> Result<u64> {
-    let (mut f, u) = open_and_unlock(path, pwd_nfc, keyfile_digest, opts, log)?;
+    let (mut f, _, u) = open_stream_and_unlock(path, pwd_nfc, keyfile_digest, opts, log)?;
     let cipher = SharedCipher::new(u.header.alg, key32(&u.data_key)?)?;
     let aad = chunk_aad(&u.bytes);
     let sp = StreamParams {

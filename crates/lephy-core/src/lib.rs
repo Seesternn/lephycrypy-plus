@@ -15,6 +15,7 @@ pub mod pad;
 pub mod passphrase;
 pub mod password;
 pub mod pipeline;
+pub mod split;
 pub mod stream;
 pub mod strength;
 pub mod testvec;
