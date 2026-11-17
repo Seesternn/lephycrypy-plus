@@ -115,6 +115,8 @@ pub struct Job {
     pub secure_delete: bool,
     /// Çıktıyı bu boyutta parçalara böl (bayt).
     pub split: Option<u64>,
+    /// Şifrelemeden önce sıkıştır.
+    pub compress: bool,
 }
 
 /// İşin sonucu.
@@ -183,6 +185,7 @@ pub fn run(job: Job) -> Result<Outcome> {
                 raw: false,
                 pad: Some(job.pad),
                 strict: false,
+                compress: job.compress,
             })
         }
         Mode::Decrypt => None,
@@ -417,6 +420,9 @@ pub fn header_summary(path: &Path) -> Option<String> {
         h.alg.name(),
         h.kdf.memory_mib()
     );
+    if h.compressed {
+        out.push_str(tr(", sıkıştırılmış", ", compressed"));
+    }
     if h.padded {
         out.push_str(tr(", boyut gizli", ", size hidden"));
     }
@@ -543,6 +549,7 @@ mod tests {
             keyfile: None,
             secure_delete: false,
             split: None,
+            compress: false,
         };
         run(job).unwrap();
         assert_eq!(detect_mode(&d.join("x.lphy")), Mode::Decrypt);
@@ -571,6 +578,7 @@ mod tests {
             keyfile: None,
             secure_delete: false,
             split: None,
+            compress: false,
         };
         let out = run(job).unwrap();
         assert_eq!(out.outputs, vec![d.join("geri.txt")]);
@@ -593,6 +601,7 @@ mod tests {
                 keyfile: None,
                 secure_delete: false,
                 split: None,
+                compress: false,
             };
             let e = run(job).unwrap_err();
             assert_eq!(e.exit_code(), ExitCode::Io);
@@ -614,6 +623,7 @@ mod tests {
             keyfile: None,
             secure_delete: false,
             split: None,
+            compress: false,
         };
         let e = run(job).unwrap_err();
         assert_eq!(e.exit_code(), ExitCode::WrongPassword);
@@ -648,6 +658,7 @@ mod tests {
             keyfile: None,
             secure_delete: true,
             split: None,
+            compress: false,
         };
         let out = run(job).unwrap();
         assert_eq!(out.outputs.len(), 2);
@@ -667,6 +678,7 @@ mod tests {
             keyfile: None,
             secure_delete: false,
             split: None,
+            compress: false,
         };
         assert!(run(job).is_err());
         let _ = std::fs::remove_dir_all(&d);
@@ -694,6 +706,7 @@ mod tests {
             keyfile: None,
             secure_delete: false,
             split,
+            compress: false,
         };
         let out = run(mk(Mode::Encrypt, "a.bin", "s.lphy", Some(1024 * 1024))).unwrap();
         assert_eq!(out.outputs, vec![d.join("s.lphy.001")]);
@@ -731,6 +744,7 @@ mod tests {
             keyfile: kf.then(|| d.join("key.bin")),
             secure_delete: false,
             split: None,
+            compress: false,
         };
         run(job(Mode::Encrypt, "a.txt", "k.lphy", true)).unwrap();
         assert!(needs_keyfile(&d.join("k.lphy")));

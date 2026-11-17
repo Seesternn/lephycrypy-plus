@@ -1731,6 +1731,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "lephy-sys",
+ "miniz_oxide 0.9.1",
  "proptest",
  "sha2",
  "subtle",

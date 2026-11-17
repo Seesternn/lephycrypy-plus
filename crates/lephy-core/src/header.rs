@@ -13,8 +13,13 @@ use crate::kdf::KdfParams;
 pub const HEADER_LEN: usize = 256;
 /// Magic.
 pub const MAGIC: [u8; 6] = *b"LPHY+\0";
-/// Biçim sürümü.
+/// Biçim sürümü (v2 özelliği kullanılmayan dosyalar).
 pub const VERSION: u16 = 1;
+/// v2: `feature_flags` (ofset 12) kullanan dosyalar. Yazıcı v2'yi yalnızca bir v2 özelliği
+/// açıksa yazar; böylece v1 dosyaları bayt bayt aynı kalır.
+pub const VERSION_2: u16 = 2;
+/// `feature_flags.bit0`: içerik şifrelemeden önce ham DEFLATE ile sıkıştırıldı.
+pub const FEATURE_COMPRESSED: u8 = 0x01;
 /// `wrapped_fk` AAD aralığı.
 pub const WRAP_AAD_END: usize = 144;
 /// `header_mac` girdisi aralığı.
@@ -46,6 +51,8 @@ pub struct Header {
     pub kdf: KdfParams,
     /// Keyfile kullanılıyor mu (`kdf_flags.bit0`).
     pub keyfile: bool,
+    /// İçerik sıkıştırılmış mı (v2 `feature_flags.bit0`).
+    pub compressed: bool,
     /// Argon2 salt.
     pub salt: [u8; 32],
     /// STREAM nonce prefix'i (24 B'ın tamamı; AES'te kuyruk sıfır).
@@ -92,7 +99,11 @@ impl Header {
     pub fn to_bytes(&self) -> [u8; HEADER_LEN] {
         let mut b = [0u8; HEADER_LEN];
         b[0..6].copy_from_slice(&MAGIC);
-        b[6..8].copy_from_slice(&VERSION.to_le_bytes());
+        let version = if self.compressed { VERSION_2 } else { VERSION };
+        b[6..8].copy_from_slice(&version.to_le_bytes());
+        if self.compressed {
+            b[12] = FEATURE_COMPRESSED;
+        }
         b[8] = self.alg as u8;
         b[9] = self.content_type as u8;
         b[10] = u8::from(self.padded);
@@ -122,9 +133,24 @@ impl Header {
             return Err(corrupt("magic"));
         }
         let version = u16::from_le_bytes([b[6], b[7]]);
-        if version != VERSION {
-            return Err(corrupt("bilinmeyen sürüm"));
-        }
+        let features = match version {
+            VERSION => {
+                if b[12] != 0 {
+                    return Err(corrupt("reserved bayt ≠ 0"));
+                }
+                0
+            }
+            VERSION_2 => {
+                if b[12] & !FEATURE_COMPRESSED != 0 {
+                    return Err(corrupt("bilinmeyen feature_flags biti"));
+                }
+                if b[12] == 0 {
+                    return Err(corrupt("v2 başlığında özellik yok"));
+                }
+                b[12]
+            }
+            _ => return Err(corrupt("bilinmeyen sürüm")),
+        };
         let alg = AlgId::from_u8(b[8]).ok_or_else(|| corrupt("alg_id"))?;
         let content_type = match b[9] {
             0 => ContentType::Raw,
@@ -139,7 +165,7 @@ impl Header {
         if chunk_size_for(chunk_code).is_none() {
             return Err(corrupt("chunk_code"));
         }
-        if b[12] != 0 || b[15] != 0 {
+        if b[15] != 0 {
             return Err(corrupt("reserved bayt ≠ 0"));
         }
         if b[13] != 1 {
@@ -185,6 +211,7 @@ impl Header {
             chunk_code,
             kdf,
             keyfile,
+            compressed: features & FEATURE_COMPRESSED != 0,
             salt,
             stream_nonce_prefix,
             wrap_nonce,
@@ -219,6 +246,8 @@ pub struct NewHeaderParams {
     pub kdf: KdfParams,
     /// Keyfile var mı.
     pub keyfile: bool,
+    /// Sıkıştırma (biçim v2).
+    pub compressed: bool,
 }
 
 #[cfg(test)]
@@ -238,6 +267,7 @@ mod tests {
                 p: 1,
             },
             keyfile: false,
+            compressed: false,
             salt: [1; 32],
             stream_nonce_prefix: {
                 let mut p = [0u8; 24];

@@ -207,6 +207,7 @@ pub fn build_header(
         chunk_code: params.chunk_code,
         kdf: params.kdf,
         keyfile: keyfile_digest.is_some(),
+        compressed: params.compressed,
         salt,
         stream_nonce_prefix: prefix,
         wrap_nonce,
@@ -259,6 +260,8 @@ pub struct EncryptOptions {
     pub pad: Option<bool>,
     /// Atlanan giriş hata (`--strict`).
     pub strict: bool,
+    /// Şifrelemeden önce sıkıştır (biçim v2; yan kanal uyarısı: `compress.rs`).
+    pub compress: bool,
 }
 
 /// Şifreleme girişi.
@@ -267,6 +270,41 @@ pub enum Input<'a> {
     Path(&'a Path),
     /// Standart girdi (ham akış; boyut bilinmez; PADMÉ kullanılamaz).
     Stdin,
+}
+
+/// Sıkıştırmalı şifreleme gövdesi: kaynak → DEFLATE → [PADMÉ sıfırları] → STREAM.
+fn encrypt_compressed(
+    sp: &StreamParams<'_>,
+    input: &Input<'_>,
+    content_type: ContentType,
+    padded: bool,
+    opts: &EncryptOptions,
+    w: &mut AtomicWriter,
+    report: &mut EncryptReport,
+) -> Result<u64> {
+    use crate::compress::DeflateReader;
+    match (input, content_type) {
+        (Input::Stdin, _) => {
+            let stdin = std::io::stdin();
+            if lephy_sys::term::is_tty(&stdin) {
+                return Err(Error::Environment(
+                    "stdin bir terminal; giriş verisi bekleniyor".into(),
+                ));
+            }
+            let mut r = DeflateReader::new(stdin, false);
+            encrypt_stream(sp, &mut r, w.file()).map_err(map_adaptor)
+        }
+        (Input::Path(p), ContentType::Raw) => {
+            let mut r = DeflateReader::new(File::open(p)?, padded);
+            encrypt_stream(sp, &mut r, w.file()).map_err(map_adaptor)
+        }
+        (Input::Path(p), ContentType::Archive) => {
+            let mut r = DeflateReader::new(ArchiveWriter::new(p, opts.strict)?, padded);
+            let n = encrypt_stream(sp, &mut r, w.file()).map_err(map_adaptor)?;
+            report.archive = Some(r.into_inner().report);
+            Ok(n)
+        }
+    }
 }
 
 /// Orijinal silme sonucu.
@@ -455,6 +493,7 @@ pub fn encrypt(
         chunk_code: opts.chunk_code,
         kdf: opts.kdf,
         keyfile: keyfile_digest.is_some(),
+        compressed: opts.compress,
     };
     // Boş alan ön kontrolü (yalnızca dosya; klasörde boyut önceden bilinmez).
     if let Input::Path(p) = input
@@ -494,6 +533,9 @@ pub fn encrypt(
         ..Default::default()
     };
     report.plain_len = match (input, content_type, padded) {
+        _ if opts.compress => {
+            encrypt_compressed(&sp, input, content_type, padded, opts, &mut w, &mut report)?
+        }
         (Input::Stdin, _, _) => {
             let mut stdin = std::io::stdin();
             if lephy_sys::term::is_tty(&stdin) {
@@ -674,6 +716,7 @@ fn create_tmp_dir(dir: &Path) -> Result<()> {
 ///
 /// # Errors
 /// 3, 4, 6, 7, 8, 1, 130.
+#[allow(clippy::too_many_lines)]
 pub fn decrypt(
     path: &Path,
     output: &Output<'_>,
@@ -694,6 +737,11 @@ pub fn decrypt(
     };
     let mut report = DecryptReport::default();
     match (u.header.content_type, output) {
+        (ContentType::Raw, Output::Stdout) if u.header.compressed => {
+            let mut iw = crate::compress::InflateWriter::new(RawStdout, u.header.padded);
+            decrypt_stream(&sp, &mut f, &mut iw).map_err(map_adaptor)?;
+            report.plain_len = iw.finish().map_err(Error::from_io)?.1;
+        }
         (ContentType::Raw, Output::Stdout) => {
             let mut so = RawStdout;
             report.plain_len = if u.header.padded {
@@ -712,7 +760,11 @@ pub fn decrypt(
                 .unwrap_or(Path::new("."));
             crate::io::precheck_space(dir, total)?;
             let mut w = AtomicWriter::create(out, *force)?;
-            report.plain_len = if u.header.padded {
+            report.plain_len = if u.header.compressed {
+                let mut iw = crate::compress::InflateWriter::new(w.file(), u.header.padded);
+                decrypt_stream(&sp, &mut f, &mut iw).map_err(map_adaptor)?;
+                iw.finish().map_err(Error::from_io)?.1
+            } else if u.header.padded {
                 let mut pw = RawPadWriter::new(w.file());
                 decrypt_stream(&sp, &mut f, &mut pw).map_err(map_adaptor)?;
                 pw.finish().map_err(Error::from_io)?.1
@@ -747,9 +799,16 @@ pub fn decrypt(
                 keep: false,
             };
             let mut eo = opts.extract;
-            eo.padded = u.header.padded;
+            // Sıkıştırmada dolgu sıkıştırılmış akışın sonundadır (InflateWriter denetler).
+            eo.padded = u.header.padded && !u.header.compressed;
             let mut ex = Extractor::new(&tmp, eo)?;
-            report.plain_len = decrypt_stream(&sp, &mut f, &mut ex).map_err(map_adaptor)?;
+            if u.header.compressed {
+                let mut iw = crate::compress::InflateWriter::new(ex, u.header.padded);
+                report.plain_len = decrypt_stream(&sp, &mut f, &mut iw).map_err(map_adaptor)?;
+                ex = iw.finish().map_err(Error::from_io)?.0;
+            } else {
+                report.plain_len = decrypt_stream(&sp, &mut f, &mut ex).map_err(map_adaptor)?;
+            }
             let single = ex.single_file.clone();
             let rep = ex.finish()?;
             // Tek üst düzey dosya: dosyayı doğrudan hedefe taşı, tmp dizini sil.
@@ -883,6 +942,18 @@ pub fn verify(
         chunk_size: u.header.chunk_size(),
     };
     match u.header.content_type {
+        ContentType::Archive if u.header.compressed => {
+            let ex = Extractor::verifier(ExtractOptions::default());
+            let mut iw = crate::compress::InflateWriter::new(ex, u.header.padded);
+            let n = decrypt_stream(&sp, &mut f, &mut iw).map_err(map_adaptor)?;
+            iw.finish().map_err(Error::from_io)?.0.finish()?;
+            Ok(n)
+        }
+        ContentType::Raw if u.header.compressed => {
+            let mut iw = crate::compress::InflateWriter::new(std::io::sink(), u.header.padded);
+            decrypt_stream(&sp, &mut f, &mut iw).map_err(map_adaptor)?;
+            Ok(iw.finish().map_err(Error::from_io)?.1)
+        }
         ContentType::Archive => {
             let eo = ExtractOptions {
                 padded: u.header.padded,
@@ -937,6 +1008,7 @@ pub fn rekey(
         chunk_code: u.header.chunk_code,
         kdf: new.kdf.unwrap_or(u.header.kdf),
         keyfile: new.keyfile_digest.is_some(),
+        compressed: u.header.compressed,
     };
     let nu = build_header(
         &params,
@@ -1015,6 +1087,7 @@ pub fn reencrypt(
         chunk_code: u.header.chunk_code,
         kdf: new.kdf.unwrap_or(u.header.kdf),
         keyfile: new.keyfile_digest.is_some(),
+        compressed: u.header.compressed,
     };
     let nu = build_header(
         &params,
@@ -1080,6 +1153,7 @@ mod tests {
             raw,
             pad,
             strict: false,
+            compress: false,
         }
     }
 
@@ -1102,6 +1176,113 @@ mod tests {
         )
         .unwrap();
         rep.archive.unwrap()
+    }
+
+    #[test]
+    fn compressed_roundtrips_archive_and_raw() {
+        let d = tmpdir("compress");
+        let src = d.join("kaynak");
+        std::fs::create_dir_all(src.join("alt")).unwrap();
+        let text: Vec<u8> = b"tekrar eden metin "
+            .iter()
+            .copied()
+            .cycle()
+            .take(400_000)
+            .collect();
+        std::fs::write(src.join("a.txt"), &text).unwrap();
+        std::fs::write(
+            src.join("alt/b.bin"),
+            (0..50_000u32)
+                .map(|i| i.to_le_bytes()[0])
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let p = pwd("sikistirma parola 1");
+        for (raw, pad) in [
+            (false, Some(true)),
+            (false, Some(false)),
+            (true, Some(true)),
+            (true, Some(false)),
+        ] {
+            let mut o = opts(raw, pad);
+            o.compress = true;
+            let input = if raw { src.join("a.txt") } else { src.clone() };
+            let out = d.join(format!("c-{raw}-{pad:?}.lphy"));
+            encrypt(
+                &Input::Path(&input),
+                &out,
+                &p,
+                None,
+                &o,
+                &mut OsEntropy,
+                &mut |_| {},
+            )
+            .unwrap();
+            let h = info(&out).unwrap();
+            assert!(h.compressed);
+            let bytes = std::fs::read(&out).unwrap();
+            assert_eq!(
+                u16::from_le_bytes([bytes[6], bytes[7]]),
+                crate::header::VERSION_2
+            );
+            if raw {
+                assert!(bytes.len() < text.len() / 10, "sıkışmalı: {}", bytes.len());
+            }
+            let u = UnlockOptions::default();
+            verify(&out, &p, None, u, &mut |_| {}).unwrap();
+            let back = d.join(format!("geri-{raw}-{pad:?}"));
+            let dopts = DecryptOptions {
+                unlock: u,
+                ..DecryptOptions::default()
+            };
+            decrypt(
+                &out,
+                &Output::Path(&back, false),
+                &p,
+                None,
+                dopts,
+                &mut |_| {},
+            )
+            .unwrap();
+            if raw {
+                assert_eq!(std::fs::read(&back).unwrap(), text);
+            } else {
+                assert_eq!(std::fs::read(back.join("a.txt")).unwrap(), text);
+                assert_eq!(std::fs::read(back.join("alt/b.bin")).unwrap().len(), 50_000);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn v1_files_stay_v1_and_v2_flags_are_checked() {
+        let d = tmpdir("v1v2");
+        std::fs::write(d.join("a.txt"), b"a").unwrap();
+        let out = d.join("v1.lphy");
+        encrypt(
+            &Input::Path(&d.join("a.txt")),
+            &out,
+            &pwd("surum parola 12"),
+            None,
+            &opts(false, None),
+            &mut OsEntropy,
+            &mut |_| {},
+        )
+        .unwrap();
+        let mut b: [u8; HEADER_LEN] = std::fs::read(&out).unwrap()[..HEADER_LEN]
+            .try_into()
+            .unwrap();
+        assert_eq!(u16::from_le_bytes([b[6], b[7]]), crate::header::VERSION);
+        assert_eq!(b[12], 0);
+        // v1'de özellik baytı yasak; v2'de bilinmeyen bit yasak.
+        b[12] = 1;
+        assert!(Header::parse(&b).is_err());
+        b[6] = 2;
+        b[12] = 0x02;
+        assert!(Header::parse(&b).is_err());
+        b[12] = 0x01;
+        assert!(Header::parse(&b).unwrap().compressed);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

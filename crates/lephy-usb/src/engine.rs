@@ -607,6 +607,7 @@ mod tests {
             raw: false,
             pad: None,
             strict: false,
+            compress: false,
         };
         lephy_core::ops::encrypt(
             &lephy_core::ops::Input::Path(&src),

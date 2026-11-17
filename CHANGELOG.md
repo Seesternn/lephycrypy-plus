@@ -52,6 +52,10 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Optional compression before encryption (`--compress`, and an option in the app). Files that use
+  it are written as format version 2; all other files stay version 1. Documented in
+  `docs/FORMAT.md` with a side-channel warning; the Python reference implementation produces new
+  vectors 12 and 13 that the Rust code decrypts.
 - Split output into parts (`--split-size 100m|1g|…`, and "Split into parts" in the app, including
   a FAT32-friendly size). Parts are named `.001`, `.002`, …; decrypting the `.001` file joins them.
   A missing, truncated or reordered part is detected. Splitting needs at most one extra part of

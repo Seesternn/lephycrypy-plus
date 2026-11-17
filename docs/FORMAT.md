@@ -145,4 +145,51 @@ Resmî KAT'lar: Argon2id RFC 9106 §5.3; HKDF RFC 5869 Ek A (SHA-256/SHA-1; SHA-
 
 ## Sürüm politikası
 
-v1 okuma ≥ 5 yıl / 3 major; yazma yalnızca güncel sürüm; bilinmeyen `version` → kod 4. `kdf_flags.bit1` v2 (yalnızca-keyfile) için rezerve.
+v1 okuma ≥ 5 yıl / 3 major. Yazıcı, dosyayı ifade edebilen **en düşük** sürümü yazar (v2 yalnızca bir v2 özelliği açıksa). Bilinmeyen `version` → kod 4. `kdf_flags.bit1` gelecekteki bir yalnızca-keyfile modu için rezerve.
+
+## Format version 2 (compression)
+
+A writer emits version 2 **only** when a v2 feature is used; otherwise it writes version 1, so
+v1 files stay byte-for-byte identical. Readers accept both.
+
+| Offset | v1 | v2 |
+|---|---|---|
+| 6..8 `version` | `1` | `2` |
+| 12 | reserved, must be `0` | `feature_flags`; bit0 = compressed; other bits must be `0`; at least one bit set |
+
+Everything else in the header is unchanged. Byte 12 and the version lie inside
+`header[0..13]`, so they are bound to every chunk through `chunk_aad`, to the wrapped key through
+the wrap AAD (`header[0..144]`) and to `header_mac`. Flipping the flag fails authentication.
+
+**Compressed content (bit0).** The plaintext stream (archive or raw) is compressed with raw
+DEFLATE (RFC 1951, no zlib/gzip wrapper) **before** encryption:
+
+```
+source (archive | raw bytes) → DEFLATE → [PADMÉ zeros] → STREAM AEAD
+```
+
+- With `padded = 1` the compressed stream of length `L` is followed by `padme(L) − L` zero bytes.
+  No length prefix is used: DEFLATE marks its own end. The raw-stream `u64 L` prefix of v1 is not
+  used for compressed files, and the archive is not padded separately.
+- A reader inflates the decrypted stream and rejects: a stream that does not end, non-zero
+  padding, padding of the wrong length, and any byte after the end when `padded = 0` (code 4).
+- Any valid DEFLATE stream is accepted. Writers may use any compression level.
+- Vectors 12 and 13 use only DEFLATE *stored* blocks (deterministic) and are checked in the
+  decrypt direction.
+
+**Side channel.** The compressed size reveals information about the content, especially when an
+attacker controls part of the input (CRIME/BREACH-style). PADMÉ reduces but does not remove this.
+Compression is therefore off by default.
+
+| # | alg | chunk_code | content_type | Input | Note |
+|---|---|---|---|---|---|
+| 12 | 1 | 0 | 0 | `"lephycrypy v2 "` × 40, compressed, padded | decrypt direction |
+| 13 | 2 | 0 | 1 | archive `a.txt = "hi"`, compressed, not padded | decrypt direction |
+
+## Split output (informative)
+
+Splitting is a container below the format and has no header flag. A file `name.lphy` is cut into
+`name.lphy.001`, `name.lphy.002`, … (at most 999 parts, at least 1 MiB each); every part except
+the last has the same size. Concatenating the parts in order gives the original file. Integrity
+comes from STREAM: a missing, truncated or reordered part fails authentication or the end-of-stream
+check.

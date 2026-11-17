@@ -164,6 +164,7 @@ fn canary_not_left_in_heap_after_encrypt_and_decrypt() {
             raw: true,
             pad: None,
             strict: false,
+            compress: false,
         };
         ops::encrypt(
             &Input::Path(&src),

@@ -219,6 +219,10 @@ enum Command {
         /// yazar. SSD/APFS gibi ortamlarda fiziksel silme garanti edilmez. Onay ister.
         #[arg(long)]
         secure_delete: bool,
+        /// Şifrelemeden önce sıkıştır (DEFLATE; biçim v2). Sıkıştırılmış boyut içerik hakkında
+        /// bilgi verebilir; saldırganın girdinin bir kısmını seçebildiği durumlarda kullanmayın.
+        #[arg(long)]
+        compress: bool,
         /// Çıktıyı bu boyutta parçalara böl (ör. 100m, 650m, 4g; en az 1m). Parçalar `.001`,
         /// `.002` … olarak yazılır; çözerken `.001` verilmesi yeterlidir.
         #[arg(long, value_name = "BOYUT", value_parser = parse_size)]
@@ -670,6 +674,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             delete_original,
             secure_delete,
             split_size,
+            compress,
             yes,
         } => {
             let is_stdin = inputs.iter().any(|i| i.as_os_str() == "-");
@@ -729,6 +734,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                     None
                 },
                 strict: *strict,
+                compress: *compress,
             };
             if split_size.is_some() && is_stdin {
                 return Err(Error::Environment(

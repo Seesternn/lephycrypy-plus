@@ -4,6 +4,7 @@
 
 pub mod archive;
 pub mod cipher;
+pub mod compress;
 pub mod entropy;
 pub mod error;
 pub mod header;

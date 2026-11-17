@@ -28,6 +28,8 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 MAGIC = b"LPHY+\0"
 VERSION = 1
+VERSION_2 = 2
+FEATURE_COMPRESSED = 0x01
 INFO_KEK = b"lphy+/v1/kek"
 INFO_WRAP = b"lphy+/v1/wrap"
 INFO_COMMIT = b"lphy+/v1/commit"
@@ -145,7 +147,7 @@ def prefix_len(alg):
 
 
 def build_header(alg, content_type, padded, chunk_code, m_kib, t, p, pwd_nfc, keyfile,
-                 salt, prefix, wrap_nonce, fk) -> tuple[bytes, dict]:
+                 salt, prefix, wrap_nonce, fk, compressed=False) -> tuple[bytes, dict]:
     assert len(salt) == 32 and len(fk) == 32
     prefix24 = prefix[: prefix_len(alg)].ljust(24, b"\0")
     wrap24 = wrap_nonce[: nonce_len(alg)].ljust(24, b"\0")
@@ -153,12 +155,12 @@ def build_header(alg, content_type, padded, chunk_code, m_kib, t, p, pwd_nfc, ke
     keys = derive_keys(kek, salt, fk, prefix24)
     h = bytearray(256)
     h[0:6] = MAGIC
-    h[6:8] = struct.pack("<H", VERSION)
+    h[6:8] = struct.pack("<H", VERSION_2 if compressed else VERSION)
     h[8] = alg
     h[9] = content_type
     h[10] = 1 if padded else 0
     h[11] = chunk_code
-    h[12] = 0
+    h[12] = FEATURE_COMPRESSED if compressed else 0
     h[13] = 1
     h[14] = 1 if keyfile is not None else 0
     h[15] = 0
@@ -239,10 +241,30 @@ def archive_padded(entries: bytes) -> bytes:
     return body + b"\0" * (padme(len(body)) - len(body))
 
 
+def deflate_stored(data: bytes) -> bytes:
+    """RFC 1951 ham DEFLATE, yalnızca "stored" bloklar (≤ 65 535 B; son blokta BFINAL).
+    Belirlenimlidir; FORMAT.md v2 test vektörleri için. Okuyucular her geçerli DEFLATE'i kabul
+    eder."""
+    out = bytearray()
+    blocks = [data[i:i + 65535] for i in range(0, len(data), 65535)] or [b""]
+    for i, b in enumerate(blocks):
+        final = 1 if i == len(blocks) - 1 else 0
+        out += bytes([final])  # BFINAL + BTYPE=00, bayt sınırına hizalı
+        out += struct.pack("<HH", len(b), len(b) ^ 0xFFFF)
+        out += b
+    return bytes(out)
+
+
+def compressed_stream(inner: bytes, padded: bool) -> bytes:
+    """v2 sıkıştırma: DEFLATE(inner) + (dolgu açıksa) padme(L) − L sıfır."""
+    c = deflate_stored(inner)
+    return c + (b"\0" * (padme(len(c)) - len(c)) if padded else b"")
+
+
 def encrypt_stream_file(alg, content_type, padded, chunk_code, m_kib, t, p, pwd_nfc, keyfile,
-                        salt, prefix, wrap_nonce, fk, plaintext: bytes) -> bytes:
+                        salt, prefix, wrap_nonce, fk, plaintext: bytes, compressed=False) -> bytes:
     header, keys = build_header(alg, content_type, padded, chunk_code, m_kib, t, p, pwd_nfc, keyfile,
-                                salt, prefix, wrap_nonce, fk)
+                                salt, prefix, wrap_nonce, fk, compressed)
     body = encrypt_stream(alg, keys["data_key"], header[64:88], chunk_aad(header),
                           CHUNK_SIZES[chunk_code], plaintext)
     return header + body
@@ -311,6 +333,21 @@ def vectors(outdir: str):
         f.write(blob)
     meta["v6"] = {"alg": 1, "chunk_code": 0, "content_type": 0, "padded": True, "plain_len": len(pt6)}
     assert padme(100) == 104 and padme(1000) == 1024 and padme(1_000_000) == 1_015_808
+    # 12: v2, ham + sıkıştırma + dolgu
+    raw12 = b"lephycrypy v2 " * 40
+    blob = encrypt_stream_file(1, 0, True, 0, COMMON["m_kib"], COMMON["t"], COMMON["p"], pwd, None,
+                               SALT, PREFIX, WRAP, FK, compressed_stream(raw12, True), compressed=True)
+    with open(os.path.join(outdir, "v12.lphy"), "wb") as f:
+        f.write(blob)
+    meta["v12"] = {"alg": 1, "chunk_code": 0, "content_type": 0, "padded": True, "compressed": True,
+                   "plaintext": raw12.decode()}
+    # 13: v2, arşiv + sıkıştırma (dolgusuz), a.txt="hi"
+    ar13 = archive_entry(0, "a.txt", 0o644, 0, b"hi") + archive_end()
+    blob = encrypt_stream_file(2, 1, False, 0, COMMON["m_kib"], COMMON["t"], COMMON["p"], pwd, None,
+                               SALT, PREFIX, WRAP, FK, compressed_stream(ar13, False), compressed=True)
+    with open(os.path.join(outdir, "v13.lphy"), "wb") as f:
+        f.write(blob)
+    meta["v13"] = {"alg": 2, "chunk_code": 0, "content_type": 1, "padded": False, "compressed": True}
     # 7/8/11: KEK eşitliği
     nfd = "ş ğ İ é".encode("utf-8")
     nfc = "ş ğ İ é".encode("utf-8")

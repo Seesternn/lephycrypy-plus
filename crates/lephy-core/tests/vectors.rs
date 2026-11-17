@@ -24,6 +24,11 @@ const V4: &[u8] = include_bytes!("../../../tests/kat/vectors/v4.lphy");
 const V5: &[u8] = include_bytes!("../../../tests/kat/vectors/v5.lphy");
 const V6: &[u8] = include_bytes!("../../../tests/kat/vectors/v6.lphy");
 const V9: &[u8] = include_bytes!("../../../tests/kat/vectors/v9.lphy");
+/// v2 (sıkıştırma) vektörleri: Python referansı "stored" DEFLATE blokları üretir. DEFLATE çıktısı
+/// uygulamalar arasında belirlenimli olmadığından bu vektörler yalnızca **çözme** yönünde
+/// karşılaştırılır.
+const V12: &[u8] = include_bytes!("../../../tests/kat/vectors/v12.lphy");
+const V13: &[u8] = include_bytes!("../../../tests/kat/vectors/v13.lphy");
 const META: &str = include_str!("../../../tests/kat/vectors/vectors.json");
 
 fn common_kdf() -> KdfParams {
@@ -59,6 +64,7 @@ fn opts(alg: AlgId, chunk_code: u8, raw: bool, pad: Option<bool>) -> EncryptOpti
         raw,
         pad,
         strict: false,
+        compress: false,
     }
 }
 
@@ -239,6 +245,7 @@ fn marker_present_in_test_vectors_build() {
         chunk_code: 0,
         kdf: common_kdf(),
         keyfile: false,
+        compressed: false,
     };
     let u = ops::build_header(
         &params,
@@ -255,4 +262,42 @@ fn marker_present_in_test_vectors_build() {
     assert_eq!(&u.bytes[71..88], &[0u8; 17]);
     assert_eq!(&u.bytes[88..100], &(0x40u8..0x4c).collect::<Vec<_>>()[..]);
     assert_eq!(u.fk.expose(), &(0x60u8..0x80).collect::<Vec<_>>()[..]);
+}
+
+#[test]
+fn v2_compressed_vectors_from_reference_decrypt() {
+    let d = std::env::temp_dir().join(format!("lphy-v2vec-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("v12.lphy"), V12).unwrap();
+    std::fs::write(d.join("v13.lphy"), V13).unwrap();
+    let p = pwd("test");
+    let h12 = ops::info(&d.join("v12.lphy")).unwrap();
+    assert!(h12.compressed && h12.padded && h12.content_type == ContentType::Raw);
+    ops::decrypt(
+        &d.join("v12.lphy"),
+        &ops::Output::Path(&d.join("v12.out"), false),
+        &p,
+        None,
+        DecryptOptions::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read(d.join("v12.out")).unwrap(),
+        b"lephycrypy v2 ".repeat(40)
+    );
+    let h13 = ops::info(&d.join("v13.lphy")).unwrap();
+    assert!(h13.compressed && h13.content_type == ContentType::Archive);
+    ops::decrypt(
+        &d.join("v13.lphy"),
+        &ops::Output::Path(&d.join("v13.out"), false),
+        &p,
+        None,
+        DecryptOptions::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(d.join("v13.out")).unwrap(), b"hi");
+    let _ = std::fs::remove_dir_all(&d);
 }

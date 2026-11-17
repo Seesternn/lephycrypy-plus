@@ -75,6 +75,8 @@ pub struct App {
     secure_delete: bool,
     /// Parçalara bölme boyutu (MiB; 0 = kapalı).
     split_mib: u64,
+    /// Şifrelemeden önce sıkıştır.
+    compress: bool,
     /// Güvenli silme onayı bekleniyor (Şifrele'ye basıldı).
     confirm_delete: bool,
     /// Üretilen kelime öbeği: kullanıcı not alsın diye bir kez gösterilir (kilitli bellekte).
@@ -114,6 +116,7 @@ impl Default for App {
             generated: None,
             secure_delete: false,
             split_mib: 0,
+            compress: false,
             confirm_delete: false,
             content_h: 0.0,
             show_help: false,
@@ -293,6 +296,7 @@ impl App {
             keyfile: self.keyfile.clone(),
             secure_delete: self.secure_delete,
             split: (self.split_mib > 0).then_some(self.split_mib * 1024 * 1024),
+            compress: self.compress,
         };
         self.confirm_delete = false;
         self.confirm.clear();
@@ -1092,6 +1096,13 @@ impl App {
                     tr(
                         "Dosya boyutunu gizle (PADMÉ dolgusu)",
                         "Hide the file size (PADMÉ padding)",
+                    ),
+                );
+                ui.checkbox(
+                    &mut self.compress,
+                    tr(
+                        "Şifrelemeden önce sıkıştır (boyut içerik hakkında ipucu verebilir)",
+                        "Compress before encrypting (the size may hint at the content)",
                     ),
                 );
                 ui.add_space(4.0);

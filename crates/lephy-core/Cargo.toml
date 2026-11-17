@@ -20,6 +20,7 @@ fault-injection = []
 
 [dependencies]
 lephy-sys = { workspace = true }
+miniz_oxide = { workspace = true }
 zeroize = { workspace = true }
 thiserror = { workspace = true }
 subtle = { workspace = true }
