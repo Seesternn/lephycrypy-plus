@@ -124,7 +124,7 @@ jobs:
           rustup toolchain install nightly-2026-11-01 --component miri,rust-src --profile minimal
           cargo +nightly-2026-11-01 miri setup
           cargo +nightly-2026-11-01 miri test -p lephy-sys
-      - uses: taiki-e/install-action@328a871ad8f62ecac78390391f463ccabc974b72 # v2.69.9
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-fuzz@0.13.2
       - name: fuzz smoke (60 s per target)
@@ -154,7 +154,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: "1.95.0"
-      - uses: taiki-e/install-action@328a871ad8f62ecac78390391f463ccabc974b72 # v2.69.9
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-deny@0.21.0,cargo-audit@0.23.0,cargo-vet@0.10.3
       # Two tiers: strict (core/CLI/USB; FFI budget, duplicate versions denied, GUI crates banned)
