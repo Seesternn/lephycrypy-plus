@@ -23,6 +23,29 @@ pub enum Mode {
     Decrypt,
 }
 
+/// A maintenance action on an encrypted file instead of decrypting it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolKind {
+    /// Decrypt and check everything, write nothing.
+    Verify,
+    /// New password (and key file); the content and its key stay (`ops::rekey`).
+    Rekey,
+    /// New password and a new file key: every chunk is encrypted again (`ops::reencrypt`).
+    Reencrypt,
+}
+
+/// The tool and, for a password change, the new credentials.
+pub struct Tool {
+    /// What to do.
+    pub kind: ToolKind,
+    /// New password (Rekey / Reencrypt).
+    pub new_password: Option<SecretBytes>,
+    /// Its repetition.
+    pub new_confirm: Option<SecretBytes>,
+    /// New key file (`None`: no key file).
+    pub new_keyfile: Option<PathBuf>,
+}
+
 /// Mode from the content: an encrypted file (with or without an error-correction envelope, a single
 /// file or the first part of a set) is decrypted; so is a file named `.lphy` / `.lphy.NNN` whose
 /// header cannot be read (damaged: decryption reports it and offers recovery instead of encrypting
@@ -355,6 +378,8 @@ pub struct Job {
     /// Decrypting: a single file gets its stored (original) name next to the output, and nothing
     /// is overwritten (see `DecryptOptions::restore_name`).
     pub restore_name: bool,
+    /// Decrypt mode: run this tool on the inputs instead of decrypting them.
+    pub tool: Option<Tool>,
 }
 
 /// Job result.
@@ -384,6 +409,8 @@ pub struct Outcome {
     pub signer: Option<String>,
     /// Decrypted items that can run as programs (by name, or by the executable bit).
     pub executables: usize,
+    /// The tool that ran instead of decrypting.
+    pub tool: Option<ToolKind>,
 }
 
 /// Folders scanned at start for leftover temp items: the home folder, Desktop, Downloads and
@@ -506,7 +533,7 @@ struct Ctx<'a> {
 /// # Errors
 /// Core errors (the message and exit-code category are shown in the UI).
 #[allow(clippy::too_many_lines, reason = "one linear setup of the job")]
-pub fn run(job: Job) -> Result<Outcome> {
+pub fn run(mut job: Job) -> Result<Outcome> {
     let mut nfc = password::normalize_nfc(&job.password)?;
     drop(job.password);
     let key_mode =
@@ -552,6 +579,15 @@ pub fn run(job: Job) -> Result<Outcome> {
         .as_deref()
         .map(password::keyfile_digest_from_path)
         .transpose()?;
+    if let Some(tool) = job.tool.take().filter(|_| job.mode == Mode::Decrypt) {
+        return run_tool(
+            tool,
+            &job.items,
+            &nfc,
+            keyfile.as_deref(),
+            identity.as_ref(),
+        );
+    }
     let opts = match job.mode {
         Mode::Encrypt => {
             if !key_mode {
@@ -716,6 +752,89 @@ fn encrypt_item(
             log,
         )
     }
+}
+
+/// Verify, change the password or renew the file key of each input, in place.
+fn run_tool(
+    tool: Tool,
+    items: &[Item],
+    nfc: &SecretBytes,
+    kf: Option<&[u8; 32]>,
+    identity: Option<&Identity>,
+) -> Result<Outcome> {
+    let mut log = |_: &str| {};
+    let mut out = Outcome {
+        tool: Some(tool.kind),
+        ..Outcome::default()
+    };
+    let unlock = ops::UnlockOptions {
+        identity,
+        ..ops::UnlockOptions::default()
+    };
+    if tool.kind == ToolKind::Verify {
+        for item in items {
+            let (_, signer) = ops::verify_with_signer(&item.input, nfc, kf, unlock, &mut log)?;
+            out.signer = signer.map(|k| k.to_string());
+            out.outputs.push(item.input.clone());
+        }
+        return Ok(out);
+    }
+    let new = tool.new_password.ok_or_else(|| {
+        Error::Environment(tr("yeni parola gerekli", "a new password is needed").into())
+    })?;
+    let new_nfc = password::normalize_nfc(&new)?;
+    drop(new);
+    let confirm = password::normalize_nfc(&tool.new_confirm.ok_or_else(|| {
+        Error::Environment(tr("yeni parolayı tekrar girin", "repeat the new password").into())
+    })?)?;
+    if confirm.expose() != new_nfc.expose() {
+        return Err(Error::Environment(
+            tr(
+                "yeni parolalar eşleşmiyor",
+                "the new passwords do not match",
+            )
+            .into(),
+        ));
+    }
+    password::check_encrypt_policy(&new_nfc)?;
+    let new_kf = tool
+        .new_keyfile
+        .as_deref()
+        .map(password::keyfile_digest_from_path)
+        .transpose()?;
+    let creds = ops::NewCredentials {
+        pwd_nfc: &new_nfc,
+        keyfile_digest: new_kf.as_deref(),
+        kdf: None,
+    };
+    for item in items {
+        match tool.kind {
+            ToolKind::Rekey => ops::rekey(
+                &item.input,
+                nfc,
+                kf,
+                &creds,
+                unlock,
+                true,
+                &mut OsEntropy,
+                &mut log,
+            )?,
+            ToolKind::Reencrypt => {
+                ops::reencrypt(
+                    &item.input,
+                    nfc,
+                    kf,
+                    &creds,
+                    unlock,
+                    &mut OsEntropy,
+                    &mut log,
+                )?;
+            }
+            ToolKind::Verify => {}
+        }
+        out.outputs.push(item.input.clone());
+    }
+    Ok(out)
 }
 
 fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
@@ -1118,6 +1237,7 @@ mod tests {
             sign_identity: None,
             sign_password: None,
             restore_name: false,
+            tool: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -1160,6 +1280,7 @@ mod tests {
             sign_identity: None,
             sign_password: None,
             restore_name: false,
+            tool: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Decrypt,
@@ -1193,6 +1314,7 @@ mod tests {
             sign_identity: None,
             sign_password: None,
             restore_name: true,
+            tool: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Decrypt,
@@ -1226,6 +1348,7 @@ mod tests {
                 sign_identity: None,
                 sign_password: None,
                 restore_name: false,
+                tool: None,
                 list_only: false,
                 only: Vec::new(),
                 mode: Mode::Encrypt,
@@ -1258,6 +1381,7 @@ mod tests {
             sign_identity: None,
             sign_password: None,
             restore_name: false,
+            tool: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Decrypt,
@@ -1299,6 +1423,7 @@ mod tests {
             sign_identity: None,
             sign_password: None,
             restore_name: false,
+            tool: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -1358,6 +1483,7 @@ mod tests {
             sign_identity: None,
             sign_password: None,
             restore_name: false,
+            tool: None,
             list_only,
             only,
             mode,
@@ -1414,6 +1540,7 @@ mod tests {
             sign_identity: sign.then(|| d.join("me.lphykey")),
             sign_password: sign.then(|| secret("identity pass m")),
             restore_name: false,
+            tool: None,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1462,6 +1589,7 @@ mod tests {
                 sign_identity: None,
                 sign_password: None,
                 restore_name: false,
+                tool: None,
                 list_only: false,
                 only: Vec::new(),
                 mode,
@@ -1516,6 +1644,7 @@ mod tests {
             sign_identity: None,
             sign_password: None,
             restore_name: false,
+            tool: None,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1599,6 +1728,7 @@ mod tests {
             sign_identity: None,
             sign_password: None,
             restore_name: false,
+            tool: None,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1658,6 +1788,7 @@ mod tests {
             sign_identity: None,
             sign_password: None,
             restore_name: false,
+            tool: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -1692,6 +1823,7 @@ mod tests {
             sign_identity: None,
             sign_password: None,
             restore_name: false,
+            tool: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -1727,6 +1859,7 @@ mod tests {
             sign_identity: None,
             sign_password: None,
             restore_name: false,
+            tool: None,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1775,6 +1908,7 @@ mod tests {
             sign_identity: None,
             sign_password: None,
             restore_name: false,
+            tool: None,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1864,6 +1998,111 @@ mod tests {
         assert!(
             restore_identity(words.join(" ").as_bytes(), &d.join("c.lphykey"), &pw, 64).is_err()
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn tools_verify_rekey_reencrypt() {
+        let d = std::env::temp_dir().join(format!("lphy-gui-tools-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("a.txt"), b"tool test").unwrap();
+        let job = |mode, input: &str, pw: &str, tool: Option<Tool>| Job {
+            hybrid: Vec::new(),
+            sign_identity: None,
+            sign_password: None,
+            restore_name: false,
+            tool,
+            list_only: false,
+            only: Vec::new(),
+            mode,
+            items: vec![Item {
+                input: d.join(input),
+                output: d.join("x.lphy"),
+            }],
+            password: secret(pw),
+            confirm: Some(secret(pw)),
+            kdf_mib: 64,
+            aes: false,
+            pad: true,
+            allow_cloud: false,
+            keyfile: None,
+            secure_delete: false,
+            split: None,
+            compress: false,
+            ecc: false,
+            recover: false,
+            recipients: Vec::new(),
+            identity: None,
+        };
+        let change = |kind, new: &str| Tool {
+            kind,
+            new_password: Some(secret(new)),
+            new_confirm: Some(secret(new)),
+            new_keyfile: None,
+        };
+        let verify = Tool {
+            kind: ToolKind::Verify,
+            new_password: None,
+            new_confirm: None,
+            new_keyfile: None,
+        };
+        run(job(Mode::Encrypt, "a.txt", "old password 123", None)).unwrap();
+        let out = run(job(
+            Mode::Decrypt,
+            "x.lphy",
+            "old password 123",
+            Some(verify),
+        ))
+        .unwrap();
+        assert_eq!(out.tool, Some(ToolKind::Verify));
+        assert_eq!(out.outputs, vec![d.join("x.lphy")]);
+        // Change the password: the old one no longer opens, the new one does.
+        let before = std::fs::read(d.join("x.lphy")).unwrap();
+        run(job(
+            Mode::Decrypt,
+            "x.lphy",
+            "old password 123",
+            Some(change(ToolKind::Rekey, "new password 456")),
+        ))
+        .unwrap();
+        let v = |pw: &str| {
+            run(job(
+                Mode::Decrypt,
+                "x.lphy",
+                pw,
+                Some(Tool {
+                    kind: ToolKind::Verify,
+                    new_password: None,
+                    new_confirm: None,
+                    new_keyfile: None,
+                }),
+            ))
+            .is_ok()
+        };
+        assert!(!v("old password 123"));
+        assert!(v("new password 456"));
+        // Renewing the key changes every chunk.
+        run(job(
+            Mode::Decrypt,
+            "x.lphy",
+            "new password 456",
+            Some(change(ToolKind::Reencrypt, "third password 789")),
+        ))
+        .unwrap();
+        let after = std::fs::read(d.join("x.lphy")).unwrap();
+        assert_ne!(before[before.len() - 64..], after[after.len() - 64..]);
+        assert!(v("third password 789"));
+        // A damaged file fails verification.
+        let mut bad = after;
+        let n = bad.len();
+        bad[n - 20] ^= 1;
+        std::fs::write(d.join("x.lphy"), &bad).unwrap();
+        assert!(!v("third password 789"));
+        // Mismatched new passwords are refused.
+        let mut t = change(ToolKind::Rekey, "fourth password 000");
+        t.new_confirm = Some(secret("something else 111"));
+        assert!(run(job(Mode::Decrypt, "x.lphy", "third password 789", Some(t))).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -182,6 +182,8 @@ pub struct App {
     toast: Option<(String, f64)>,
     /// Settings: the list or one of its pages.
     settings_pane: settings_ui::Pane,
+    /// Decrypt screen › More actions (verify, change password, renew key).
+    tools: tools::Tools,
 }
 
 impl Default for App {
@@ -261,6 +263,7 @@ impl Default for App {
             reduce_motion: false,
             toast: None,
             settings_pane: settings_ui::Pane::Root,
+            tools: tools::Tools::default(),
         }
     }
 }
@@ -386,6 +389,7 @@ impl App {
     }
 
     fn reset(&mut self) {
+        self.tools.reset();
         self.source = None;
         self.output = None;
         self.stage = Stage::Pick;
@@ -513,6 +517,7 @@ impl App {
                 .flatten(),
             sign_password: (mode == Mode::Encrypt && self.sign).then(|| self.sign_password.take()),
             restore_name: mode == Mode::Decrypt && (src.paths.len() > 1 || !self.output_custom),
+            tool: self.tools.pending.take(),
             list_only,
             only: if list_only || self.listing.is_none() {
                 Vec::new()
@@ -1372,6 +1377,9 @@ impl App {
         if let Some(e) = &self.error {
             ui.add_space(8.0);
             ui.label(RichText::new(e).color(pal.danger).size(13.5));
+        }
+        if mode == Mode::Decrypt && !self.batch() && !self.editing_recipients() && !self.recover {
+            self.tools_view(ui, ctx, pal);
         }
     }
 
@@ -2659,6 +2667,15 @@ impl App {
                     _ if out.recipients_set.is_some() => {
                         tr("Alıcılar güncellendi", "Recipients updated")
                     }
+                    _ if out.tool == Some(logic::ToolKind::Verify) => {
+                        tr("Dosya sağlam", "The file is intact")
+                    }
+                    _ if out.tool == Some(logic::ToolKind::Rekey) => {
+                        tr("Parola değiştirildi", "Password changed")
+                    }
+                    _ if out.tool == Some(logic::ToolKind::Reencrypt) => {
+                        tr("Dosya anahtarı yenilendi", "File key renewed")
+                    }
                     Mode::Encrypt => tr("Şifrelendi", "Encrypted"),
                     Mode::Decrypt => tr("Şifre çözüldü", "Decrypted"),
                 })
@@ -2677,6 +2694,27 @@ impl App {
                 }
             };
             ui.label(RichText::new(name).color(pal.muted).size(14.0));
+            if let Some(t) = out.tool {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(match t {
+                        logic::ToolKind::Verify => tr(
+                            "Bütün parçalar çözüldü ve denetlendi; dosya değiştirilmemiş. Hiçbir şey yazılmadı.",
+                            "Every part was decrypted and checked; the file was not changed. Nothing was written.",
+                        ),
+                        logic::ToolKind::Rekey => tr(
+                            "Eski parola artık bu dosyayı açmaz. Dosyanın eski kopyaları eski parolayla açılmaya devam eder.",
+                            "The old password no longer opens this file. Old copies of the file still open with the old password.",
+                        ),
+                        logic::ToolKind::Reencrypt => tr(
+                            "Bütün içerik yeni bir anahtarla yeniden şifrelendi; eski parola bu dosyayı açmaz.",
+                            "All content was encrypted again with a new key; the old password does not open this file.",
+                        ),
+                    })
+                    .color(pal.muted)
+                    .size(12.5),
+                );
+            }
             if out.executables > 0 {
                 ui.add_space(6.0);
                 ui.label(
@@ -2807,6 +2845,7 @@ mod maintenance;
 mod pages;
 mod restore;
 mod settings_ui;
+mod tools;
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {

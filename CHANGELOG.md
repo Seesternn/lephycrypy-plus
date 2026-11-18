@@ -103,6 +103,9 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Desktop app: "More actions" on the decrypt screen: verify only (writes nothing), change the
+  password (rekey) and renew the file key (re-encrypt), all in place with the password typed
+  above.
 - Desktop app: Settings redesigned as grouped rows with coloured icons, values and chevrons; each
   row opens its own page with animated switches (app lock, system integration, animations),
   choice lists and notes under the groups. The GitHub repository link is at the bottom.
