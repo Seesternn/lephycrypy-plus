@@ -2794,6 +2794,10 @@ pub fn boxed() -> Box<dyn eframe::App> {
     let mut app = App::with_prefs(crate::settings::Settings::load());
     app.scan_on_start = true;
     app.reduce_motion = lephy_sys::a11y::reduce_motion();
+    if app.locked {
+        app.lock_gate.persist = true;
+        app.lock_gate.load_persisted();
+    }
     Box::new(app)
 }
 

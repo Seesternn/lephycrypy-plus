@@ -23,9 +23,28 @@ pub enum Effect {
     Submit,
 }
 
-/// Pure event handling (testable).
+/// Pure event handling of a password field (testable).
+#[cfg(test)]
 pub fn apply_event(buf: &mut SecretBytes, ev: &Event) -> Effect {
+    apply_event_with(buf, ev, false)
+}
+
+/// As [`apply_event`]; `paste` lets pasted text in (the words field: pasting from a password
+/// manager is normal there). Copy and cut stay off.
+pub fn apply_event_with(buf: &mut SecretBytes, ev: &Event, paste: bool) -> Effect {
     match ev {
+        Event::Paste(t) if paste => {
+            let t: String = t
+                .chars()
+                .map(|c| if c.is_whitespace() { ' ' } else { c })
+                .filter(|c| !c.is_control())
+                .collect();
+            if buf.push_slice(t.as_bytes()).is_ok() {
+                Effect::Changed
+            } else {
+                Effect::Swallowed
+            }
+        }
         Event::Text(t) => {
             if t.chars().any(char::is_control) {
                 return Effect::Swallowed;
@@ -69,6 +88,9 @@ pub struct SecretField {
     buf: SecretBytes,
     label_tr: &'static str,
     label_en: &'static str,
+    /// Words field: the text is shown (wrapped) and pasting is allowed; it still lives only in
+    /// locked memory, keeps no undo history and is not exposed to accessibility clients.
+    words: bool,
     /// While the field has focus, macOS Secure Event Input is on (input-monitoring processes cannot read it).
     secure: Option<lephy_sys::secure_input::SecureInputGuard>,
 }
@@ -85,8 +107,24 @@ impl SecretField {
             buf: SecretBytes::with_capacity(MAX_RAW_LEN).expect("locked arena"),
             label_tr,
             label_en,
+            words: false,
             secure: None,
         }
+    }
+
+    /// A field for paper-backup words: shown in clear, wrapped, pasting allowed.
+    #[must_use]
+    pub fn words(label_tr: &'static str, label_en: &'static str) -> Self {
+        Self {
+            words: true,
+            ..Self::new(label_tr, label_en)
+        }
+    }
+
+    /// The content (stays in locked memory).
+    #[must_use]
+    pub fn expose(&self) -> &[u8] {
+        self.buf.expose()
     }
 
     /// Changes the field's label.
@@ -148,12 +186,17 @@ impl SecretField {
     pub fn ui(&mut self, ui: &mut Ui, enabled: bool) -> (Response, bool) {
         let pal = theme::palette(ui.ctx());
         let width = ui.available_width();
+        let height = if self.words {
+            theme::CONTROL_H * 2.6
+        } else {
+            theme::CONTROL_H
+        };
         let sense = if enabled {
             Sense::click()
         } else {
             Sense::hover()
         };
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, theme::CONTROL_H), sense);
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), sense);
         if response.clicked() {
             response.request_focus();
         }
@@ -166,22 +209,35 @@ impl SecretField {
         if enabled && response.has_focus() {
             ui.input_mut(|i| {
                 let buf = &mut self.buf;
-                i.events.retain(|ev| match apply_event(buf, ev) {
-                    Effect::Ignored => true,
-                    Effect::Changed | Effect::Swallowed => false,
-                    Effect::Submit => {
-                        submit = true;
-                        false
-                    }
-                });
+                let paste = self.words;
+                i.events
+                    .retain(|ev| match apply_event_with(buf, ev, paste) {
+                        Effect::Ignored => true,
+                        Effect::Changed | Effect::Swallowed => false,
+                        Effect::Submit => {
+                            submit = true;
+                            false
+                        }
+                    });
             });
         }
         let label = crate::i18n::tr(self.label_tr, self.label_en);
+        let words = self.words;
         response.widget_info(|| {
-            let mut w = WidgetInfo::labeled(egui::accesskit::Role::PasswordInput, enabled, label);
+            // Words are not handed to accessibility clients; their count is.
+            let role = if words {
+                egui::accesskit::Role::TextInput
+            } else {
+                egui::accesskit::Role::PasswordInput
+            };
+            let mut w = WidgetInfo::labeled(role, enabled, label);
             w.current_text_value = Some(String::new());
             w
         });
+        if words {
+            self.paint_words(ui, rect, &response, enabled, label);
+            return (response, submit);
+        }
         let focused = response.has_focus();
         let stroke = if focused {
             egui::Stroke::new(1.5, pal.accent)
@@ -223,6 +279,59 @@ impl SecretField {
             );
         }
         (response, submit)
+    }
+}
+
+impl SecretField {
+    /// The words field: the text wrapped inside the box, a caret at the end.
+    fn paint_words(
+        &self,
+        ui: &Ui,
+        rect: egui::Rect,
+        response: &Response,
+        enabled: bool,
+        label: &str,
+    ) {
+        let pal = theme::palette(ui.ctx());
+        let focused = response.has_focus();
+        let stroke = if focused {
+            egui::Stroke::new(1.5, pal.accent)
+        } else {
+            egui::Stroke::new(1.0, pal.line)
+        };
+        let painter = ui.painter_at(rect.expand(2.0));
+        painter.rect(
+            rect,
+            f32::from(theme::R_INPUT),
+            pal.surface,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+        let text = std::str::from_utf8(self.buf.expose()).unwrap_or("");
+        let (shown, color) = if text.is_empty() {
+            (label.to_owned(), pal.muted)
+        } else {
+            (text.to_owned(), if enabled { pal.ink } else { pal.muted })
+        };
+        let galley = painter.layout(
+            shown,
+            egui::FontId::monospace(13.5),
+            color,
+            rect.width() - 24.0,
+        );
+        let pos = rect.left_top() + egui::vec2(12.0, 10.0);
+        let end = galley
+            .rows
+            .last()
+            .map_or(pos, |r| pos + egui::vec2(r.rect().right(), r.rect().top()));
+        painter.galley(pos, galley, color);
+        if focused {
+            let x = if text.is_empty() { pos.x } else { end.x + 1.0 };
+            painter.line_segment(
+                [egui::pos2(x, end.y + 1.0), egui::pos2(x, end.y + 17.0)],
+                egui::Stroke::new(1.5, pal.accent),
+            );
+        }
     }
 }
 
@@ -272,6 +381,29 @@ mod tests {
         assert_eq!(
             apply_event(&mut b, &Event::Text("\u{7}".into())),
             Effect::Swallowed
+        );
+    }
+
+    #[test]
+    fn words_field_allows_paste_but_not_copy() {
+        let mut b = SecretBytes::with_capacity(64).unwrap();
+        assert_eq!(
+            apply_event_with(&mut b, &Event::Paste("abacus\nzebra".into()), true),
+            Effect::Changed
+        );
+        assert_eq!(b.expose(), b"abacus zebra", "line breaks become spaces");
+        assert_eq!(
+            apply_event_with(&mut b, &Event::Copy, true),
+            Effect::Swallowed
+        );
+        assert_eq!(
+            apply_event_with(&mut b, &Event::Cut, true),
+            Effect::Swallowed
+        );
+        assert_eq!(
+            apply_event_with(&mut b, &Event::Paste("x".into()), false),
+            Effect::Swallowed,
+            "password fields still refuse paste"
         );
     }
 

@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- Desktop app: paper-backup words are typed into locked memory (no undo history, not exposed to
+  accessibility clients) instead of an ordinary text field. The app-lock wrong-try counter is kept
+  in the credential store, so restarting the app no longer resets the wait. The lock page states
+  that the command-line tool is not covered by the lock.
 - Desktop app: the app-lock verifier is also kept in the macOS keychain / Windows Credential
   Manager and that copy wins, so deleting or editing the settings file no longer removes or
   replaces the lock. Wrong passwords double the wait before the next try (up to 30 s), and the

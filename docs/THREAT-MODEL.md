@@ -233,7 +233,9 @@ credential store (macOS login keychain, generic password "app-lock" / account "l
 Windows Credential Manager, "lephycrypy+/app-lock"), and that copy wins over the file: deleting
 the settings file does not remove the lock, and writing another verifier into it does not replace
 it. Password checks run off the UI thread, and each wrong password doubles the wait before the
-next try (1 s up to 30 s; the counter resets when the app restarts).
+next try (1 s up to 30 s). The counter and the end of the wait are kept in the credential store
+too ("app-lock-fails"), so restarting the app or deleting the settings file does not reset them.
+The lock covers only the desktop app: the `lephycrypy` command-line tool does not use it.
 
 The app lock is a convenience against casual use of an unlocked computer, not protection for
 data. A program running as the same user can still delete the keychain or Credential Manager item

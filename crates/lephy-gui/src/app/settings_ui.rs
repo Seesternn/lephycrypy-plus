@@ -623,8 +623,8 @@ impl App {
             ui,
             pal,
             tr(
-                "Yalnızca uygulamanın kullanılmasını engeller; şifreli dosyalarınız zaten kendi parolaları ve anahtarlarıyla korunur. Kilit Anahtar Zinciri'nde (Windows'ta Kimlik Bilgisi Yöneticisi'nde) de saklanır.",
-                "It only keeps others from using the app; your encrypted files are protected by their own passwords and keys. The lock is also kept in the keychain (Credential Manager on Windows).",
+                "Yalnızca bu masaüstü uygulamasının kullanılmasını engeller; lephycrypy komut satırı aracı kilitten bağımsızdır. Şifreli dosyalarınız zaten kendi parolaları ve anahtarlarıyla korunur. Kilit ve yanlış deneme sayacı Anahtar Zinciri'nde (Windows'ta Kimlik Bilgisi Yöneticisi'nde) saklanır.",
+                "It only keeps others from using this desktop app; the lephycrypy command-line tool does not use the lock. Your encrypted files are protected by their own passwords and keys. The lock and the wrong-try counter are kept in the keychain (Credential Manager on Windows).",
             ),
         );
         if !self.lock_edit

@@ -24,6 +24,32 @@ pub(super) struct LockGate {
     rx: Option<(Receiver<bool>, Purpose)>,
     fails: u32,
     until: Option<Instant>,
+    /// Keep the state in the credential store (the real app; tests stay in memory).
+    pub(super) persist: bool,
+}
+
+/// Name of the back-off state in the credential store (kept there, not in the settings file,
+/// so neither restarting the app nor deleting the file resets it).
+const STORE_NAME: &str = "app-lock-fails";
+
+/// `fails` (u32 LE) ‖ end of the wait in Unix seconds (u64 LE).
+fn encode(fails: u32, until_unix: u64) -> [u8; 12] {
+    let mut b = [0u8; 12];
+    b[..4].copy_from_slice(&fails.to_le_bytes());
+    b[4..].copy_from_slice(&until_unix.to_le_bytes());
+    b
+}
+
+fn decode(b: &[u8]) -> Option<(u32, u64)> {
+    let fails = u32::from_le_bytes(b.get(..4)?.try_into().ok()?);
+    let until = u64::from_le_bytes(b.get(4..12)?.try_into().ok()?);
+    Some((fails, until))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Wait after `fails` wrong passwords in a row.
@@ -35,6 +61,32 @@ pub(super) fn backoff(fails: u32) -> Duration {
 }
 
 impl LockGate {
+    /// The back-off left over from an earlier run of the app (real app only).
+    pub(super) fn load_persisted(&mut self) {
+        if let Ok(lephy_sys::keystore::Read::Found(b)) = lephy_sys::keystore::get(STORE_NAME)
+            && let Some((fails, until)) = decode(&b)
+        {
+            self.fails = fails;
+            let left = until.saturating_sub(unix_now()).min(30);
+            self.until = (left > 0).then(|| Instant::now() + Duration::from_secs(left));
+            self.persist = true;
+        }
+    }
+
+    fn save(&self) {
+        if !self.persist {
+            return;
+        }
+        let left = self.until.map_or(0, |t| {
+            t.saturating_duration_since(Instant::now()).as_secs() + 1
+        });
+        let _ = if self.fails == 0 {
+            lephy_sys::keystore::delete(STORE_NAME)
+        } else {
+            lephy_sys::keystore::put(STORE_NAME, &encode(self.fails, unix_now() + left))
+        };
+    }
+
     /// A check is running.
     pub(super) fn busy(&self) -> bool {
         self.rx.is_some()
@@ -86,6 +138,7 @@ impl App {
             self.lock_gate.fails += 1;
             let wait = backoff(self.lock_gate.fails);
             self.lock_gate.until = Some(Instant::now() + wait);
+            self.lock_gate.save();
             self.lock_msg = Some(match lang() {
                 Lang::Tr => format!(
                     "Parola yanlış. {} sn sonra yeniden deneyin.",
@@ -97,6 +150,7 @@ impl App {
         }
         self.lock_gate.fails = 0;
         self.lock_gate.until = None;
+        self.lock_gate.save();
         match purpose {
             Purpose::Unlock => {
                 self.locked = false;
@@ -128,6 +182,15 @@ impl App {
 mod tests {
     use super::backoff;
     use std::time::Duration;
+
+    #[test]
+    fn stored_state_roundtrip() {
+        assert_eq!(
+            super::decode(&super::encode(3, 1_700_000_000)),
+            Some((3, 1_700_000_000))
+        );
+        assert_eq!(super::decode(&[1, 2, 3]), None);
+    }
 
     #[test]
     fn backoff_doubles_up_to_thirty_seconds() {

@@ -8,7 +8,6 @@ use crate::secret_field::SecretField;
 use eframe::egui::{self, RichText, Ui};
 use lephy_core::password::MIN_SCALARS;
 use std::sync::mpsc::{Receiver, TryRecvError};
-use zeroize::{Zeroize, Zeroizing};
 
 /// Words a paper backup has.
 const WORDS: usize = 22;
@@ -17,8 +16,8 @@ const WORDS: usize = 22;
 pub(super) struct Restore {
     /// The section is unfolded.
     pub(super) open: bool,
-    /// Typed words (wiped on close).
-    words: Zeroizing<String>,
+    /// Typed words: locked memory, no undo history, not exposed to accessibility clients.
+    words: SecretField,
     pw: SecretField,
     pw2: SecretField,
     job: Option<Receiver<Result<String, String>>>,
@@ -31,7 +30,7 @@ impl Default for Restore {
     fn default() -> Self {
         Self {
             open: false,
-            words: Zeroizing::new(String::new()),
+            words: SecretField::words("Kelimeler (abacus …)", "Words (abacus …)"),
             pw: SecretField::new("Yeni kimlik parolası", "New identity password"),
             pw2: SecretField::new("Yeni parolayı tekrar girin", "Repeat the new password"),
             job: None,
@@ -49,7 +48,7 @@ impl Restore {
 
     /// Wipes the words and passwords and folds the section.
     pub(super) fn reset(&mut self) {
-        self.words.zeroize();
+        self.words.clear();
         self.pw.clear();
         self.pw2.clear();
         self.open = false;
@@ -62,7 +61,7 @@ impl Restore {
             Ok(Ok(pk)) => {
                 self.job = None;
                 self.done = Some(pk);
-                self.words.zeroize();
+                self.words.clear();
             }
             Ok(Err(e)) => {
                 self.job = None;
@@ -149,15 +148,9 @@ impl App {
             .size(12.5),
         );
         ui.add_space(4.0);
-        ui.add_enabled(
-            !busy,
-            egui::TextEdit::multiline(&mut *self.restore.words)
-                .desired_rows(4)
-                .desired_width(f32::INFINITY)
-                .font(egui::TextStyle::Monospace)
-                .hint_text("abacus …"),
-        );
-        let (n, bad) = logic::check_paper_words(&self.restore.words);
+        self.restore.words.ui(ui, !busy);
+        let typed = std::str::from_utf8(self.restore.words.expose()).unwrap_or("");
+        let (n, bad) = logic::check_paper_words(typed);
         let status = word_status(n, &bad, pal);
         ui.label(RichText::new(status.0).color(status.1).size(12.5));
         ui.add_space(6.0);
@@ -201,14 +194,14 @@ impl App {
     }
 
     fn start_restore(&mut self, ctx: &egui::Context, path: std::path::PathBuf) {
-        let words = Zeroizing::new(self.restore.words.as_bytes().to_vec());
+        let words = self.restore.words.take();
         let pw = self.restore.pw.take();
         self.restore.pw2.clear();
         let kdf = self.kdf_mib;
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let r = logic::restore_identity(&words, &path, &pw, kdf)
+            let r = logic::restore_identity(words.expose(), &path, &pw, kdf)
                 .map_err(|e| logic::describe_error(&e));
             drop(pw);
             let _ = tx.send(r);
