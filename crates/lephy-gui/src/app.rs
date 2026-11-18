@@ -111,9 +111,15 @@ pub struct App {
     created_pub: Option<String>,
     /// Files received from the operating system, not yet applied.
     pending_open: Vec<PathBuf>,
-    /// Windows: the Explorer integration change awaits confirmation.
-    #[cfg_attr(not(windows), allow(dead_code))]
+    /// The settings page (language, system integration) is open instead of the drop zone.
+    show_settings: bool,
+    /// The system integration change (Explorer on Windows, Quick Action on macOS) awaits
+    /// confirmation.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     confirm_shell: bool,
+    /// Result of the last integration change, shown on the settings page.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+    settings_note: Option<String>,
 }
 
 impl Default for App {
@@ -153,7 +159,9 @@ impl Default for App {
             show_keygen: false,
             created_pub: None,
             pending_open: Vec::new(),
+            show_settings: false,
             confirm_shell: false,
+            settings_note: None,
         }
     }
 }
@@ -194,6 +202,8 @@ impl App {
 
     /// Several sources: all must suit the same operation (all encrypted or none).
     fn set_sources(&mut self, paths: &[PathBuf]) {
+        self.show_settings = false;
+        self.confirm_shell = false;
         match paths {
             [] => {}
             [one] => self.set_source(one),
@@ -567,28 +577,19 @@ impl App {
                                         .font(fonts::semibold(15.0))
                                         .color(pal.ink),
                                 );
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    // The other language's name, written in that language.
-                                    let (label, next) = match lang() {
-                                        Lang::Tr => ("English", Lang::En),
-                                        Lang::En => ("Türkçe", Lang::Tr),
-                                    };
-                                    if link_button(ui, pal, label).clicked() {
-                                        crate::i18n::set_lang(next);
-                                        if let Some(src) = &mut self.source {
-                                            let (n, d) =
-                                                logic::describe_source(&src.path, src.mode);
-                                            src.name = n;
-                                            src.detail = d;
-                                            if src.mode == Mode::Decrypt {
-                                                src.summary = logic::header_summary(&src.path);
-                                            }
+                                if matches!(self.stage, Stage::Pick) {
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if settings_button(ui, pal, self.show_settings).clicked() {
+                                            self.show_settings = !self.show_settings;
+                                            self.confirm_shell = false;
+                                            self.settings_note = None;
                                         }
-                                    }
-                                });
+                                    });
+                                }
                             });
                             ui.add_space(18.0);
                             match self.stage {
+                                Stage::Pick if self.show_settings => self.settings_view(ui, pal),
                                 Stage::Pick => self.pick_view(ui, pal),
                                 Stage::Ready => self.ready_view(ui, &ctx, pal),
                                 Stage::Running { since } => self.running_view(ui, pal, since),
@@ -687,15 +688,173 @@ impl App {
             .color(pal.muted)
             .size(12.5),
         );
+    }
+
+    /// Settings page: language and the optional system integration.
+    fn settings_view(&mut self, ui: &mut Ui, pal: Palette) {
+        ui.label(
+            RichText::new(tr("Ayarlar", "Settings"))
+                .font(fonts::semibold(17.0))
+                .color(pal.ink),
+        );
+        ui.add_space(14.0);
+        ui.label(
+            RichText::new(tr("Dil", "Language"))
+                .font(fonts::semibold(13.5))
+                .color(pal.ink),
+        );
+        ui.add_space(6.0);
+        let mut l = lang();
+        // Each language's name is written in that language.
+        segmented(
+            ui,
+            pal,
+            &mut l,
+            &[(Lang::Tr, "Türkçe", true), (Lang::En, "English", true)],
+        );
+        if l != lang() {
+            self.set_language(l);
+        }
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(tr(
+                "Başlangıçta sistem dili kullanılır; seçim kaydedilmez.",
+                "The system language is used at start; the choice is not saved.",
+            ))
+            .color(pal.muted)
+            .size(12.5),
+        );
+        #[cfg(target_os = "macos")]
+        self.quick_action(ui, pal);
         #[cfg(windows)]
         self.explorer_integration(ui, pal);
+        if let Some(note) = &self.settings_note {
+            ui.add_space(8.0);
+            ui.label(RichText::new(note.as_str()).color(pal.muted).size(12.5));
+        }
+        ui.add_space(18.0);
+        if link_button(ui, pal, tr("Bitti", "Done")).clicked() {
+            self.show_settings = false;
+            self.confirm_shell = false;
+            self.settings_note = None;
+        }
+    }
+
+    fn set_language(&mut self, next: Lang) {
+        crate::i18n::set_lang(next);
+        if let Some(src) = &mut self.source {
+            let (n, d) = logic::describe_source(&src.path, src.mode);
+            src.name = n;
+            src.detail = d;
+            if src.mode == Mode::Decrypt {
+                src.summary = logic::header_summary(&src.path);
+            }
+        }
+    }
+
+    /// macOS: add or remove the Finder Quick Action (current user only), after confirmation.
+    #[cfg(target_os = "macos")]
+    fn quick_action(&mut self, ui: &mut Ui, pal: Palette) {
+        use lephy_sys::quick_action as qa;
+        ui.add_space(22.0);
+        ui.label(
+            RichText::new(tr("Finder Hızlı İşlemi", "Finder Quick Action"))
+                .font(fonts::semibold(13.5))
+                .color(pal.ink),
+        );
+        ui.label(
+            RichText::new(tr(
+                "Finder'da bir dosya ya da klasöre sağ tıklayınca Hızlı İşlemler menüsünde “lephycrypy+ ile şifrele / aç” görünür. Yalnızca bu kullanıcı için ~/Library/Services içine yazılır.",
+                "Right-clicking a file or folder in Finder shows “Encrypt or open with lephycrypy+” under Quick Actions. Written to ~/Library/Services for this user only.",
+            ))
+            .color(pal.muted)
+            .size(12.5),
+        );
+        let in_bundle = std::env::current_exe()
+            .is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"));
+        if !in_bundle {
+            ui.label(
+                RichText::new(tr(
+                    "Yalnızca uygulama paketi (.app) olarak çalışırken kullanılabilir.",
+                    "Available only when running as an app bundle (.app).",
+                ))
+                .color(pal.muted)
+                .size(12.5),
+            );
+            return;
+        }
+        let Ok(dir) = qa::services_dir() else { return };
+        let installed = qa::is_installed(&dir);
+        if !self.confirm_shell {
+            let label = if installed {
+                tr("Hızlı İşlemi kaldır", "Remove the Quick Action")
+            } else {
+                tr("Hızlı İşlemi ekle", "Add the Quick Action")
+            };
+            if link_button(ui, pal, label).clicked() {
+                self.confirm_shell = true;
+                self.settings_note = None;
+            }
+            return;
+        }
+        ui.label(
+            RichText::new(if installed {
+                tr(
+                    "Hızlı İşlem bu kullanıcı için kaldırılacak.",
+                    "The Quick Action will be removed for this user.",
+                )
+            } else {
+                tr(
+                    "~/Library/Services/lephycrypy+.workflow oluşturulacak. Seçilen öğeleri yalnızca bu uygulamada açar; hiçbir şeyi kendiliğinden şifrelemez.",
+                    "~/Library/Services/lephycrypy+.workflow will be created. It only opens the selected items in this app; it never encrypts anything by itself.",
+                )
+            })
+            .color(pal.muted)
+            .size(12.5),
+        );
+        ui.horizontal(|ui| {
+            let ok = link_button(ui, pal, tr("Onayla", "Confirm")).clicked();
+            ui.add_space(12.0);
+            if link_button(ui, pal, tr("Vazgeç", "Cancel")).clicked() {
+                self.confirm_shell = false;
+            }
+            if ok {
+                self.confirm_shell = false;
+                let r = if installed {
+                    qa::uninstall(&dir)
+                } else {
+                    qa::install(
+                        &dir,
+                        tr(
+                            "lephycrypy+ ile şifrele / aç",
+                            "Encrypt or open with lephycrypy+",
+                        ),
+                        BUNDLE_ID,
+                    )
+                };
+                self.settings_note = Some(match (r, installed) {
+                    (Ok(()), false) => tr(
+                        "Eklendi. Finder'da bir öğeye sağ tıklayıp Hızlı İşlemler'e bakın.",
+                        "Added. Right-click an item in Finder and look under Quick Actions.",
+                    )
+                    .to_owned(),
+                    (Ok(()), true) => tr("Kaldırıldı.", "Removed.").to_owned(),
+                    (Err(e), _) => e.to_string(),
+                });
+            }
+        });
     }
 
     /// Windows: add or remove the Explorer integration (current user only), after confirmation.
     #[cfg(windows)]
     fn explorer_integration(&mut self, ui: &mut Ui, pal: Palette) {
         use lephy_sys::shell;
-        ui.add_space(10.0);
+        ui.add_space(22.0);
+        ui.label(
+            RichText::new(tr("Gezgin entegrasyonu", "Explorer integration"))
+                .font(fonts::semibold(13.5))
+                .color(pal.ink),
+        );
         let registered = shell::is_registered(shell::CLASSES);
         if !self.confirm_shell {
             let label = if registered {
@@ -757,7 +916,10 @@ impl App {
                         )
                     })
                 };
-                self.error = r.err().map(|e| e.to_string());
+                self.settings_note = Some(match r {
+                    Ok(()) => tr("Tamam.", "Done.").to_owned(),
+                    Err(e) => e.to_string(),
+                });
             }
         });
     }
@@ -2128,6 +2290,31 @@ fn segmented<T: PartialEq + Copy>(
     }
 }
 
+/// Gear icon that opens the settings page.
+fn settings_button(ui: &mut Ui, pal: Palette, open: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
+    resp.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, tr("Ayarlar", "Settings")));
+    let c = rect.center();
+    let color = if open || resp.hovered() {
+        pal.accent
+    } else {
+        pal.muted
+    };
+    let stroke = Stroke::new(1.5, color);
+    let p = ui.painter();
+    p.circle_stroke(c, 5.5, stroke);
+    p.circle_stroke(c, 2.2, stroke);
+    for i in 0..8 {
+        #[allow(clippy::cast_precision_loss)]
+        let a = std::f32::consts::FRAC_PI_4 * i as f32;
+        let d = vec2(a.cos(), a.sin());
+        p.line_segment([c + d * 5.5, c + d * 8.0], Stroke::new(2.2, color));
+    }
+    focus_ring(ui, &resp, rect, pal);
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(tr("Ayarlar", "Settings"))
+}
+
 /// "?" button in a circle.
 fn help_button(ui: &mut Ui, pal: Palette, open: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
@@ -2222,6 +2409,10 @@ fn help_card(ui: &mut Ui, pal: Palette) {
         });
     ui.add_space(8.0);
 }
+
+/// Bundle identifier of the macOS app (see `scripts/macos-app.sh`).
+#[cfg(target_os = "macos")]
+const BUNDLE_ID: &str = "io.github.seesternn.lephycrypy";
 
 /// Frameless text button (in the accent colour).
 fn link_button(ui: &mut Ui, pal: Palette, text: &str) -> Response {
@@ -2369,6 +2560,12 @@ mod tests {
         app.reset();
         assert!(matches!(app.stage, Stage::Pick));
         frame(&ctx, &mut app);
+        app.show_settings = true;
+        app.confirm_shell = true;
+        app.settings_note = Some("Not.".into());
+        frame(&ctx, &mut app);
+        app.show_settings = false;
+        app.confirm_shell = false;
 
         // Public-key mode: the list decides, no password is needed.
         app.set_source(&d.join("a.txt"));

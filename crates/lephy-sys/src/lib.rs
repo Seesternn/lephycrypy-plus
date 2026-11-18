@@ -20,6 +20,7 @@ pub mod locale;
 pub mod mem;
 pub mod open_docs;
 pub mod platform;
+pub mod quick_action;
 pub mod secure_input;
 pub mod shell;
 pub mod signal;

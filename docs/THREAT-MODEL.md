@@ -16,7 +16,8 @@ chunk size, salts and nonces, `commit_tag`, total encrypted size (± one chunk w
 number of chunks; file-system timestamps. File and key-file **paths** appear in argv (`ps`,
 Windows Event Log 4688 command-line field — depends on the audit policy, default UNVERIFIED).
 Passwords are never in argv. The desktop app receives paths in argv only from the optional
-Windows Explorer integration (`--open`).
+Windows Explorer integration (`--open`); the optional macOS Quick Action passes them briefly in
+the argv of `/usr/bin/open`.
 
 ## Rekey limit
 `rekey` does not change the file key: the old password plus a copy of the old header (256 B)
@@ -126,8 +127,11 @@ re-checking the identity and the call; system, boot and Time Machine volumes are
 - No persistent settings (`persistence`); window position and recent paths are not written to
   disk.
 - Opening files from the operating system: on macOS through the open-documents event
-  (double-click on `.lphy`, Finder "Open With", drop on the Dock icon), handled by a method that
-  `lephy-sys` adds to the window library's application delegate. On Windows the optional
+  (double-click on `.lphy`, Finder "Open With", drop on the Dock icon, and the optional Finder
+  Quick Action), handled by a method that `lephy-sys` adds to the window library's application
+  delegate. The Quick Action is a workflow in `~/Library/Services/lephycrypy+.workflow` that runs
+  only `/usr/bin/open -b <bundle id>` with the selected paths; the app removes it only while it
+  still carries the app's marker, and never touches another workflow of the same name. On Windows the optional
   Explorer integration (added and removed from the app, after confirmation, in `HKCU` only)
   starts the app with `--open "<absolute path>"`; this is the only argument the app accepts. The
   path is then visible to other processes of the same user in the process list. A received path

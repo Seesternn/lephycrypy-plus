@@ -12,9 +12,10 @@ effort** basis.
 > the security boundaries in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 
 <p>
-  <img src="docs/images/pick.png" width="32%" alt="Drop a file or folder">
-  <img src="docs/images/ready.png" width="32%" alt="Password and destination">
-  <img src="docs/images/done.png" width="32%" alt="Finished">
+  <img src="docs/images/en/pick.png" width="24%" alt="Drop a file or folder">
+  <img src="docs/images/en/ready.png" width="24%" alt="Password and destination">
+  <img src="docs/images/en/keys.png" width="24%" alt="Encrypting to public keys">
+  <img src="docs/images/en/done.png" width="24%" alt="Finished">
 </p>
 
 ## Features
@@ -32,7 +33,7 @@ effort** basis.
 - **USB mode.** Wipe a removable USB stick and write only the encrypted file to it, with identity
   checks before every destructive step.
 - **Desktop app** for macOS and Windows in English and Turkish: drag and drop, double-click `.lphy`
-  files, Finder "Open With" and an optional Explorer right-click entry.
+  files, and optional right-click entries (a Finder Quick Action, an Explorer menu entry).
 - **Engineering.** All `unsafe` code in one small crate; format checked byte for byte against an
   independent Python reference; fuzzing; `cargo deny`, `cargo audit` and `cargo vet` in CI.
 
@@ -147,14 +148,23 @@ NTFS resident files and wear levelling mean physical erasure is not guaranteed.
 4. When it is done, **Show in folder** opens the result in Finder or Explorer.
 
 On macOS, double-clicking a `.lphy` file opens it in the app, and any file or folder can be
-opened with **Open With → lephycrypy+**. On Windows, the start screen offers an optional Explorer
-integration (for the current user only) that does the same and adds a right-click entry.
+opened with **Open With → lephycrypy+**. The gear button on the start screen opens **Settings**:
+
+- **Language:** English or Turkish. The system language is used at start; the choice is not saved
+  (the app stores no settings).
+- **Finder Quick Action** (macOS, app bundle only): adds "Encrypt or open with lephycrypy+" under
+  **Quick Actions** in Finder's right-click menu. It is a small workflow in
+  `~/Library/Services` for the current user that only opens the selected items in the app.
+- **Explorer integration** (Windows): for the current user only, `.lphy` files open with a
+  double-click and every file and folder gets a right-click entry.
+
+Both integrations are added and removed only after confirmation.
 Shortcut: Cmd+O (Ctrl+O on Windows) opens the file picker.
 
 The password field is masked, copy and paste are disabled and the text is kept in locked memory.
 **Advanced settings** offer the algorithm, password-derivation memory, size hiding, compression,
 error correction, splitting, secure deletion and an optional key file; the **?** button explains
-the terms. The app follows the system light/dark theme and language.
+the terms. The app follows the system light/dark theme.
 
 ## Building
 

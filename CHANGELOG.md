@@ -61,6 +61,11 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Settings page in the desktop app (gear button on the start screen): language, and the optional
+  system integration. The language switch no longer sits on every screen.
+- macOS Finder Quick Action ("Encrypt or open with lephycrypy+" under Quick Actions in the
+  right-click menu), added and removed from Settings after confirmation, for the current user only.
+- New README screenshots in English and Turkish, including the public-key screen.
 - Documentation in English: README (Turkish version in README.tr.md), SECURITY, the file format
   and the threat model; issue and pull-request templates, and a sourced comparison with age, Picocrypt,
   VeraCrypt and Cryptomator (docs/COMPARISON.md).

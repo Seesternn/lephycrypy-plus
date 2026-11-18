@@ -12,9 +12,10 @@ indirilir.
 > [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)'de anlatılır (İngilizce).
 
 <p>
-  <img src="docs/images/pick.png" width="32%" alt="Dosya bırakma ekranı">
-  <img src="docs/images/ready.png" width="32%" alt="Parola ve kayıt yeri ekranı">
-  <img src="docs/images/done.png" width="32%" alt="İşlem tamamlandı ekranı">
+  <img src="docs/images/tr/pick.png" width="24%" alt="Dosya bırakma ekranı">
+  <img src="docs/images/tr/ready.png" width="24%" alt="Parola ve kayıt yeri ekranı">
+  <img src="docs/images/tr/keys.png" width="24%" alt="Açık anahtarla şifreleme ekranı">
+  <img src="docs/images/tr/done.png" width="24%" alt="İşlem tamamlandı ekranı">
 </p>
 
 ## Özellikler
@@ -32,7 +33,7 @@ indirilir.
 - **USB modu.** Çıkarılabilir USB belleği temizleyip yalnızca şifreli dosyayı yazar; her yıkıcı
   adımdan önce aygıt kimliğini yeniden denetler.
 - **Masaüstü uygulaması** (macOS ve Windows, Türkçe ve İngilizce): sürükle-bırak, `.lphy`
-  dosyasına çift tıklama, Finder'da "Birlikte Aç" ve isteğe bağlı Gezgin sağ tık girişi.
+  dosyasına çift tıklama, isteğe bağlı sağ tık girişleri (Finder Hızlı İşlemi, Gezgin menüsü).
 - **Mühendislik.** Tüm `unsafe` kod tek küçük crate'te; biçim bağımsız bir Python referansıyla bayt
   bayt karşılaştırılır; fuzz testleri; CI'da `cargo deny`, `cargo audit` ve `cargo vet`.
 
@@ -118,8 +119,16 @@ Ayrıntılar İngilizce README'dedir.
 4. İş bitince **Klasörde göster** sonucu Finder'da ya da Gezgin'de açar.
 
 macOS'ta `.lphy` dosyasına çift tıklamak onu uygulamada açar; her dosya ya da klasör **Birlikte
-Aç → lephycrypy+** ile açılabilir. Windows'ta açılış ekranı, yalnızca geçerli kullanıcı için
-isteğe bağlı bir Gezgin entegrasyonu (çift tıklama ve sağ tık girişi) sunar.
+Aç → lephycrypy+** ile açılabilir. Açılış ekranındaki dişli düğmesi **Ayarlar**'ı açar:
+
+- **Dil:** Türkçe ya da İngilizce. Başlangıçta sistem dili kullanılır; seçim kaydedilmez.
+- **Finder Hızlı İşlemi** (macOS, yalnızca .app paketi): Finder'da sağ tık → **Hızlı İşlemler**
+  altına "lephycrypy+ ile şifrele / aç" ekler. `~/Library/Services` içinde yalnızca geçerli
+  kullanıcı için küçük bir iş akışıdır; seçilen öğeleri yalnızca uygulamada açar.
+- **Gezgin entegrasyonu** (Windows): yalnızca geçerli kullanıcı için `.lphy` çift tıklamayla açılır,
+  her dosya ve klasöre sağ tık girişi eklenir.
+
+İki entegrasyon da yalnızca onaydan sonra eklenir ve kaldırılır.
 
 ## Derleme
 
