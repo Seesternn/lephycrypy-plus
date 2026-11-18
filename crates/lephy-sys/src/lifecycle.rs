@@ -72,59 +72,12 @@ pub fn install_macos_quit_guard(_delegate_class: &str) -> bool {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use std::ffi::{CStr, CString, c_char, c_void};
-
-    type Id = *mut c_void;
-    type Sel = *const c_void;
-
-    #[link(name = "objc")]
-    unsafe extern "C" {
-        fn objc_getClass(name: *const c_char) -> Id;
-        fn sel_registerName(name: *const c_char) -> Sel;
-        fn class_addMethod(cls: Id, name: Sel, imp: *const c_void, types: *const c_char) -> bool;
-        fn objc_msgSend();
-    }
-
-    #[link(name = "AppKit", kind = "framework")]
-    unsafe extern "C" {}
-
-    fn sel(name: &CStr) -> Sel {
-        // SAFETY: `name` is a NUL-terminated selector name; the runtime interns it.
-        unsafe { sel_registerName(name.as_ptr()) }
-    }
-
-    /// `[NSApplication sharedApplication]`.
-    fn shared_app() -> Id {
-        // SAFETY: NUL-terminated class name; AppKit is linked, so the class exists.
-        let cls = unsafe { objc_getClass(c"NSApplication".as_ptr()) };
-        if cls.is_null() {
-            return std::ptr::null_mut();
-        }
-        // SAFETY: objc_msgSend is called through a pointer of the method's exact type:
-        // `+sharedApplication` takes no arguments and returns an object.
-        let f: unsafe extern "C" fn(Id, Sel) -> Id = unsafe {
-            std::mem::transmute::<unsafe extern "C" fn(), unsafe extern "C" fn(Id, Sel) -> Id>(
-                objc_msgSend,
-            )
-        };
-        // SAFETY: `cls` is the NSApplication class object.
-        unsafe { f(cls, sel(c"sharedApplication")) }
-    }
+    use crate::objc::{Id, Sel, class, class_addMethod, sel, send_void_id, shared_app};
+    use std::ffi::{CStr, CString, c_void};
 
     /// `[NSApp <action>:nil]` for `hide:` / `unhide:`.
     pub(super) fn app_action(action: &CStr) {
-        let app = shared_app();
-        if app.is_null() {
-            return;
-        }
-        // SAFETY: as in `shared_app`; the actions take one object argument and return void.
-        let f: unsafe extern "C" fn(Id, Sel, Id) = unsafe {
-            std::mem::transmute::<unsafe extern "C" fn(), unsafe extern "C" fn(Id, Sel, Id)>(
-                objc_msgSend,
-            )
-        };
-        // SAFETY: `app` is the live shared application; nil is a valid sender.
-        unsafe { f(app, sel(action), std::ptr::null_mut()) }
+        send_void_id(shared_app(), action, std::ptr::null_mut());
     }
 
     /// `- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender`
@@ -142,8 +95,7 @@ mod macos {
         let Ok(name) = CString::new(delegate_class) else {
             return false;
         };
-        // SAFETY: NUL-terminated class name; returns nil if no such class is registered.
-        let cls = unsafe { objc_getClass(name.as_ptr()) };
+        let cls = class(&name);
         if cls.is_null() {
             return false;
         }

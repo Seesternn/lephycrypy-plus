@@ -13,12 +13,16 @@
 
 #![cfg_attr(not(test), warn(clippy::missing_errors_doc))]
 
+pub mod a11y;
 pub mod alloc;
+pub mod capture;
 pub mod fdio;
 pub mod fs;
 pub mod lifecycle;
 pub mod locale;
 pub mod mem;
+#[cfg(target_os = "macos")]
+pub(crate) mod objc;
 pub mod open_docs;
 pub mod platform;
 pub mod quarantine;

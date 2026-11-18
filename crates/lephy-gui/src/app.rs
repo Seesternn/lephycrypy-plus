@@ -170,6 +170,8 @@ pub struct App {
     stale: maintenance::Stale,
     /// Scan the usual folders for leftovers on the first frame (the real app, not tests).
     scan_on_start: bool,
+    /// The window is currently kept out of screenshots and screen sharing.
+    capture_protected: bool,
 }
 
 impl Default for App {
@@ -243,6 +245,7 @@ impl Default for App {
             settings_note: None,
             stale: maintenance::Stale::default(),
             scan_on_start: false,
+            capture_protected: false,
         }
     }
 }
@@ -770,6 +773,7 @@ impl App {
             self.stale.scan(&ctx, logic::usual_output_dirs());
         }
         self.poll(&ctx);
+        self.guard_capture();
         self.handle_signal(&ctx);
         self.handle_open_requests(&ctx);
         self.handle_drop(&ctx);
@@ -850,6 +854,26 @@ impl App {
                     });
                 });
             });
+    }
+
+    /// Secrets that would be readable in a screenshot are on screen: paper-backup words, a
+    /// generated password, the lock screen.
+    fn secret_on_screen(&self) -> bool {
+        self.paper.is_some()
+            || self.generated.is_some()
+            || (self.id_show_paper && self.page == pages::Page::Keys)
+            || self.locked
+    }
+
+    /// Keeps the window out of screenshots and screen sharing while a secret is on screen.
+    fn guard_capture(&mut self) {
+        let want = self.secret_on_screen();
+        if want != self.capture_protected {
+            self.capture_protected = want;
+            // Tests run off the main thread, where AppKit must not be touched.
+            #[cfg(not(test))]
+            let _ = lephy_sys::capture::set_protected(want);
+        }
     }
 
     fn set_language(&mut self, next: Lang) {
@@ -3200,6 +3224,16 @@ mod tests {
         app.page = pages::Page::Settings;
         frame(&ctx, &mut app);
         app.stale.found.clear();
+        assert!(!app.secret_on_screen());
+        app.generated = Some(lephy_sys::mem::SecretBytes::from_slice(b"pw").unwrap());
+        frame(&ctx, &mut app);
+        assert!(
+            app.capture_protected,
+            "a visible password hides the window from capture"
+        );
+        app.generated = None;
+        frame(&ctx, &mut app);
+        assert!(!app.capture_protected);
         for step in 0..3 {
             app.page = pages::Page::Welcome;
             app.welcome_step = step;

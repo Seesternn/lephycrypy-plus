@@ -33,6 +33,7 @@ features = [
     "Win32_Globalization",  # locale.rs: GetUserDefaultUILanguage
     "Win32_System_Registry", # shell.rs: per-user Explorer integration (HKCU)
     "Win32_UI_Shell",        # shell.rs: SHChangeNotify after (un)registering
+    "Win32_UI_WindowsAndMessaging", # capture.rs: window display affinity
 ]
 
 # The workspace table contains `unsafe_code = "forbid"`; this crate uses its own table.

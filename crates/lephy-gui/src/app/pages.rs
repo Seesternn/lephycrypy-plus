@@ -1172,6 +1172,14 @@ impl App {
             );
             ui.label(
                 RichText::new(tr(
+                    "Kâğıt yedeği kelimeleri, üretilen parola ya da kilit ekranı açıkken pencere ekran görüntüsünden, ekran kaydından ve ekran paylaşımından gizlenir.",
+                    "While paper-backup words, a generated password or the lock screen are shown, the window is hidden from screenshots, screen recordings and screen sharing.",
+                ))
+                .color(pal.muted)
+                .size(12.5),
+            );
+            ui.label(
+                RichText::new(tr(
                     "Kaydedilenler yalnızca dil, karşılama ekranının görüldüğü ve (açıksa) kilit doğrulayıcısıdır; dosya adı ya da parola kaydedilmez.",
                     "Only the language, whether the welcome screen was seen and (if on) the lock verifier are saved; no file names or passwords.",
                 ))

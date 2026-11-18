@@ -95,6 +95,8 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Desktop app: while paper-backup words, a generated password or the lock screen are shown, the
+  window is hidden from screenshots, screen recordings and screen sharing (macOS and Windows).
 - Desktop app: leftover `.lphy-tmp-*` items from a decryption that was cut short are found at
   start (home, Desktop, Downloads, Documents) and can be deleted after confirmation; Settings ›
   Maintenance searches any folder.

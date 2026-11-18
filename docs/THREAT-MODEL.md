@@ -99,6 +99,7 @@ while running; the final plaintext output follows the normal OS behaviour of its
 | QuickLook thumbnail cache | content (preview) + name | macOS | the tool does not use QuickLook; previews by the user may be cached; DataVault protected on 10.14+; location UNVERIFIED |
 | APFS snapshots / Time Machine local snapshots | content + name (original) | macOS | no mitigation; may remain after deleting the original |
 | iCloud Drive / OneDrive / Dropbox / Google Drive | content (plaintext to the cloud) + name | macOS, Windows | cloud-root detection → confirmation and `--allow-cloud-dir`; the list is heuristic and may be incomplete |
+| Screenshots, screen recording, screen sharing | paper-backup words, generated password | macOS, Windows | the desktop app hides its window from capture while they (or the lock screen) are shown (`NSWindowSharingNone`; `WDA_EXCLUDEFROMCAPTURE`, Windows 10 2004+); no protection against a camera or malware with administrator rights |
 | Windows Search index | content + name | Windows | temp files get `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED` (VERIFIED); final output follows the folder setting |
 | VSS shadow copies | content + name (original) | Windows | no mitigation; documented |
 | Microsoft Defender automatic sample submission | content (file to the cloud) + name | Windows | no mitigation; if cloud analysis is inconclusive the file may be sent to Microsoft (VERIFIED: https://learn.microsoft.com/en-us/defender-endpoint/cloud-protection-microsoft-antivirus-sample-submission); `SubmitSamplesConsent` is a user setting |
