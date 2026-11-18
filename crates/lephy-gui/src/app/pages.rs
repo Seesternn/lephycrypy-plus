@@ -31,6 +31,8 @@ pub(super) enum Page {
     Help,
     /// Write an encrypted file to a USB stick.
     Usb,
+    /// Open or create a folder vault.
+    Vault,
     /// Key pairs: create one, show the keys of an identity, paper backup.
     Keys,
     /// Language, app lock, system integration, about.
@@ -426,6 +428,7 @@ impl App {
     pub(super) fn go_home(&mut self) {
         self.page = Page::Home;
         self.usb.reset();
+        self.vault.page.reset();
         self.welcome_step = 0;
         self.settings_pane = super::settings_ui::Pane::Root;
         self.restore.reset();
@@ -634,19 +637,38 @@ impl App {
             .clicked();
         });
         ui.add_space(gap);
-        if action_card(
-            ui,
-            pal,
-            vec2(ui.available_width(), 114.0),
-            draw_usb,
-            tr("USB belleğe yaz", "Write to a USB stick"),
-            tr(
-                "Belleği silip üzerine yalnızca şifreli dosyayı yazar ve geri okuyarak doğrular.",
-                "Wipes the stick, writes only the encrypted file and reads it back to check.",
-            ),
-        )
-        .clicked()
-        {
+        let mut row3 = [false; 2];
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            row3[0] = action_card(
+                ui,
+                pal,
+                size,
+                draw_folder,
+                tr("Kasa", "Vault"),
+                tr(
+                    "Şifreli bir klasörü açıp içinde çalışın, sonra kilitleyin.",
+                    "Open an encrypted folder, work in it, then lock it.",
+                ),
+            )
+            .clicked();
+            row3[1] = action_card(
+                ui,
+                pal,
+                size,
+                draw_usb,
+                tr("USB belleğe yaz", "Write to a USB stick"),
+                tr(
+                    "Belleği silip yalnızca şifreli dosyayı yazar ve doğrular.",
+                    "Wipes the stick, writes only the encrypted file, checks it.",
+                ),
+            )
+            .clicked();
+        });
+        if row3[0] {
+            self.page = Page::Vault;
+        }
+        if row3[1] {
             self.page = Page::Usb;
         }
         if clicked[0] {

@@ -888,6 +888,7 @@ impl App {
                                     pages::Page::Decrypt => self.decrypt_view(ui, pal),
                                     pages::Page::Help => self.help_view(ui, pal),
                                     pages::Page::Usb => self.usb_view(ui, pal),
+                                    pages::Page::Vault => self.vault_page(ui, pal),
                                     pages::Page::Keys => self.keys_view(ui, pal),
                                     pages::Page::Settings => self.settings_view(ui, pal),
                                 },
@@ -2932,6 +2933,7 @@ mod restore;
 mod settings_ui;
 mod tools;
 mod usb_ui;
+mod vault_page;
 mod vault_ui;
 
 impl eframe::App for App {
@@ -3485,6 +3487,7 @@ mod tests {
             pages::Page::Decrypt,
             pages::Page::Help,
             pages::Page::Usb,
+            pages::Page::Vault,
             pages::Page::Keys,
             pages::Page::Settings,
         ] {

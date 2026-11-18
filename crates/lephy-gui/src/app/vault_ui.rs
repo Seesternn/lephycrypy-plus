@@ -36,6 +36,8 @@ pub(super) struct VaultUi {
     /// Places left from an earlier run.
     pub(super) leftovers: Vec<Place>,
     leftover_confirm: bool,
+    /// Vault page: what is being prepared.
+    pub(super) page: super::vault_page::PageForm,
 }
 
 impl VaultUi {
@@ -100,6 +102,18 @@ impl App {
             return;
         };
         let keyfile = self.keyfile.clone();
+        self.start_vault_job(ctx, path, pw, keyfile, false);
+    }
+
+    /// Opens (`create = false`) or creates and opens a vault in the background.
+    pub(super) fn start_vault_job(
+        &mut self,
+        ctx: &egui::Context,
+        path: std::path::PathBuf,
+        pw: lephy_sys::mem::SecretBytes,
+        keyfile: Option<std::path::PathBuf>,
+        create: bool,
+    ) {
         let folder = if cfg!(target_os = "macos") {
             None
         } else {
@@ -108,8 +122,12 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
-            let r = Vault::open(&path, &pw, keyfile.as_deref(), folder.as_deref())
-                .map_err(|e| logic::describe_error(&e));
+            let r = if create {
+                Vault::create(&path, &pw, keyfile.as_deref(), folder.as_deref())
+            } else {
+                Vault::open(&path, &pw, keyfile.as_deref(), folder.as_deref())
+            }
+            .map_err(|e| logic::describe_error(&e));
             drop(pw);
             let _ = tx.send(Done::Opened(r));
             ctx2.request_repaint();

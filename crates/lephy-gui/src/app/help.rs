@@ -149,8 +149,8 @@ impl Topic {
                     "A vault lets you work inside an encrypted folder without decrypting and encrypting it by hand each time.",
                 ),
                 tr(
-                    "1. Şifreli klasörü (.lphy) açın, parolasını girin ve \"Kasa olarak aç…\"a basın. Klasör Finder'da / Gezgin'de açılır.",
-                    "1. Open the encrypted folder (.lphy), enter its password and press \"Open as a vault…\". The folder opens in Finder / Explorer.",
+                    "1. Ana sayfa › Kasa: \"Kasa aç…\" ile şifreli bir klasörü (.lphy) seçip parolasını girin ya da \"Yeni boş kasa oluştur…\". Klasör Finder'da / Gezgin'de açılır.",
+                    "1. Home › Vault: choose an encrypted folder (.lphy) with \"Open a vault…\" and enter its password, or \"Create a new vault…\". The folder opens in Finder / Explorer.",
                 ),
                 tr(
                     "2. İçinde dosya ekleyin, değiştirin, silin; üstteki şerit kasanın açık olduğunu gösterir.",

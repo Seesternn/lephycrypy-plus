@@ -294,6 +294,57 @@ impl Vault {
         })
     }
 
+    /// Creates a new, empty vault at `dest` (a `.lphy` that must not exist yet) with default
+    /// settings, then opens it. The password must meet the encryption policy.
+    ///
+    /// # Errors
+    /// `dest` exists, weak password, I/O, or as [`Self::open`].
+    pub fn create(
+        dest: &Path,
+        password: &SecretBytes,
+        keyfile: Option<&Path>,
+        folder: Option<&Path>,
+    ) -> Result<Self> {
+        if dest.symlink_metadata().is_ok() {
+            return Err(Error::Exists(dest.display().to_string()));
+        }
+        let nfc = password::normalize_nfc(password)?;
+        password::check_encrypt_policy(&nfc)?;
+        let kf = keyfile
+            .map(password::keyfile_digest_from_path)
+            .transpose()?;
+        let empty = std::env::temp_dir()
+            .join(format!("lphy-new-{}", tag()?))
+            .join(folder_name(dest));
+        std::fs::create_dir_all(&empty)?;
+        let opts = EncryptOptions {
+            alg: AlgId::XChaCha20Poly1305,
+            chunk_code: 2,
+            kdf: KdfParams::DEFAULT,
+            force: false,
+            strict_memory: false,
+            raw: false,
+            pad: Some(true),
+            strict: false,
+            compress: false,
+            ecc: false,
+        };
+        let r = ops::encrypt(
+            &Input::Path(&empty),
+            dest,
+            &nfc,
+            kf.as_deref(),
+            &opts,
+            &mut OsEntropy,
+            &mut |_| {},
+        );
+        if let Some(parent) = empty.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+        r?;
+        Self::open(dest, password, keyfile, folder)
+    }
+
     /// Something in the folder changed since it was opened.
     #[must_use]
     pub fn changed(&self) -> bool {
@@ -493,6 +544,36 @@ mod tests {
         let v = Vault::open(&lphy, &secret("vault pass 1234"), None, Some(&d.join("p"))).unwrap();
         assert_eq!(std::fs::read(v.root.join("b.txt")).unwrap(), b"two");
         v.close(false).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn create_an_empty_vault() {
+        let d = std::env::temp_dir().join(format!("lphy-vault-new-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let dest = d.join("Notlar.lphy");
+        let pw = secret("new vault pass 1234");
+        let mut v = Vault::create(&dest, &pw, None, Some(&d.join("p"))).unwrap();
+        assert!(v.root.ends_with("Notlar"));
+        assert_eq!(std::fs::read_dir(&v.root).unwrap().count(), 0);
+        std::fs::write(v.root.join("ilk.txt"), b"hello").unwrap();
+        v.save().unwrap();
+        v.close(false).unwrap();
+        let v = Vault::open(&dest, &pw, None, Some(&d.join("p"))).unwrap();
+        assert_eq!(std::fs::read(v.root.join("ilk.txt")).unwrap(), b"hello");
+        v.close(false).unwrap();
+        // Never over an existing file, never with a weak password.
+        assert!(Vault::create(&dest, &pw, None, Some(&d.join("p"))).is_err());
+        assert!(
+            Vault::create(
+                &d.join("weak.lphy"),
+                &secret("short"),
+                None,
+                Some(&d.join("p"))
+            )
+            .is_err()
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

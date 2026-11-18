@@ -103,6 +103,8 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Desktop app: a Vault card on the home screen and its own page: open an existing vault or
+  create a new, empty one (name, place, password twice, optional key file).
 - Desktop app: folder vaults. "Open as a vault…" decrypts an encrypted folder to a RAM disk
   (macOS) or a hidden app folder (Windows); a bar shows it while open; "Save and lock" encrypts it
   again with the same settings, verifies and replaces the original atomically, then destroys the
