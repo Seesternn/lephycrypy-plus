@@ -186,7 +186,7 @@ pub fn split_file(path: &Path, part_size: u64) -> Result<Vec<PathBuf>> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
 mod tests {
     use super::*;
 

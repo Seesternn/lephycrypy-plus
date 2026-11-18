@@ -92,6 +92,10 @@ struct Done<'p> {
 struct Shared {
     failed: AtomicBool,
     error: Mutex<Option<Error>>,
+    /// Kurtarmada doğrulanamayan chunk numaraları.
+    bad: Mutex<Vec<u64>>,
+    /// Kurtarmada akış son chunk'tan önce bitti.
+    truncated: AtomicBool,
 }
 
 impl Shared {
@@ -145,6 +149,8 @@ enum Mode {
     /// Eski anahtarla aç, aynı tamponda yeni anahtarla mühürle: düz metin kilitli havuzdan
     /// hiç çıkmaz.
     Reencrypt,
+    /// Kurtarma: doğrulanamayan chunk sıfırla doldurulur ve numarası kaydedilir; hat durmaz.
+    Recover,
 }
 
 /// Düz metni şifreler; şifreli chunk'ları `output`'a yazar. Döner: düz metin bayt sayısı.
@@ -191,6 +197,34 @@ pub fn decrypt_stream(
     run(p, None, input, Some(output), Mode::Decrypt)
 }
 
+/// Kurtarma sonucu.
+#[derive(Debug, Default, Clone)]
+pub struct RecoverStats {
+    /// Yazılan bayt.
+    pub written: u64,
+    /// Doğrulanamayıp sıfırla doldurulan chunk numaraları (artan sırada).
+    pub bad_chunks: Vec<u64>,
+    /// Akış son chunk'tan önce bitti (dosya kesilmiş).
+    pub truncated: bool,
+}
+
+/// Kurtarma modunda çözer: doğrulanamayan chunk'lar sıfırla doldurulur. Çıktı **doğrulanmamış**
+/// veri içerebilir; yalnızca ayrı bir kurtarma çıktısına yazılmalıdır.
+///
+/// # Errors
+/// G/Ç, kesinti.
+pub fn recover_stream(
+    p: &StreamParams<'_>,
+    input: &mut (dyn Read + Send),
+    output: &mut (dyn Write + Send),
+) -> Result<RecoverStats> {
+    let mut st = RecoverStats::default();
+    st.written = run_with(p, None, input, Some(output), Mode::Recover, Some(&mut st))?;
+    st.bad_chunks.sort_unstable();
+    // Son chunk "son" bayrağıyla doğrulanamadıysa akış büyük olasılıkla kesilmiştir.
+    Ok(st)
+}
+
 /// Şifreli akışı yazmadan doğrular. Döner: düz metin bayt sayısı.
 ///
 /// # Errors
@@ -206,13 +240,24 @@ fn chunk_err(index: u32) -> Error {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn run(
     p: &StreamParams<'_>,
     next_params: Option<&StreamParams<'_>>,
     input: &mut (dyn Read + Send),
     output: Option<&mut (dyn Write + Send)>,
     mode: Mode,
+) -> Result<u64> {
+    run_with(p, next_params, input, output, mode, None)
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_with(
+    p: &StreamParams<'_>,
+    next_params: Option<&StreamParams<'_>>,
+    input: &mut (dyn Read + Send),
+    output: Option<&mut (dyn Write + Send)>,
+    mode: Mode,
+    recover: Option<&mut RecoverStats>,
 ) -> Result<u64> {
     let chunk_size = p.chunk_size;
     let stride = chunk_size + TAG_LEN + 1;
@@ -222,6 +267,8 @@ fn run(
     let shared = Shared {
         failed: AtomicBool::new(false),
         error: Mutex::new(None),
+        bad: Mutex::new(Vec::new()),
+        truncated: AtomicBool::new(false),
     };
     let (free_tx, free_rx): (Sender<Buf<'_>>, Receiver<Buf<'_>>) = bounded(nbuf);
     let (work_tx, work_rx): (Sender<Job<'_>>, Receiver<Job<'_>>) = bounded(nbuf);
@@ -259,6 +306,23 @@ fn run(
                         }
                         Mode::Decrypt | Mode::Verify => {
                             open_chunk(p.cipher, p.prefix, p.aad, index, last, buf.data, len)
+                        }
+                        Mode::Recover => {
+                            match open_chunk(p.cipher, p.prefix, p.aad, index, last, buf.data, len)
+                            {
+                                Ok(None) => {
+                                    // Doğrulanamadı: içerik güvenilmez, sıfırla değiştirilir.
+                                    let n = len.saturating_sub(TAG_LEN);
+                                    buf.data[..n].zeroize();
+                                    shared_ref
+                                        .bad
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                        .push(u64::from(index));
+                                    Ok(Some(n))
+                                }
+                                other => other,
+                            }
                         }
                         Mode::Reencrypt => {
                             match open_chunk(p.cipher, p.prefix, p.aad, index, last, buf.data, len)
@@ -356,12 +420,21 @@ fn run(
     if let Some(e) = shared.take_error() {
         return Err(e);
     }
+    if let Some(r) = recover {
+        r.bad_chunks = std::mem::take(
+            &mut *shared
+                .bad
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        r.truncated = shared.truncated.load(Ordering::Relaxed);
+    }
     let written = *total
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     Ok(match mode {
         Mode::Encrypt => plain_in,
-        Mode::Decrypt | Mode::Verify => written,
+        Mode::Decrypt | Mode::Verify | Mode::Recover => written,
         Mode::Reencrypt => {
             let per = (chunk_size + TAG_LEN) as u64;
             plain_in - plain_in.div_ceil(per) * TAG_LEN as u64
@@ -398,7 +471,7 @@ fn read_loop<'p>(
     // tampona taşınır (carry) ve son chunk tespiti böyle yapılır.
     let unit = match mode {
         Mode::Encrypt => chunk_size,
-        Mode::Decrypt | Mode::Verify | Mode::Reencrypt => chunk_size + TAG_LEN,
+        Mode::Decrypt | Mode::Verify | Mode::Reencrypt | Mode::Recover => chunk_size + TAG_LEN,
     };
     let mut carry: Option<u8> = None;
     let mut index: u64 = 0;
@@ -423,11 +496,16 @@ fn read_loop<'p>(
         };
         let idx = u32::try_from(index).map_err(|_| match mode {
             Mode::Encrypt => Error::Environment("girdi 2^32 chunk'ı aşıyor".into()),
-            Mode::Decrypt | Mode::Verify | Mode::Reencrypt => Error::Corrupt {
+            Mode::Decrypt | Mode::Verify | Mode::Reencrypt | Mode::Recover => Error::Corrupt {
                 at: "chunk 4294967296".into(),
                 detail: Some("chunk sayısı 2^32'yi aşıyor".into()),
             },
         })?;
+        if mode == Mode::Recover && len < TAG_LEN {
+            // Kurtarma: akış kesilmiş; elde olanla bitir.
+            shared.truncated.store(true, Ordering::Relaxed);
+            return Ok(total_in);
+        }
         if mode != Mode::Encrypt && len < TAG_LEN {
             // Son chunk tag'den kısa → biçim ihlali (son chunk'tan sonra artık bayt dahil).
             return Err(chunk_err(idx));

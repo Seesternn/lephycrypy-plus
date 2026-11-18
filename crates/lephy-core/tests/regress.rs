@@ -42,11 +42,12 @@ fn root() -> &'static Path {
 #[test]
 fn regress_and_seeds_replay_without_panic() {
     type Target = (&'static str, fn(&[u8]));
-    let targets: [Target; 4] = [
+    let targets: [Target; 5] = [
         ("header", logic::header),
         ("archive_entry", logic::archive_entry),
         ("names", logic::names),
         ("decrypt_known_key", logic::decrypt_known_key),
+        ("envelope", logic::envelope),
     ];
     let mut total = 0;
     for (name, f) in targets {

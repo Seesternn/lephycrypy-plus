@@ -188,3 +188,69 @@ pub fn decrypt_known_key(data: &[u8]) {
         }
     }
 }
+
+/// Error-correction envelope and Reed–Solomon decoder invariants.
+///
+/// * mode 0: an RS codeword with at most `nsym / 2` corrupted symbols always decodes back to the
+///   original message.
+/// * mode 1: arbitrary bytes parsed as an envelope never panic (strict and lenient).
+/// * mode 2: a real envelope with corrupted bytes either decodes to the original payload or
+///   fails with an error — never returns wrong data in strict mode.
+pub fn envelope(data: &[u8]) {
+    use lephy_core::envelope::{DecodeReader, EncodeWriter, HEADER_AREA, NSYM, Stats};
+    use lephy_core::rs;
+    use std::io::{Cursor, Read};
+    use std::sync::Arc;
+
+    let Some((&mode, body)) = data.split_first() else {
+        return;
+    };
+    match mode % 3 {
+        0 => {
+            let (errs, msg) = body.split_at(body.len().min(NSYM / 2 * 2));
+            let msg = &msg[..msg.len().min(255 - NSYM)];
+            let mut cw = msg.to_vec();
+            cw.extend_from_slice(&rs::encode(msg, NSYM));
+            let original = cw.clone();
+            for pair in errs.as_chunks::<2>().0 {
+                let pos = usize::from(pair[0]) % cw.len();
+                cw[pos] ^= pair[1];
+            }
+            let fixed = rs::decode(&mut cw, NSYM);
+            assert!(fixed.is_some(), "correctable codeword rejected");
+            assert_eq!(cw, original, "decoder returned wrong codeword");
+        }
+        1 => {
+            let mut area = [0u8; HEADER_AREA];
+            let n = body.len().min(HEADER_AREA);
+            area[..n].copy_from_slice(&body[..n]);
+            for lenient in [false, true] {
+                let stats = Arc::new(Stats::default());
+                if let Ok(r) = DecodeReader::with_header(&area, &body[n..], lenient, stats) {
+                    let mut sink = Vec::new();
+                    let _ = r.take(1 << 20).read_to_end(&mut sink);
+                }
+            }
+        }
+        _ => {
+            let (flips, payload) = body.split_at(body.len().min(64));
+            let mut w = EncodeWriter::new(Cursor::new(Vec::new())).expect("encoder");
+            std::io::Write::write_all(&mut w, payload).expect("write");
+            let mut disk = w.finish().expect("finish").into_inner();
+            for pair in flips.as_chunks::<2>().0 {
+                let pos = (usize::from(pair[0]) * 257) % disk.len();
+                disk[pos] ^= pair[1];
+            }
+            let mut area = [0u8; HEADER_AREA];
+            area.copy_from_slice(&disk[..HEADER_AREA]);
+            let stats = Arc::new(Stats::default());
+            if let Ok(mut r) = DecodeReader::with_header(&area, &disk[HEADER_AREA..], false, stats)
+            {
+                let mut out = Vec::new();
+                if r.read_to_end(&mut out).is_ok() {
+                    assert_eq!(out, payload, "strict envelope decode returned wrong data");
+                }
+            }
+        }
+    }
+}

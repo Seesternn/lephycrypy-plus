@@ -1,0 +1,8 @@
+//! Error-correction envelope and Reed–Solomon decoder (logic: logic.rs).
+#![no_main]
+
+#[path = "logic.rs"]
+#[allow(dead_code)] // each target uses only part of the shared logic
+mod logic;
+
+libfuzzer_sys::fuzz_target!(|data: &[u8]| logic::envelope(data));

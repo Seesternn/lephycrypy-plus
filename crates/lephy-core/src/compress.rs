@@ -175,6 +175,11 @@ impl<W: Write> InflateWriter<W> {
         Ok((self.inner, self.produced))
     }
 
+    /// İç yazıcıyı denetimsiz döndürür (kurtarma: akış yarıda kalmış olabilir).
+    pub fn into_inner(self) -> W {
+        self.inner
+    }
+
     fn trailer(&mut self, rest: &[u8]) -> io::Result<()> {
         if !self.padded && !rest.is_empty() {
             return Err(violation("sıkıştırılmış akıştan sonra veri"));
@@ -231,7 +236,7 @@ impl<W: Write> Write for InflateWriter<W> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
 mod tests {
     use super::*;
 

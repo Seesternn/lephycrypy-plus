@@ -262,6 +262,8 @@ pub struct EncryptOptions {
     pub strict: bool,
     /// Şifrelemeden önce sıkıştır (biçim v2; yan kanal uyarısı: `compress.rs`).
     pub compress: bool,
+    /// Çıktıyı Reed–Solomon hata düzeltme zarfına sar (`envelope.rs`; ~%7 büyür).
+    pub ecc: bool,
 }
 
 /// Şifreleme girişi.
@@ -279,7 +281,7 @@ fn encrypt_compressed(
     content_type: ContentType,
     padded: bool,
     opts: &EncryptOptions,
-    w: &mut AtomicWriter,
+    sink: &mut (dyn Write + Send),
     report: &mut EncryptReport,
 ) -> Result<u64> {
     use crate::compress::DeflateReader;
@@ -292,15 +294,15 @@ fn encrypt_compressed(
                 ));
             }
             let mut r = DeflateReader::new(stdin, false);
-            encrypt_stream(sp, &mut r, w.file()).map_err(map_adaptor)
+            encrypt_stream(sp, &mut r, &mut *sink).map_err(map_adaptor)
         }
         (Input::Path(p), ContentType::Raw) => {
             let mut r = DeflateReader::new(File::open(p)?, padded);
-            encrypt_stream(sp, &mut r, w.file()).map_err(map_adaptor)
+            encrypt_stream(sp, &mut r, &mut *sink).map_err(map_adaptor)
         }
         (Input::Path(p), ContentType::Archive) => {
             let mut r = DeflateReader::new(ArchiveWriter::new(p, opts.strict)?, padded);
-            let n = encrypt_stream(sp, &mut r, w.file()).map_err(map_adaptor)?;
+            let n = encrypt_stream(sp, &mut r, &mut *sink).map_err(map_adaptor)?;
             report.archive = Some(r.into_inner().report);
             Ok(n)
         }
@@ -521,7 +523,15 @@ pub fn encrypt(
     let cipher = SharedCipher::new(opts.alg, key32(&unlocked.data_key)?)?;
     let aad = chunk_aad(&unlocked.bytes);
     let mut w = AtomicWriter::create(output, opts.force)?;
-    w.file().write_all(&unlocked.bytes)?;
+    let file = w.file();
+    let mut ecc_w = None;
+    // Hata düzeltme açıksa her şey (başlık dahil) zarf yazıcısından geçer.
+    let sink: &mut (dyn Write + Send) = if opts.ecc {
+        ecc_w.insert(crate::envelope::EncodeWriter::new(&mut *file)?)
+    } else {
+        file
+    };
+    sink.write_all(&unlocked.bytes)?;
     let sp = StreamParams {
         cipher: &cipher,
         prefix: &unlocked.header.stream_nonce_prefix,
@@ -533,9 +543,15 @@ pub fn encrypt(
         ..Default::default()
     };
     report.plain_len = match (input, content_type, padded) {
-        _ if opts.compress => {
-            encrypt_compressed(&sp, input, content_type, padded, opts, &mut w, &mut report)?
-        }
+        _ if opts.compress => encrypt_compressed(
+            &sp,
+            input,
+            content_type,
+            padded,
+            opts,
+            &mut *sink,
+            &mut report,
+        )?,
         (Input::Stdin, _, _) => {
             let mut stdin = std::io::stdin();
             if lephy_sys::term::is_tty(&stdin) {
@@ -543,17 +559,17 @@ pub fn encrypt(
                     "stdin bir terminal; giriş verisi bekleniyor".into(),
                 ));
             }
-            encrypt_stream(&sp, &mut stdin, w.file())?
+            encrypt_stream(&sp, &mut stdin, &mut *sink)?
         }
         (Input::Path(p), ContentType::Raw, false) => {
             let mut f = File::open(p)?;
-            encrypt_stream(&sp, &mut f, w.file())?
+            encrypt_stream(&sp, &mut f, &mut *sink)?
         }
         (Input::Path(p), ContentType::Raw, true) => {
             let f = File::open(p)?;
             let len = f.metadata()?.len();
             let mut r = RawPadReader::new(f, len);
-            encrypt_stream(&sp, &mut r, w.file())?
+            encrypt_stream(&sp, &mut r, &mut *sink)?
         }
         (Input::Path(p), ContentType::Archive, pad) => {
             let aw = ArchiveWriter::new(p, opts.strict)?;
@@ -561,17 +577,20 @@ pub fn encrypt(
             let rep;
             if pad {
                 let mut r = ArchivePadReader::new(aw);
-                n = encrypt_stream(&sp, &mut r, w.file()).map_err(map_adaptor)?;
+                n = encrypt_stream(&sp, &mut r, &mut *sink).map_err(map_adaptor)?;
                 rep = r.into_inner().report;
             } else {
                 let mut r = aw;
-                n = encrypt_stream(&sp, &mut r, w.file()).map_err(map_adaptor)?;
+                n = encrypt_stream(&sp, &mut r, &mut *sink).map_err(map_adaptor)?;
                 rep = r.report;
             }
             report.archive = Some(rep);
             n
         }
     };
+    if let Some(e) = ecc_w {
+        e.finish()?;
+    }
     let outcome = w.commit(opts.force)?;
     report.noclobber_fallback = outcome.noclobber_fallback;
     Ok(report)
@@ -610,8 +629,8 @@ fn read_header(f: &mut dyn Read) -> Result<[u8; HEADER_LEN]> {
 /// # Errors
 /// 4, 1.
 pub fn info(path: &Path) -> Result<Header> {
-    let mut f = File::open(path)?;
-    let b = read_header(&mut f)?;
+    let mut input = open_input(path, false)?;
+    let b = read_header(&mut input.reader)?;
     Header::parse(&b)
 }
 
@@ -650,15 +669,67 @@ fn open_and_unlock(
 
 /// Şifreli girdi akışı: tek dosya ya da bir parça kümesinin ilki (`….001`). Döner: okuyucu ve
 /// toplam bayt.
-fn open_input(path: &Path) -> Result<(Box<dyn Read + Send>, u64)> {
-    if crate::split::is_first_part(path) {
+/// Şifreli girdi: tek dosya ya da parça kümesi; hata düzeltme zarfı varsa kendiliğinden açılır.
+struct OpenedInput {
+    reader: Box<dyn Read + Send>,
+    /// Diskteki toplam bayt (alan ön kontrolü için).
+    total: u64,
+    /// Zarf varsa onarım sayaçları.
+    stats: Option<std::sync::Arc<crate::envelope::Stats>>,
+}
+
+fn open_input(path: &Path, lenient: bool) -> Result<OpenedInput> {
+    let (mut raw, total): (Box<dyn Read + Send>, u64) = if crate::split::is_first_part(path) {
         let parts = crate::split::parts(path)?;
         let total = crate::split::total_len(&parts)?;
-        return Ok((Box::new(crate::split::JoinReader::new(parts)), total));
+        (Box::new(crate::split::JoinReader::new(parts)), total)
+    } else {
+        let f = File::open(path)?;
+        let total = f.metadata()?.len();
+        (Box::new(f), total)
+    };
+    let mut area = [0u8; crate::envelope::HEADER_AREA];
+    let mut n = 0;
+    while n < area.len() {
+        match raw.read(&mut area[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(Error::Io(e)),
+        }
     }
-    let f = File::open(path)?;
-    let total = f.metadata()?.len();
-    Ok((Box::new(f), total))
+    if n == area.len() && crate::envelope::looks_like_envelope(&area) {
+        let stats = std::sync::Arc::new(crate::envelope::Stats::default());
+        let r = crate::envelope::DecodeReader::with_header(
+            &area,
+            raw,
+            lenient,
+            std::sync::Arc::clone(&stats),
+        )
+        .map_err(Error::from_io)?;
+        return Ok(OpenedInput {
+            reader: Box::new(r),
+            total,
+            stats: Some(stats),
+        });
+    }
+    let prefix = std::io::Cursor::new(area[..n].to_vec());
+    Ok(OpenedInput {
+        reader: Box::new(prefix.chain(raw)),
+        total,
+        stats: None,
+    })
+}
+
+/// Dosya hata düzeltme zarfıyla mı sarılmış.
+#[must_use]
+pub fn has_error_correction(path: &Path) -> bool {
+    let mut b = [0u8; 8];
+    // Parça kümesinde zarf başlığı ilk parçadadır.
+    File::open(path)
+        .and_then(|mut f| f.read_exact(&mut b))
+        .is_ok()
+        && crate::envelope::looks_like_envelope(&b)
 }
 
 /// [`open_and_unlock`] gibi; parça kümelerini de okur (çözme ve doğrulama).
@@ -667,12 +738,13 @@ fn open_stream_and_unlock(
     pwd_nfc: &SecretBytes,
     keyfile_digest: Option<&[u8; 32]>,
     opts: UnlockOptions,
+    lenient: bool,
     log: &mut dyn FnMut(&str),
-) -> Result<(Box<dyn Read + Send>, u64, Unlocked)> {
-    let (mut r, total) = open_input(path)?;
-    let b = read_header(&mut r)?;
+) -> Result<(OpenedInput, Unlocked)> {
+    let mut input = open_input(path, lenient)?;
+    let b = read_header(&mut input.reader)?;
     let u = unlock_header(&b, pwd_nfc, keyfile_digest, opts, log)?;
-    Ok((r, total, u))
+    Ok((input, u))
 }
 
 /// Çözme raporu.
@@ -686,6 +758,8 @@ pub struct DecryptReport {
     pub noclobber_fallback: bool,
     /// Nihai hedef yolu.
     pub target: PathBuf,
+    /// Hata düzeltme zarfının onardığı bayt sayısı.
+    pub repaired: u64,
 }
 
 /// Çözme seçenekleri (arşiv için).
@@ -725,8 +799,9 @@ pub fn decrypt(
     opts: DecryptOptions,
     log: &mut dyn FnMut(&str),
 ) -> Result<DecryptReport> {
-    let (mut f, in_len, u) =
-        open_stream_and_unlock(path, pwd_nfc, keyfile_digest, opts.unlock, log)?;
+    let (input, u) =
+        open_stream_and_unlock(path, pwd_nfc, keyfile_digest, opts.unlock, false, log)?;
+    let (mut f, in_len, stats) = (input.reader, input.total, input.stats);
     let cipher = SharedCipher::new(u.header.alg, key32(&u.data_key)?)?;
     let aad = chunk_aad(&u.bytes);
     let sp = StreamParams {
@@ -828,6 +903,9 @@ pub fn decrypt(
             let _ = lephy_sys::fs::fsync_dir(parent);
         }
     }
+    if let Some(st) = stats {
+        report.repaired = st.corrected.load(std::sync::atomic::Ordering::Relaxed);
+    }
     Ok(report)
 }
 
@@ -847,6 +925,11 @@ impl Drop for TmpDirGuard {
 /// rekey/reencrypt yerinde değiştirir: symlink'te bağlantının kendisi, hardlink'te yalnızca bu ad
 /// değişir, eski başlık/parola gerçek dosyada ya da diğer adlarda kalırdı. Bu yüzden reddedilir.
 fn require_plain_file(path: &Path) -> Result<std::fs::Metadata> {
+    if has_error_correction(path) {
+        return Err(Error::Environment(
+            "hata düzeltmeli dosya yerinde değiştirilemez; önce çözüp yeniden şifreleyin".into(),
+        ));
+    }
     if crate::split::is_first_part(path) {
         return Err(Error::Environment(
             "parçalara bölünmüş dosya yerinde değiştirilemez; önce parçaları birleştirin".into(),
@@ -919,6 +1002,167 @@ fn place(src: &Path, dst: &Path) -> Result<bool> {
     }
 }
 
+/// Kurtarma raporu.
+#[derive(Debug, Default, Clone)]
+pub struct RecoverReport {
+    /// Kurtarılan dosya ya da klasör.
+    pub output: PathBuf,
+    /// Doğrulanamayıp sıfırla doldurulan chunk numaraları.
+    pub bad_chunks: Vec<u64>,
+    /// Chunk boyutu (bozuk bayt aralıklarını hesaplamak için).
+    pub chunk_size: usize,
+    /// Dosya kesilmiş.
+    pub truncated: bool,
+    /// Hata düzeltme zarfının onardığı bayt.
+    pub repaired: u64,
+    /// Arşivde kurtarılan giriş sayısı.
+    pub entries: usize,
+    /// Çıkarma ya da açma nerede durdu (varsa).
+    pub stopped: Option<String>,
+}
+
+impl RecoverReport {
+    /// Tamamen sağlam mı (kurtarmaya gerek yoktu).
+    #[must_use]
+    pub fn clean(&self) -> bool {
+        self.bad_chunks.is_empty() && !self.truncated && self.stopped.is_none()
+    }
+}
+
+/// Bozuk bir dosyadan kurtarılabileni çıkarır. Başlık açılabilmelidir (parola ve, varsa,
+/// hata düzeltme zarfı). Doğrulanamayan chunk'lar sıfırla doldurulur; arşivde ilk bozulmaya
+/// kadarki tam girişler çıkarılır. Çıktı **doğrulanmamış veri içerebilir** ve asla var olan bir
+/// yolun üzerine yazılmaz.
+///
+/// # Errors
+/// 3 (parola), 4 (başlık okunamaz), 7 (hedef var), 1, 130.
+#[allow(clippy::too_many_lines)]
+pub fn recover(
+    path: &Path,
+    output: &Path,
+    pwd_nfc: &SecretBytes,
+    keyfile_digest: Option<&[u8; 32]>,
+    opts: UnlockOptions,
+    log: &mut dyn FnMut(&str),
+) -> Result<RecoverReport> {
+    use crate::compress::InflateWriter;
+    if output.symlink_metadata().is_ok() {
+        return Err(Error::Exists(output.display().to_string()));
+    }
+    let (input, u) = open_stream_and_unlock(path, pwd_nfc, keyfile_digest, opts, true, log)?;
+    let (mut f, stats) = (input.reader, input.stats);
+    let cipher = SharedCipher::new(u.header.alg, key32(&u.data_key)?)?;
+    let aad = chunk_aad(&u.bytes);
+    let sp = StreamParams {
+        cipher: &cipher,
+        prefix: &u.header.stream_nonce_prefix,
+        aad: &aad,
+        chunk_size: u.header.chunk_size(),
+    };
+    let mut rep = RecoverReport {
+        output: output.to_path_buf(),
+        chunk_size: u.header.chunk_size(),
+        ..RecoverReport::default()
+    };
+    // 1) Akışı (bozuk chunk'lar sıfırlanmış) geçici, 0600 bir dosyaya çöz.
+    let parent = output
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let scratch_target = parent.join(crate::io::tmp_name(&mut OsEntropy)?);
+    let mut scratch = AtomicWriter::create(&scratch_target, false)?;
+    let st = crate::pipeline::recover_stream(&sp, &mut f, scratch.file())?;
+    rep.bad_chunks = st.bad_chunks;
+    rep.truncated = st.truncated;
+    if let Some(s) = &stats {
+        rep.repaired = s.corrected.load(std::sync::atomic::Ordering::Relaxed);
+    }
+    let stream_path = scratch.tmp_path().to_path_buf();
+    let mut stream = File::open(&stream_path)?;
+    // 2) İçerik türüne göre ikinci geçiş; ilk hatada durulur, o ana kadarki çıktı korunur.
+    let copy_until_error = |src: &mut File, dst: &mut dyn Write| -> Option<String> {
+        let mut buf = zeroize::Zeroizing::new(vec![0u8; 1 << 20]);
+        loop {
+            match src.read(&mut buf[..]) {
+                Ok(0) => return None,
+                Ok(n) => {
+                    if let Err(e) = dst.write_all(&buf[..n]) {
+                        return Some(e.to_string());
+                    }
+                }
+                Err(e) => return Some(e.to_string()),
+            }
+        }
+    };
+    match u.header.content_type {
+        ContentType::Raw => {
+            let mut w = AtomicWriter::create(output, false)?;
+            if u.header.compressed {
+                let mut iw = InflateWriter::new(w.file(), u.header.padded);
+                rep.stopped = copy_until_error(&mut stream, &mut iw);
+                if rep.stopped.is_none()
+                    && let Err(e) = iw.finish()
+                {
+                    rep.stopped = Some(e.to_string());
+                }
+            } else if u.header.padded {
+                let mut len = [0u8; 8];
+                if stream.read_exact(&mut len).is_ok() {
+                    let l = u64::from_le_bytes(len);
+                    let mut lim = (&mut stream).take(l);
+                    std::io::copy(&mut lim, w.file())?;
+                } else {
+                    rep.stopped = Some("uzunluk öneki okunamadı".into());
+                }
+            } else {
+                std::io::copy(&mut stream, w.file())?;
+            }
+            w.commit(false)?;
+        }
+        ContentType::Archive => {
+            let tmp = parent.join(crate::io::tmp_name(&mut OsEntropy)?);
+            create_tmp_dir(&tmp)?;
+            let guard = TmpDirGuard {
+                path: tmp.clone(),
+                keep: false,
+            };
+            let eo = ExtractOptions {
+                padded: u.header.padded && !u.header.compressed,
+                ..ExtractOptions::default()
+            };
+            let ex = Extractor::new(&tmp, eo)?;
+            let ex = if u.header.compressed {
+                let mut iw = InflateWriter::new(ex, u.header.padded);
+                rep.stopped = copy_until_error(&mut stream, &mut iw);
+                iw.into_inner()
+            } else {
+                let mut ex = ex;
+                rep.stopped = copy_until_error(&mut stream, &mut ex);
+                ex
+            };
+            let r = ex.salvage();
+            rep.entries = r.entries;
+            move_into_place(&tmp, output, false)?;
+            let mut guard = guard;
+            guard.keep = true;
+        }
+    }
+    drop(stream);
+    drop(scratch); // geçici düz metin akışı silinir
+    if !rep.clean() {
+        log(&format!(
+            "kurtarma: {} doğrulanamayan chunk{}",
+            rep.bad_chunks.len(),
+            if rep.truncated {
+                ", dosya kesilmiş"
+            } else {
+                ""
+            }
+        ));
+    }
+    Ok(rep)
+}
+
 /// Doğrulama (diske yazmadan). Etiketlerin yanında içerik yapısı da denetlenir: arşivde yol
 /// kuralları, yinelenen adlar, sınırlar, END ve dolgu; ham akışta PADMÉ dolgusu. Böylece
 /// `verify` geçen bir dosya `decrypt`'te biçim hatası vermez. Döner: düz metin akış uzunluğu.
@@ -932,7 +1176,8 @@ pub fn verify(
     opts: UnlockOptions,
     log: &mut dyn FnMut(&str),
 ) -> Result<u64> {
-    let (mut f, _, u) = open_stream_and_unlock(path, pwd_nfc, keyfile_digest, opts, log)?;
+    let (input, u) = open_stream_and_unlock(path, pwd_nfc, keyfile_digest, opts, false, log)?;
+    let mut f = input.reader;
     let cipher = SharedCipher::new(u.header.alg, key32(&u.data_key)?)?;
     let aad = chunk_aad(&u.bytes);
     let sp = StreamParams {
@@ -1154,6 +1399,7 @@ mod tests {
             pad,
             strict: false,
             compress: false,
+            ecc: false,
         }
     }
 
@@ -1282,6 +1528,191 @@ mod tests {
         assert!(Header::parse(&b).is_err());
         b[12] = 0x01;
         assert!(Header::parse(&b).unwrap().compressed);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn error_correction_repairs_damage_with_and_without_split() {
+        let d = tmpdir("ecc");
+        let data: Vec<u8> = (0..2_500_000u32)
+            .map(|i| i.to_le_bytes()[0] ^ 0x5a)
+            .collect();
+        std::fs::write(d.join("a.bin"), &data).unwrap();
+        let p = pwd("hata duzeltme parola");
+        let mut o = opts(true, Some(false));
+        o.ecc = true;
+        let out = d.join("e.lphy");
+        encrypt(
+            &Input::Path(&d.join("a.bin")),
+            &out,
+            &p,
+            None,
+            &o,
+            &mut OsEntropy,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(has_error_correction(&out));
+        assert!(info(&out).is_ok(), "bilgi zarfın içinden okunur");
+        // Gövdenin ortasında 900 baytlık bozulma.
+        let mut bytes = std::fs::read(&out).unwrap();
+        for x in &mut bytes[200_000..200_900] {
+            *x ^= 0xff;
+        }
+        std::fs::write(&out, &bytes).unwrap();
+        let rep = decrypt(
+            &out,
+            &Output::Path(&d.join("geri.bin"), false),
+            &p,
+            None,
+            DecryptOptions::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(d.join("geri.bin")).unwrap(), data);
+        assert_eq!(rep.repaired, 900);
+        verify(&out, &p, None, UnlockOptions::default(), &mut |_| {}).unwrap();
+        assert!(
+            require_plain_file(&out).is_err(),
+            "zarflı dosyada rekey reddedilir"
+        );
+        // Zarf + bölme.
+        let parts = crate::split::split_file(&out, crate::split::MIN_PART).unwrap();
+        assert!(parts.len() >= 2);
+        decrypt(
+            &parts[0],
+            &Output::Path(&d.join("geri2.bin"), false),
+            &p,
+            None,
+            DecryptOptions::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(d.join("geri2.bin")).unwrap(), data);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn recover_raw_zero_fills_only_damaged_chunks() {
+        let d = tmpdir("recraw");
+        // chunk_code 0 = 64 KiB; 5 chunk'lık veri.
+        let data: Vec<u8> = (0..(5 * 65536 + 100u32))
+            .map(|i| i.to_le_bytes()[1])
+            .collect();
+        std::fs::write(d.join("a.bin"), &data).unwrap();
+        let p = pwd("kurtarma parola 12");
+        let out = d.join("r.lphy");
+        encrypt(
+            &Input::Path(&d.join("a.bin")),
+            &out,
+            &p,
+            None,
+            &opts(true, Some(false)),
+            &mut OsEntropy,
+            &mut |_| {},
+        )
+        .unwrap();
+        let mut b = std::fs::read(&out).unwrap();
+        // 2. chunk'ın ortası (başlık 256 B, chunk diskte 65536+16).
+        b[256 + 65_552 + 30_000] ^= 0xff;
+        std::fs::write(&out, &b).unwrap();
+        assert!(
+            decrypt(
+                &out,
+                &Output::Path(&d.join("x"), false),
+                &p,
+                None,
+                DecryptOptions::default(),
+                &mut |_| {}
+            )
+            .is_err()
+        );
+        let rep = recover(
+            &out,
+            &d.join("kurtarilan.bin"),
+            &p,
+            None,
+            UnlockOptions::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(rep.bad_chunks, vec![1]);
+        assert!(!rep.truncated);
+        let got = std::fs::read(d.join("kurtarilan.bin")).unwrap();
+        assert_eq!(got.len(), data.len());
+        assert_eq!(&got[..65536], &data[..65536]);
+        assert!(got[65536..131_072].iter().all(|&x| x == 0));
+        assert_eq!(&got[131_072..], &data[131_072..]);
+        // Kesilmiş dosya.
+        std::fs::write(&out, &b[..b.len() - 40_000]).unwrap();
+        let rep = recover(
+            &out,
+            &d.join("kesik.bin"),
+            &p,
+            None,
+            UnlockOptions::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(rep.truncated || !rep.bad_chunks.is_empty());
+        // Var olan hedefin üzerine yazılmaz.
+        assert!(matches!(
+            recover(
+                &out,
+                &d.join("kesik.bin"),
+                &p,
+                None,
+                UnlockOptions::default(),
+                &mut |_| {}
+            ),
+            Err(Error::Exists(_))
+        ));
+        assert!(
+            crate::io::scan_stale(&d).unwrap().is_empty(),
+            "geçici dosya kalmamalı"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn recover_archive_keeps_entries_before_the_damage() {
+        let d = tmpdir("recarch");
+        let src = d.join("kaynak");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.txt"), b"ilk dosya").unwrap();
+        std::fs::write(src.join("b.bin"), vec![3u8; 300_000]).unwrap();
+        std::fs::write(src.join("c.txt"), b"son dosya").unwrap();
+        let p = pwd("kurtarma parola 12");
+        let out = d.join("ar.lphy");
+        encrypt(
+            &Input::Path(&src),
+            &out,
+            &p,
+            None,
+            &opts(false, Some(false)),
+            &mut OsEntropy,
+            &mut |_| {},
+        )
+        .unwrap();
+        let mut b = std::fs::read(&out).unwrap();
+        let mid = b.len() / 2;
+        b[mid] ^= 0x01;
+        std::fs::write(&out, &b).unwrap();
+        let rep = recover(
+            &out,
+            &d.join("kurtarilan"),
+            &p,
+            None,
+            UnlockOptions::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(!rep.bad_chunks.is_empty());
+        assert_eq!(
+            std::fs::read(d.join("kurtarilan/a.txt")).unwrap(),
+            b"ilk dosya"
+        );
+        assert!(crate::io::scan_stale(&d).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }
 

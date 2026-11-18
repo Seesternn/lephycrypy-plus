@@ -117,6 +117,10 @@ pub struct Job {
     pub split: Option<u64>,
     /// Şifrelemeden önce sıkıştır.
     pub compress: bool,
+    /// Reed–Solomon hata düzeltme zarfı ekle.
+    pub ecc: bool,
+    /// Çözmede kurtarma modu: bozuk dosyadan kurtarılabileni çıkar.
+    pub recover: bool,
 }
 
 /// İşin sonucu.
@@ -132,6 +136,12 @@ pub struct Outcome {
     pub deleted: usize,
     /// Silinemeyen (arşivden sonra değişen) yol sayısı.
     pub kept: usize,
+    /// Hata düzeltmenin onardığı bayt sayısı (çözmede).
+    pub repaired: u64,
+    /// Kurtarmada doğrulanamayıp sıfırla doldurulan bölüm sayısı.
+    pub damaged: usize,
+    /// Kurtarmada dosya kesikti ya da çıkarma yarıda kaldı.
+    pub incomplete: bool,
 }
 
 struct Ctx<'a> {
@@ -141,6 +151,7 @@ struct Ctx<'a> {
     allow_cloud: bool,
     secure_delete: bool,
     split: Option<u64>,
+    recover: bool,
 }
 
 /// İşi yürütür. Tek öğede hata doğrudan döner; toplu işte başarısız öğeler `failed`'a yazılır,
@@ -186,6 +197,7 @@ pub fn run(job: Job) -> Result<Outcome> {
                 pad: Some(job.pad),
                 strict: false,
                 compress: job.compress,
+                ecc: job.ecc,
             })
         }
         Mode::Decrypt => None,
@@ -197,6 +209,7 @@ pub fn run(job: Job) -> Result<Outcome> {
         allow_cloud: job.allow_cloud,
         secure_delete: job.secure_delete && job.mode == Mode::Encrypt,
         split: job.split.filter(|_| job.mode == Mode::Encrypt),
+        recover: job.recover && job.mode == Mode::Decrypt,
     };
     let single = job.items.len() == 1;
     let mut out = Outcome::default();
@@ -271,6 +284,21 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
                 .into(),
             ));
         }
+        if ctx.recover {
+            let r = ops::recover(
+                &item.input,
+                &item.output,
+                ctx.nfc,
+                ctx.kf,
+                ops::UnlockOptions::default(),
+                &mut log,
+            )?;
+            out.outputs.push(r.output.clone());
+            out.repaired += r.repaired;
+            out.damaged += r.bad_chunks.len();
+            out.incomplete |= r.truncated || r.stopped.is_some();
+            return Ok(());
+        }
         let rep = ops::decrypt(
             &item.input,
             &Output::Path(&item.output, false),
@@ -280,6 +308,7 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
             &mut log,
         )?;
         out.outputs.push(rep.target);
+        out.repaired += rep.repaired;
         out.skipped += rep.archive.as_ref().map_or(0, |a| a.skipped.len());
     }
     Ok(())
@@ -423,6 +452,9 @@ pub fn header_summary(path: &Path) -> Option<String> {
     if h.compressed {
         out.push_str(tr(", sıkıştırılmış", ", compressed"));
     }
+    if ops::has_error_correction(path) {
+        out.push_str(tr(", hata düzeltmeli", ", error correction"));
+    }
     if h.padded {
         out.push_str(tr(", boyut gizli", ", size hidden"));
     }
@@ -550,6 +582,8 @@ mod tests {
             secure_delete: false,
             split: None,
             compress: false,
+            ecc: false,
+            recover: false,
         };
         run(job).unwrap();
         assert_eq!(detect_mode(&d.join("x.lphy")), Mode::Decrypt);
@@ -579,6 +613,8 @@ mod tests {
             secure_delete: false,
             split: None,
             compress: false,
+            ecc: false,
+            recover: false,
         };
         let out = run(job).unwrap();
         assert_eq!(out.outputs, vec![d.join("geri.txt")]);
@@ -602,6 +638,8 @@ mod tests {
                 secure_delete: false,
                 split: None,
                 compress: false,
+                ecc: false,
+                recover: false,
             };
             let e = run(job).unwrap_err();
             assert_eq!(e.exit_code(), ExitCode::Io);
@@ -624,6 +662,8 @@ mod tests {
             secure_delete: false,
             split: None,
             compress: false,
+            ecc: false,
+            recover: false,
         };
         let e = run(job).unwrap_err();
         assert_eq!(e.exit_code(), ExitCode::WrongPassword);
@@ -659,6 +699,8 @@ mod tests {
             secure_delete: true,
             split: None,
             compress: false,
+            ecc: false,
+            recover: false,
         };
         let out = run(job).unwrap();
         assert_eq!(out.outputs.len(), 2);
@@ -679,6 +721,8 @@ mod tests {
             secure_delete: false,
             split: None,
             compress: false,
+            ecc: false,
+            recover: false,
         };
         assert!(run(job).is_err());
         let _ = std::fs::remove_dir_all(&d);
@@ -707,6 +751,8 @@ mod tests {
             secure_delete: false,
             split,
             compress: false,
+            ecc: false,
+            recover: false,
         };
         let out = run(mk(Mode::Encrypt, "a.bin", "s.lphy", Some(1024 * 1024))).unwrap();
         assert_eq!(out.outputs, vec![d.join("s.lphy.001")]);
@@ -745,6 +791,8 @@ mod tests {
             secure_delete: false,
             split: None,
             compress: false,
+            ecc: false,
+            recover: false,
         };
         run(job(Mode::Encrypt, "a.txt", "k.lphy", true)).unwrap();
         assert!(needs_keyfile(&d.join("k.lphy")));

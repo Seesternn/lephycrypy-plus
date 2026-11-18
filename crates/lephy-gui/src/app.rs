@@ -77,6 +77,10 @@ pub struct App {
     split_mib: u64,
     /// Şifrelemeden önce sıkıştır.
     compress: bool,
+    /// Hata düzeltme zarfı ekle.
+    ecc: bool,
+    /// Çözmede kurtarma modu.
+    recover: bool,
     /// Güvenli silme onayı bekleniyor (Şifrele'ye basıldı).
     confirm_delete: bool,
     /// Üretilen kelime öbeği: kullanıcı not alsın diye bir kez gösterilir (kilitli bellekte).
@@ -117,6 +121,8 @@ impl Default for App {
             secure_delete: false,
             split_mib: 0,
             compress: false,
+            ecc: false,
+            recover: false,
             confirm_delete: false,
             content_h: 0.0,
             show_help: false,
@@ -152,6 +158,7 @@ impl App {
         self.allow_cloud = false;
         self.keyfile = None;
         self.generated = None;
+        self.recover = false;
         self.keyfile_required = mode == Mode::Decrypt && logic::needs_keyfile(p);
         self.password.clear();
         self.confirm.clear();
@@ -297,6 +304,8 @@ impl App {
             secure_delete: self.secure_delete,
             split: (self.split_mib > 0).then_some(self.split_mib * 1024 * 1024),
             compress: self.compress,
+            ecc: self.ecc,
+            recover: self.recover,
         };
         self.confirm_delete = false;
         self.confirm.clear();
@@ -761,6 +770,9 @@ impl App {
             Mode::Encrypt => tr("Şifrele", "Encrypt"),
             Mode::Decrypt => tr("Şifreyi çöz", "Decrypt"),
         };
+        if mode == Mode::Decrypt && !self.batch() {
+            self.recover_option(ui, pal);
+        }
         let enabled = self.can_start();
         if self.confirm_delete && mode == Mode::Encrypt {
             self.delete_confirmation(ui, ctx, pal);
@@ -776,6 +788,41 @@ impl App {
             ui.add_space(8.0);
             ui.label(RichText::new(e).color(pal.danger).size(13.5));
         }
+    }
+
+    /// Kurtarma modu seçeneği (tek dosya çözmede).
+    fn recover_option(&mut self, ui: &mut Ui, pal: Palette) {
+        let before = self.recover;
+        ui.checkbox(
+            &mut self.recover,
+            tr(
+                "Kurtarma modu: bozuk dosyadan kurtarılabileni çıkar",
+                "Recovery mode: extract what can be saved from a damaged file",
+            ),
+        );
+        if self.recover != before
+            && let Some(src) = &self.source
+        {
+            let base = logic::default_output(&src.path, Mode::Decrypt);
+            self.output = Some(if self.recover {
+                let mut n = base.as_os_str().to_os_string();
+                n.push(".recovered");
+                PathBuf::from(n)
+            } else {
+                base
+            });
+        }
+        if self.recover {
+            ui.label(
+                RichText::new(tr(
+                    "Doğrulanamayan bölümler sıfırla doldurulur; çıktı güvenilmez veri içerebilir. Yalnızca dosya açılamıyorsa kullanın.",
+                    "Parts that fail verification are filled with zeros; the output may contain untrustworthy data. Use only when the file will not open.",
+                ))
+                .color(pal.danger)
+                .size(12.5),
+            );
+        }
+        ui.add_space(6.0);
     }
 
     /// Güvenli silme onayı: silinecekler listelenir; yalnızca açık onayla başlar.
@@ -1036,6 +1083,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn advanced(&mut self, ui: &mut Ui, pal: Palette) {
         let label = if self.show_advanced {
             tr("Gelişmiş ayarları gizle", "Hide advanced settings")
@@ -1103,6 +1151,13 @@ impl App {
                     tr(
                         "Şifrelemeden önce sıkıştır (boyut içerik hakkında ipucu verebilir)",
                         "Compress before encrypting (the size may hint at the content)",
+                    ),
+                );
+                ui.checkbox(
+                    &mut self.ecc,
+                    tr(
+                        "Hata düzeltme ekle (dosya ~%7 büyür; bozulan USB/diskte onarır)",
+                        "Add error correction (about 7% larger; repairs damage on USB sticks and disks)",
                     ),
                 );
                 ui.add_space(4.0);
@@ -1322,6 +1377,7 @@ impl App {
         });
     }
 
+    #[allow(clippy::too_many_lines)]
     fn done_view(&mut self, ui: &mut Ui, pal: Palette) {
         let Stage::Done(out) = &self.stage else {
             return;
@@ -1355,6 +1411,34 @@ impl App {
                 }
             };
             ui.label(RichText::new(name).color(pal.muted).size(14.0));
+            if out.damaged > 0 || out.incomplete {
+                ui.label(
+                    RichText::new(match lang() {
+                        Lang::Tr => format!(
+                            "Kurtarıldı: {} bölüm doğrulanamadı ve sıfırla dolduruldu{}. Çıktı güvenilmez veri içerebilir.",
+                            out.damaged,
+                            if out.incomplete { "; dosya eksik" } else { "" }
+                        ),
+                        Lang::En => format!(
+                            "Recovered: {} parts failed verification and were zero-filled{}. The output may contain untrustworthy data.",
+                            out.damaged,
+                            if out.incomplete { "; the file was incomplete" } else { "" }
+                        ),
+                    })
+                    .color(pal.danger)
+                    .size(12.5),
+                );
+            }
+            if out.repaired > 0 {
+                ui.label(
+                    RichText::new(match lang() {
+                        Lang::Tr => format!("Hata düzeltme {} baytı onardı.", out.repaired),
+                        Lang::En => format!("Error correction repaired {} bytes.", out.repaired),
+                    })
+                    .color(pal.muted)
+                    .size(12.5),
+                );
+            }
             for (n, why) in out.failed.iter().take(6) {
                 ui.label(
                     RichText::new(format!("{n}: {why}"))

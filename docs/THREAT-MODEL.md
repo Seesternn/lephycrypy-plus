@@ -125,6 +125,13 @@ xattr, ACL, resource fork, sahiplik, sert bağlar (kopya), FIFO/soket/aygıt des
 bağlar çıkarmadan sonra başka programlar için kök dışını gösterebilir (uyarı); Windows'ta
 ayrıcalık/Developer Mode yoksa kurulamaz, ağaç eksik kalır.
 
+## Error correction and recovery
+The Reed–Solomon envelope protects against accidental damage only; it adds no secrecy or
+authenticity. An attacker can rewrite it at will, and every repaired byte is still checked by
+STREAM authentication. Recovery mode deliberately writes output that failed authentication
+(damaged chunks replaced with zeros) to a new `.recovered` path and lists the damaged chunks; its
+output must be treated as untrusted and possibly incomplete.
+
 ## Diğer
 Zayıf parola; keyfile yalnızca ek faktör. Linux best-effort: test edilmez, Linux'a özgü korumalar
 (MADV_DONTDUMP, PR_SET_DUMPABLE, renameat2) doğrulanmamış sayılır. **Henüz bağımsız kriptografik

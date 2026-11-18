@@ -65,6 +65,7 @@ fn opts(alg: AlgId, chunk_code: u8, raw: bool, pad: Option<bool>) -> EncryptOpti
         pad,
         strict: false,
         compress: false,
+        ecc: false,
     }
 }
 

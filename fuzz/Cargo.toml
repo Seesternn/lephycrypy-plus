@@ -46,3 +46,10 @@ path = "fuzz_targets/decrypt_known_key.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "envelope"
+path = "fuzz_targets/envelope.rs"
+test = false
+doc = false
+bench = false

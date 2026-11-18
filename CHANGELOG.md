@@ -52,6 +52,16 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Optional error correction (`--error-correction`, and an option in the app). The encrypted file
+  is wrapped in a Reed–Solomon RS(255,239) envelope with byte interleaving (about 6.7 % larger):
+  any burst of up to 1 KiB per 30 KiB block is repaired on decryption. The inner `.lphy` file is
+  unchanged, so integrity still comes from authenticated encryption; the envelope only repairs.
+  Three header copies with checksums survive damage to the start of the file.
+- Recovery mode for damaged files (`decrypt --recover`, and "Recover a damaged file" in the app).
+  Chunks that fail authentication are replaced with zeros and listed; the result is always
+  written to a new `.recovered` path and never replaces anything. Archives keep every entry that
+  can still be read.
+- Fuzz target for the error-correction envelope and Reed–Solomon decoder.
 - Optional compression before encryption (`--compress`, and an option in the app). Files that use
   it are written as format version 2; all other files stay version 1. Documented in
   `docs/FORMAT.md` with a side-channel warning; the Python reference implementation produces new

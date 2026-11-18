@@ -969,6 +969,31 @@ impl Extractor {
         Ok(())
     }
 
+    /// Kurtarma: akış yarıda kaldı (bozulma). END ve dolgu denetlenmez, symlink kurulmaz;
+    /// o ana kadar tam yazılan girişler kalır, izinler uygulanır. Yarım kalan son dosya varsa
+    /// uyarı eklenir.
+    #[must_use]
+    pub fn salvage(mut self) -> Report {
+        if matches!(self.cur, Some(Current::File(_))) {
+            self.report.warnings.push(format!(
+                "yarım kalan dosya: {}",
+                names::escape_display(&self.cur_path)
+            ));
+        }
+        self.cur = None;
+        self.report.entries = self.entries;
+        if let Some(root) = self.root.take() {
+            let mut deferred = std::mem::take(&mut self.deferred);
+            deferred.sort_by_key(|d| std::cmp::Reverse(d.depth));
+            for d in deferred {
+                let path =
+                    String::from_utf8_lossy(&self.path_arena[d.off..d.off + d.len]).into_owned();
+                apply_metadata(&root, &path, d.mode, d.mtime);
+            }
+        }
+        self.report
+    }
+
     /// Akış bittiğinde: END/dolgu denetimi, symlink'ler, mode/mtime (derinden yüzeye).
     ///
     /// # Errors

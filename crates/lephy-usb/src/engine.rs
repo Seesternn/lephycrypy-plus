@@ -608,6 +608,7 @@ mod tests {
             pad: None,
             strict: false,
             compress: false,
+            ecc: false,
         };
         lephy_core::ops::encrypt(
             &lephy_core::ops::Input::Path(&src),

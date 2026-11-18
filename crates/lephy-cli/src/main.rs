@@ -223,6 +223,10 @@ enum Command {
         /// bilgi verebilir; saldırganın girdinin bir kısmını seçebildiği durumlarda kullanmayın.
         #[arg(long)]
         compress: bool,
+        /// Reed–Solomon hata düzeltme ekle (~%7 büyür): bozulan USB/diskteki küçük hasarları
+        /// çözerken onarır.
+        #[arg(long, visible_alias = "ecc")]
+        error_correction: bool,
         /// Çıktıyı bu boyutta parçalara böl (ör. 100m, 650m, 4g; en az 1m). Parçalar `.001`,
         /// `.002` … olarak yazılır; çözerken `.001` verilmesi yeterlidir.
         #[arg(long, value_name = "BOYUT", value_parser = parse_size)]
@@ -260,6 +264,10 @@ enum Command {
         /// Bilinen bulut senkron klasörlerine çıkarmaya onay istemeden izin ver.
         #[arg(long)]
         allow_cloud_dir: bool,
+        /// Bozuk dosyadan kurtarılabileni çıkar (varsayılan çıktı `<ad>.recovered`).
+        /// Doğrulanamayan bölümler sıfırla doldurulur; çıktı güvenilmez veri içerebilir.
+        #[arg(long, conflicts_with_all = ["stdout", "force"])]
+        recover: bool,
     },
     /// Dosyayı yazmadan doğrular.
     Verify {
@@ -675,6 +683,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             secure_delete,
             split_size,
             compress,
+            error_correction,
             yes,
         } => {
             let is_stdin = inputs.iter().any(|i| i.as_os_str() == "-");
@@ -735,6 +744,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 },
                 strict: *strict,
                 compress: *compress,
+                ecc: *error_correction,
             };
             if split_size.is_some() && is_stdin {
                 return Err(Error::Environment(
@@ -798,11 +808,60 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             rename_conflicts,
             strict,
             allow_cloud_dir,
+            recover,
         } => {
             let keyfile = keyfile_of(pw.keyfile.as_ref())?;
             let source = source_of(pw);
             let nfc = read_password(&source, "Parola: ", false, false)?;
             memory_warning(unlock.strict_memory)?;
+            if *recover {
+                let out = output.clone().unwrap_or_else(|| {
+                    let s = input
+                        .file_name()
+                        .map(|f| f.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let s = s.strip_suffix(".001").unwrap_or(&s);
+                    let base = s.strip_suffix(".lphy").unwrap_or(s);
+                    input.with_file_name(format!("{base}.recovered"))
+                });
+                cloud_check(&out, *allow_cloud_dir)?;
+                let r = ops::recover(input, &out, &nfc, keyfile.as_deref(), unlock.opts(), log)?;
+                if r.repaired > 0 {
+                    eprintln!("bilgi: hata düzeltme {} baytı onardı", r.repaired);
+                }
+                if r.clean() {
+                    eprintln!("dosya sağlam; kurtarmaya gerek yoktu → {}", disp(&out));
+                    return Ok(());
+                }
+                eprintln!(
+                    "uyarı: KURTARILAN çıktı doğrulanmamış veri içerebilir → {}",
+                    disp(&out)
+                );
+                for c in r.bad_chunks.iter().take(20) {
+                    let start = c * r.chunk_size as u64;
+                    eprintln!(
+                        "  bozuk bölüm: chunk {c} (yaklaşık {start}–{} bayt; sıfırla dolduruldu)",
+                        start + r.chunk_size as u64
+                    );
+                }
+                if r.bad_chunks.len() > 20 {
+                    eprintln!("  … ve {} chunk daha", r.bad_chunks.len() - 20);
+                }
+                if r.truncated {
+                    eprintln!("  dosya kesilmiş: son bölüm eksik");
+                }
+                if let Some(why) = &r.stopped {
+                    eprintln!(
+                        "  çıkarma {} girişten sonra durdu: {}",
+                        r.entries,
+                        escape_display(why)
+                    );
+                }
+                return Err(Error::Corrupt {
+                    at: "kurtarma".into(),
+                    detail: Some("dosya bozuktu; kısmi çıktı yazıldı".into()),
+                });
+            }
             let dopts = DecryptOptions {
                 unlock: unlock.opts(),
                 extract: ExtractOptions {
@@ -821,6 +880,9 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                     "uyarı: --stdout: son chunk doğrulanana kadar kesme tespit edilemez; çıktı kısmen yazılmış olabilir"
                 );
                 let r = ops::decrypt(input, &Output::Stdout, &nfc, keyfile.as_deref(), dopts, log)?;
+                if r.repaired > 0 {
+                    eprintln!("bilgi: hata düzeltme {} baytı onardı", r.repaired);
+                }
                 log(&format!("{} bayt çözüldü (stdout)", r.plain_len));
                 return Ok(());
             }
@@ -844,6 +906,9 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 dopts,
                 log,
             )?;
+            if r.repaired > 0 {
+                eprintln!("bilgi: hata düzeltme {} baytı onardı", r.repaired);
+            }
             if r.noclobber_fallback {
                 eprintln!(
                     "uyarı: dosya sistemi atomik noclobber desteklemiyor; kontrol-sonra-rename kullanıldı"

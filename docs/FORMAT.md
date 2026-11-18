@@ -193,3 +193,28 @@ Splitting is a container below the format and has no header flag. A file `name.l
 the last has the same size. Concatenating the parts in order gives the original file. Integrity
 comes from STREAM: a missing, truncated or reordered part fails authentication or the end-of-stream
 check.
+
+## Error-correction envelope (informative)
+
+Error correction is an outer layer around a complete `.lphy` file and has no header flag; the
+inner file is byte-for-byte what would have been written without it. A reader recognises the
+envelope by its magic.
+
+```text
+[header copy 64 B] × 3
+[block]…
+```
+
+Header copy (little-endian): `magic "LPHYRS1\0"` ‖ `version u16 = 1` ‖ `k u16 = 239` ‖
+`nsym u16 = 16` ‖ `d u16 = 128` ‖ `payload_len u64` ‖ 8 zero bytes ‖ `BLAKE3(first 32 B)`. The
+first copy whose checksum matches is used.
+
+Each block carries `d × k` payload bytes (the last block is zero-padded) as `d` Reed–Solomon
+RS(255,239) codewords over GF(2^8) (primitive polynomial `0x11d`, generator roots `α^0…α^15`).
+Payload byte `j` of a block is symbol `j / d` of codeword `j mod d`; on disk, byte `t` of a block
+is symbol `t / d` of codeword `t mod d`. A codeword corrects up to 8 symbol errors, so a burst of
+up to `8 × d` = 1024 bytes per block is repaired.
+
+A codeword that cannot be corrected is an error, except in recovery mode, where its bytes are
+passed through unchanged and STREAM authentication then marks the affected chunks as damaged.
+
