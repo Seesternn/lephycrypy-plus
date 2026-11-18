@@ -140,7 +140,7 @@ impl App {
                     self.tools.new_pw.ui(ui, true);
                     ui.add_space(4.0);
                     self.tools.new_pw2.ui(ui, true);
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let name = self.tools.new_keyfile.as_ref().map_or_else(
                             || tr("Yeni anahtar dosyası yok", "No new key file").to_owned(),
                             |p| {
@@ -154,6 +154,20 @@ impl App {
                             self.tools.new_keyfile = rfd::FileDialog::new()
                                 .set_title(tr("Yeni anahtar dosyası", "New key file"))
                                 .pick_file();
+                        }
+                        if link_button(ui, pal, tr("Yeni oluştur…", "Create new…")).clicked()
+                            && let Some(p) = rfd::FileDialog::new()
+                                .set_title(tr(
+                                    "Yeni anahtar dosyasını kaydedin",
+                                    "Save the new key file",
+                                ))
+                                .set_file_name("lephycrypy.key")
+                                .save_file()
+                        {
+                            match lephy_core::password::generate_keyfile(&p, 64) {
+                                Ok(()) => self.tools.new_keyfile = Some(p),
+                                Err(e) => self.error = Some(crate::logic::describe_error(&e)),
+                            }
                         }
                     });
                     let ok = self.tools.new_pw.char_count() >= MIN_SCALARS

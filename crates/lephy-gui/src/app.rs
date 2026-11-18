@@ -2454,6 +2454,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_lines, reason = "one row with its dialogs and hint")]
     fn keyfile_row(&mut self, ui: &mut Ui, pal: Palette, required: bool) {
         let title = if required {
             tr(
@@ -2520,6 +2521,16 @@ impl App {
                     });
                 });
             });
+        if !required && name.is_some() {
+            ui.label(
+                RichText::new(tr(
+                    "Bu anahtar dosyasını kaybederseniz parola doğru olsa da dosya açılmaz; ayrı bir yerde (ör. USB bellekte) yedekleyin.",
+                    "If you lose this key file the file cannot be opened even with the right password; back it up somewhere else (e.g. a USB stick).",
+                ))
+                .color(pal.muted)
+                .size(12.0),
+            );
+        }
         if pick
             && let Some(p) = rfd::FileDialog::new()
                 .set_title(tr("Anahtar dosyasını seçin", "Choose the key file"))
