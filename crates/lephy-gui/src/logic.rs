@@ -1052,6 +1052,42 @@ pub fn reveal_in_folder(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// The project's source repository.
+pub const REPO_URL: &str = "https://github.com/Seesternn/lephycrypy-plus";
+
+/// Opens the project's repository page in the default browser (a fixed address; no other URL
+/// is ever opened).
+///
+/// # Errors
+/// The browser could not be started.
+pub fn open_repo_page() -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("/usr/bin/open")
+            .arg(REPO_URL)
+            .env_clear()
+            .spawn()
+            .map(drop)
+    }
+    #[cfg(windows)]
+    {
+        let sys = lephy_sys::vol::win::system_directory()?;
+        let explorer = sys
+            .parent()
+            .map_or_else(|| sys.join("explorer.exe"), |w| w.join("explorer.exe"));
+        let mut cmd = std::process::Command::new(explorer);
+        cmd.arg(REPO_URL).env_clear();
+        if let Some(root) = sys.parent() {
+            cmd.env("SystemRoot", root);
+        }
+        cmd.spawn().map(drop)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Err(std::io::Error::other("not supported"))
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::too_many_lines)]
 mod tests {

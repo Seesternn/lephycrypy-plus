@@ -3,7 +3,7 @@
 //! scanned in the background at start; any folder can be scanned from Settings. Nothing is
 //! deleted without confirmation, and no path is saved.
 
-use super::{App, Palette, link_button, logic, secondary_button};
+use super::{App, Palette, link_button, logic};
 use crate::i18n::{Lang, lang, tr};
 use eframe::egui::{self, CornerRadius, RichText, Stroke, Ui};
 use lephy_core::names::escape_display;
@@ -83,9 +83,40 @@ impl App {
     }
 
     /// Settings › Maintenance: scan a chosen folder.
-    pub(super) fn stale_settings(&mut self, ui: &mut Ui, pal: Palette) {
-        let scanned = self.stale.poll();
-        if scanned == Some(0) {
+    /// A folder search is running.
+    pub(super) fn stale_busy(&self) -> bool {
+        self.stale.rx.is_some()
+    }
+
+    /// Asks for a folder and searches it in the background.
+    pub(super) fn stale_pick_folder(&mut self, ctx: &egui::Context) {
+        if self.stale_busy() {
+            return;
+        }
+        if let Some(dir) = rfd::FileDialog::new()
+            .set_title(tr("Aranacak klasörü seçin", "Choose a folder to search"))
+            .pick_folder()
+        {
+            self.stale.scan(ctx, vec![dir]);
+        }
+    }
+
+    /// Settings › Maintenance: what the last search found, and its note.
+    pub(super) fn stale_results(&mut self, ui: &mut Ui, pal: Palette) -> bool {
+        let any = !self.stale.found.is_empty() || self.stale.note.is_some();
+        if !self.stale.found.is_empty() {
+            self.stale_panel(ui, pal, false);
+        }
+        if let Some(n) = &self.stale.note {
+            ui.label(RichText::new(n).color(pal.muted).size(12.5));
+        }
+        any
+    }
+
+    /// Takes a finished folder search; notes when it found nothing. Returns whether there is
+    /// anything to show.
+    pub(super) fn stale_poll(&mut self) -> bool {
+        if self.stale.poll() == Some(0) {
             self.stale.note = Some(
                 tr(
                     "Bu klasörde yarım kalmış öğe yok.",
@@ -94,37 +125,7 @@ impl App {
                 .into(),
             );
         }
-        let busy = self.stale.rx.is_some();
-        if secondary_button(
-            ui,
-            pal,
-            if busy {
-                tr("Aranıyor…", "Searching…")
-            } else {
-                tr(
-                    "Bir klasörde yarım kalanları ara…",
-                    "Search a folder for leftovers…",
-                )
-            },
-            ui.available_width(),
-            34.0,
-        )
-        .clicked()
-            && !busy
-            && let Some(dir) = rfd::FileDialog::new()
-                .set_title(tr("Aranacak klasörü seçin", "Choose a folder to search"))
-                .pick_folder()
-        {
-            self.stale.scan(ui.ctx(), vec![dir]);
-        }
-        if !self.stale.found.is_empty() {
-            ui.add_space(8.0);
-            self.stale_panel(ui, pal, false);
-        }
-        if let Some(n) = &self.stale.note {
-            ui.add_space(6.0);
-            ui.label(RichText::new(n).color(pal.muted).size(12.5));
-        }
+        !self.stale.found.is_empty() || self.stale.note.is_some()
     }
 
     /// Count, list, delete with confirmation; `dismissable` adds "Ignore".

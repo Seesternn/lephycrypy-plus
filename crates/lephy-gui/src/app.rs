@@ -180,6 +180,8 @@ pub struct App {
     reduce_motion: bool,
     /// Short message that fades out (e.g. "Copied"): text and the time it appeared.
     toast: Option<(String, f64)>,
+    /// Settings: the list or one of its pages.
+    settings_pane: settings_ui::Pane,
 }
 
 impl Default for App {
@@ -258,6 +260,7 @@ impl Default for App {
             lock_gate: lockgate::LockGate::default(),
             reduce_motion: false,
             toast: None,
+            settings_pane: settings_ui::Pane::Root,
         }
     }
 }
@@ -893,6 +896,7 @@ impl App {
             | (stage << 8)
             | (u64::from(self.welcome_step) << 16)
             | (u64::from(self.locked) << 24)
+            | ((self.settings_pane as u64) << 32)
     }
 
     /// Esc goes one step back: from a chosen file to its page, from a page to Home.
@@ -905,6 +909,14 @@ impl App {
         }
         match self.stage {
             Stage::Ready | Stage::Done(_) => self.reset(),
+            Stage::Pick
+                if self.page == pages::Page::Settings
+                    && self.settings_pane != settings_ui::Pane::Root =>
+            {
+                self.settings_pane = settings_ui::Pane::Root;
+                self.lock_edit = false;
+                self.confirm_shell = false;
+            }
             Stage::Pick if !matches!(self.page, pages::Page::Home | pages::Page::Welcome) => {
                 self.go_home();
             }
@@ -990,19 +1002,6 @@ impl App {
     #[cfg(target_os = "macos")]
     fn quick_action(&mut self, ui: &mut Ui, pal: Palette) {
         use lephy_sys::quick_action as qa;
-        ui.label(
-            RichText::new(tr("Finder Hızlı İşlemi", "Finder Quick Action"))
-                .font(fonts::semibold(13.5))
-                .color(pal.ink),
-        );
-        ui.label(
-            RichText::new(tr(
-                "Finder'da bir dosya ya da klasöre sağ tıklayınca Hızlı İşlemler menüsünde “lephycrypy+ ile şifrele / aç” görünür. Yalnızca bu kullanıcı için ~/Library/Services içine yazılır.",
-                "Right-clicking a file or folder in Finder shows “Encrypt or open with lephycrypy+” under Quick Actions. Written to ~/Library/Services for this user only.",
-            ))
-            .color(pal.muted)
-            .size(12.5),
-        );
         let in_bundle = std::env::current_exe()
             .is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"));
         if !in_bundle {
@@ -1082,11 +1081,6 @@ impl App {
     #[cfg(windows)]
     fn explorer_integration(&mut self, ui: &mut Ui, pal: Palette) {
         use lephy_sys::shell;
-        ui.label(
-            RichText::new(tr("Gezgin entegrasyonu", "Explorer integration"))
-                .font(fonts::semibold(13.5))
-                .color(pal.ink),
-        );
         let registered = shell::is_registered(shell::CLASSES);
         if !self.confirm_shell {
             let label = if registered {
@@ -2808,6 +2802,7 @@ mod lockgate;
 mod maintenance;
 mod pages;
 mod restore;
+mod settings_ui;
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -3387,7 +3382,20 @@ mod tests {
         app.go_home();
         assert!(!app.restore.open);
         // Esc: from a page back home; motion off draws end states at once.
-        app.page = pages::Page::Settings;
+        for pane in [
+            settings_ui::Pane::Language,
+            settings_ui::Pane::Appearance,
+            settings_ui::Pane::Lock,
+            settings_ui::Pane::Maintenance,
+            settings_ui::Pane::About,
+        ] {
+            app.page = pages::Page::Settings;
+            app.settings_pane = pane;
+            app.lock_edit = pane == settings_ui::Pane::Lock;
+            frame(&ctx, &mut app);
+        }
+        app.lock_edit = false;
+        // Esc: a settings page goes back to the list, then the list goes home.
         app.handle_escape(&ctx);
         ctx.input_mut(|i| {
             i.events.push(egui::Event::Key {

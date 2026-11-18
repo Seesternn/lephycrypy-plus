@@ -99,6 +99,9 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Desktop app: Settings redesigned as grouped rows with coloured icons, values and chevrons; each
+  row opens its own page with animated switches (app lock, system integration, animations),
+  choice lists and notes under the groups. The GitHub repository link is at the bottom.
 - Desktop app: short animations (page and step transitions, card hover lift, folding help
   boxes, a smoothly moving progress bar, a drawn done mark, a "Copied" notice). They follow the
   system "reduce motion" setting and can be turned off in Settings › Appearance. Esc goes back.

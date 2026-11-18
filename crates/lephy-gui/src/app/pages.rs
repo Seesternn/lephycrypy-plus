@@ -412,6 +412,7 @@ impl App {
     pub(super) fn go_home(&mut self) {
         self.page = Page::Home;
         self.welcome_step = 0;
+        self.settings_pane = super::settings_ui::Pane::Root;
         self.restore.reset();
         self.confirm_shell = false;
         self.settings_note = None;
@@ -1158,141 +1159,11 @@ impl App {
     // Settings
 
     #[allow(clippy::too_many_lines, reason = "one page laid out top to bottom")]
-    pub(super) fn settings_view(&mut self, ui: &mut Ui, pal: Palette) {
-        ui.label(
-            RichText::new(tr("Ayarlar", "Settings"))
-                .font(fonts::semibold(20.0))
-                .color(pal.ink),
-        );
-        ui.add_space(12.0);
-        section(
-            ui,
-            pal,
-            tr("Dil", "Language"),
-            tr(
-                "Uygulamanın dili. Seçiminiz kaydedilir.",
-                "The app's language. Your choice is saved.",
-            ),
-            |ui| self.language_choice(ui),
-        );
-        section(ui, pal, tr("Görünüm", "Appearance"), "", |ui| {
-            let mut on = !self.prefs.anim_off;
-            if ui
-                .checkbox(&mut on, tr("Animasyonlar", "Animations"))
-                .changed()
-            {
-                self.prefs.anim_off = !on;
-                self.save_prefs();
-            }
-            let note = if self.reduce_motion {
-                tr(
-                    "Sistemde \"hareketi azalt\" açık olduğu için animasyonlar kapalı.",
-                    "Animations are off because the system asks to reduce motion.",
-                )
-            } else {
-                tr(
-                    "Sayfa geçişleri, kartlar ve açılır kutular için kısa geçişler.",
-                    "Short transitions for pages, cards and folding boxes.",
-                )
-            };
-            ui.label(RichText::new(note).color(pal.muted).size(12.5));
-        });
-        section(
-            ui,
-            pal,
-            tr("Uygulama kilidi", "App lock"),
-            tr(
-                "Açıkken uygulama her başlatıldığında bir parola ister. Yalnızca uygulamanın kullanılmasını engeller; şifreli dosyalarınız zaten kendi parolaları ve anahtarlarıyla korunur.",
-                "When on, the app asks for a password every time it starts. It only keeps others from using the app; your encrypted files are protected by their own passwords and keys anyway.",
-            ),
-            |ui| self.lock_settings(ui, pal),
-        );
-        #[cfg(any(target_os = "macos", windows))]
-        section(
-            ui,
-            pal,
-            tr("Sistem entegrasyonu", "System integration"),
-            "",
-            |ui| {
-                #[cfg(target_os = "macos")]
-                self.quick_action(ui, pal);
-                #[cfg(windows)]
-                self.explorer_integration(ui, pal);
-            },
-        );
-        section(
-            ui,
-            pal,
-            tr("Bakım", "Maintenance"),
-            tr(
-                "Uygulama ya da bilgisayar bir şifre çözme sırasında kapanırsa, hedef klasörde şifresi çözülmüş veri içeren gizli bir .lphy-tmp öğesi kalabilir. Açılışta Masaüstü, İndirilenler, Belgeler ve ev klasörü kendiliğinden taranır; başka bir klasörü buradan tarayabilirsiniz.",
-                "If the app or the computer stops during a decryption, a hidden .lphy-tmp item with decrypted data can be left in the destination folder. Desktop, Downloads, Documents and the home folder are checked at start; search any other folder here.",
-            ),
-            |ui| self.stale_settings(ui, pal),
-        );
-        section(ui, pal, tr("Hakkında", "About"), "", |ui| {
-            ui.label(
-                RichText::new(format!(
-                    "lephycrypy+ {} · Apache License 2.0",
-                    env!("CARGO_PKG_VERSION")
-                ))
-                .color(pal.ink)
-                .size(13.0),
-            );
-            ui.label(
-                RichText::new(tr(
-                    "Kâğıt yedeği kelimeleri, üretilen parola ya da kilit ekranı açıkken pencere ekran görüntüsünden, ekran kaydından ve ekran paylaşımından gizlenir.",
-                    "While paper-backup words, a generated password or the lock screen are shown, the window is hidden from screenshots, screen recordings and screen sharing.",
-                ))
-                .color(pal.muted)
-                .size(12.5),
-            );
-            ui.label(
-                RichText::new(tr(
-                    "Kaydedilenler yalnızca dil, karşılama ekranının görüldüğü ve (açıksa) kilit doğrulayıcısıdır; dosya adı ya da parola kaydedilmez.",
-                    "Only the language, whether the welcome screen was seen and (if on) the lock verifier are saved; no file names or passwords.",
-                ))
-                .color(pal.muted)
-                .size(12.5),
-            );
-            if let Some(dir) = lephy_sys::fs::app_settings_dir() {
-                ui.label(
-                    RichText::new(escape_display(&dir.display().to_string()))
-                        .monospace()
-                        .size(11.5)
-                        .color(pal.muted),
-                );
-            }
-        });
-        if let Some(note) = &self.settings_note {
-            ui.label(RichText::new(note.as_str()).color(pal.muted).size(12.5));
-        }
-    }
-
-    #[allow(clippy::too_many_lines, reason = "one page laid out top to bottom")]
-    fn lock_settings(&mut self, ui: &mut Ui, pal: Palette) {
+    /// The lock change in progress (inside the lock page's group): the current password to turn
+    /// it off, or a new password twice to turn it on.
+    pub(super) fn lock_settings(&mut self, ui: &mut Ui, pal: Palette) {
         let on = self.prefs.lock.is_some();
-        ui.label(
-            RichText::new(if on {
-                tr("Durum: açık", "Status: on")
-            } else {
-                tr("Durum: kapalı", "Status: off")
-            })
-            .color(if on { pal.ok } else { pal.muted })
-            .size(13.0),
-        );
-        ui.add_space(6.0);
-        if !self.lock_edit {
-            let label = if on {
-                tr("Kilidi kapat…", "Turn the lock off…")
-            } else {
-                tr("Kilidi aç…", "Turn the lock on…")
-            };
-            if link_button(ui, pal, label).clicked() {
-                self.lock_edit = true;
-                self.lock_msg = None;
-            }
-        } else if on {
+        if on {
             // Turning off needs the current password.
             self.lock_pw.ui(ui, true);
             ui.horizontal(|ui| {
@@ -1336,7 +1207,7 @@ impl App {
                     .add_enabled(
                         long && same,
                         egui::Button::new(
-                            RichText::new(tr("Kilidi aç", "Turn on"))
+                            RichText::new(tr("Kaydet ve kilidi aç", "Save and turn on"))
                                 .color(pal.accent)
                                 .size(14.0),
                         )
