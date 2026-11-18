@@ -21,6 +21,8 @@ lephy-core = { workspace = true }
 lephy-sys = { workspace = true }
 zeroize = { workspace = true }
 subtle = { workspace = true }
+# Vault change detection (a fingerprint of the open folder).
+blake3 = { workspace = true }
 
 # persistence off, clipboard off, embedded fonts (default_fonts:
 # Ubuntu/UFL + emoji/OFL) off — a system font is loaded at run time. glow (OpenGL):

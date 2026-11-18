@@ -188,6 +188,8 @@ pub struct App {
     preview: Option<preview_ui::PreviewState>,
     /// Write to USB page.
     usb: usb_ui::Usb,
+    /// Open folder vault, its background steps and leftovers.
+    vault: vault_ui::VaultUi,
 }
 
 impl Default for App {
@@ -270,6 +272,7 @@ impl Default for App {
             tools: tools::Tools::default(),
             preview: None,
             usb: usb_ui::Usb::default(),
+            vault: vault_ui::VaultUi::default(),
         }
     }
 }
@@ -413,7 +416,7 @@ impl App {
     }
 
     fn running(&self) -> bool {
-        self.job.is_some() || self.usb.busy()
+        self.job.is_some() || self.usb.busy() || self.vault.busy()
     }
 
     fn mode(&self) -> Option<Mode> {
@@ -610,7 +613,8 @@ impl App {
     /// SIGINT/SIGTERM/Ctrl+C: when idle, close the window; when a job runs, the job stops first (temp
     /// files removed), then it closes. Repaints regularly to notice a signal while idle.
     fn handle_signal(&mut self, ctx: &egui::Context) {
-        lephy_sys::lifecycle::set_busy(self.running());
+        // An open vault holds decrypted files: quitting asks first.
+        lephy_sys::lifecycle::set_busy(self.running() || self.vault.open.is_some());
         // SIGINT/SIGTERM: the job (if any) stops on its own; then the app closes.
         if lephy_sys::signal::signalled() {
             self.quitting = true;
@@ -794,11 +798,17 @@ impl App {
 
 impl App {
     /// The whole UI for one frame.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the frame: inputs, header, page and overlays"
+    )]
     pub fn draw(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         if std::mem::take(&mut self.scan_on_start) {
             self.stale.scan(&ctx, logic::usual_output_dirs());
+            self.vault.leftovers = crate::vault::leftovers();
         }
+        self.poll_vault();
         crate::motion::set_enabled(!self.prefs.anim_off && !self.reduce_motion);
         self.poll(&ctx);
         self.poll_lock_check(&ctx);
@@ -869,6 +879,7 @@ impl App {
                                 return;
                             }
                             self.open_request_banner(ui, &ctx, pal);
+                            self.vault_bar(ui, &ctx, pal);
                             match self.stage {
                                 Stage::Pick => match self.page {
                                     pages::Page::Welcome => self.welcome_view(ui, pal),
@@ -1394,6 +1405,7 @@ impl App {
                 {
                     self.start_preview(ctx, None);
                 }
+                self.vault_offer(ui, ctx, pal);
             }
             self.contents_view(ui, ctx, pal);
             self.recover_option(ui, pal);
@@ -2920,6 +2932,7 @@ mod restore;
 mod settings_ui;
 mod tools;
 mod usb_ui;
+mod vault_ui;
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -3484,6 +3497,9 @@ mod tests {
         app.page = pages::Page::Settings;
         frame(&ctx, &mut app);
         app.stale.found.clear();
+        app.vault.leftovers = vec![crate::vault::Place::Folder(d.join("no-such-vault"))];
+        frame(&ctx, &mut app);
+        app.vault.leftovers.clear();
         assert!(!app.secret_on_screen());
         app.generated = Some(lephy_sys::mem::SecretBytes::from_slice(b"pw").unwrap());
         frame(&ctx, &mut app);

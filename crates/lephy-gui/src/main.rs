@@ -35,6 +35,8 @@ mod secret_field;
 mod settings;
 #[cfg(any(target_os = "macos", windows))]
 mod theme;
+#[cfg(any(target_os = "macos", windows))]
+mod vault;
 
 use std::process::ExitCode;
 

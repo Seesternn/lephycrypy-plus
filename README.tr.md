@@ -193,6 +193,15 @@ adı ya da parola kaydedilmez.
 Şifreli bir arşivde **İçeriği listele**, hiçbir şey yazmadan içinde ne olduğunu gösterir; yalnızca
 işaretlediğiniz öğeler çıkarılır.
 
+### Kasa (masaüstü uygulaması)
+
+Şifreli bir klasörü açın, parolasını girin ve **Kasa olarak aç…**a basın: klasör Finder'da /
+Gezgin'de açılır ve uygulamanın üstündeki şerit kasanın açık olduğunu gösterir. İçinde her
+zamanki gibi çalışın, sonra **Kaydet ve kilitle** ile aynı parolayla yeniden şifreleyip açık
+kopyayı kaldırın. macOS'ta açık kopya bir RAM diskte (yalnızca bellekte), Windows'ta gizli bir
+uygulama klasöründe durur ve kasa kapatılınca üzerine yazılarak silinir. Kasa açıkken çıkmak
+önce sorar.
+
 ### USB belleğe yazma (masaüstü uygulaması)
 
 Ana sayfa › USB belleğe yaz: şifreli bir `.lphy` dosyası ve uygun bir USB bellek seçin, nelerin

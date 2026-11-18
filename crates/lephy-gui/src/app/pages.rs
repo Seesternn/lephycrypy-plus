@@ -1341,6 +1341,11 @@ impl App {
             return;
         }
         if !self.running() {
+            if self.vault.open.is_some() {
+                let ctx = ui.ctx().clone();
+                self.vault_quit_prompt(ui, &ctx, pal);
+                return;
+            }
             // The job finished meanwhile: quit at once.
             self.quit_confirm = false;
             self.quitting = true;

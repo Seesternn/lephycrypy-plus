@@ -21,17 +21,20 @@ pub(super) enum Topic {
     Signatures,
     /// Backups: paper words, copies, lost passwords.
     Backup,
+    /// Folder vaults.
+    Vault,
 }
 
 impl Topic {
     /// Every topic, in the order of the Help page.
-    pub(super) const ALL: [Self; 6] = [
+    pub(super) const ALL: [Self; 7] = [
         Self::PasswordOrKeys,
         Self::Identity,
         Self::PublicKeys,
         Self::OpenWithIdentity,
         Self::Signatures,
         Self::Backup,
+        Self::Vault,
     ];
 
     pub(super) fn title(self) -> &'static str {
@@ -54,10 +57,12 @@ impl Topic {
                 "Kimliğimi ya da parolamı kaybedersem?",
                 "What if I lose my identity or its password?",
             ),
+            Self::Vault => tr("Kasa nedir?", "What is a vault?"),
         }
     }
 
     /// Paragraphs; a paragraph starting with a digit and a dot is drawn as a numbered step.
+    #[allow(clippy::too_many_lines, reason = "all help texts in one place")]
     pub(super) fn body(self) -> Vec<&'static str> {
         match self {
             Self::PasswordOrKeys => vec![
@@ -136,6 +141,28 @@ impl Topic {
                 tr(
                     "İmzalamak için kimlik dosyanız ve parolası gerekir. İmza anahtarınız .pub dosyanızın ikinci satırıdır; alıcılarınız onu bilirse imzanın gerçekten sizden geldiğinden emin olur.",
                     "Signing needs your identity file and its password. Your signer key is the second line of your .pub file; recipients who know it can be sure the signature is yours.",
+                ),
+            ],
+            Self::Vault => vec![
+                tr(
+                    "Kasa, şifreli bir klasörü her seferinde çözüp yeniden şifrelemeden içinde çalışmanızı sağlar.",
+                    "A vault lets you work inside an encrypted folder without decrypting and encrypting it by hand each time.",
+                ),
+                tr(
+                    "1. Şifreli klasörü (.lphy) açın, parolasını girin ve \"Kasa olarak aç…\"a basın. Klasör Finder'da / Gezgin'de açılır.",
+                    "1. Open the encrypted folder (.lphy), enter its password and press \"Open as a vault…\". The folder opens in Finder / Explorer.",
+                ),
+                tr(
+                    "2. İçinde dosya ekleyin, değiştirin, silin; üstteki şerit kasanın açık olduğunu gösterir.",
+                    "2. Add, change and delete files in it; the bar at the top shows the vault is open.",
+                ),
+                tr(
+                    "3. \"Kaydet ve kilitle\": klasör aynı parolayla yeniden şifrelenir, eski dosya güvenle değiştirilir ve açık kopya yok edilir.",
+                    "3. \"Save and lock\": the folder is encrypted again with the same password, the old file is replaced safely and the open copy is destroyed.",
+                ),
+                tr(
+                    "macOS'ta açık kopya yalnızca bellekte (RAM disk) durur; Windows'ta gizli bir uygulama klasöründe durur ve kapatınca üzerine yazılarak silinir. Kasa açıkken bu bilgisayardaki programlar dosyaları okuyabilir; işiniz bitince kilitleyin.",
+                    "On macOS the open copy lives in memory only (RAM disk); on Windows it is in a hidden app folder and is overwritten and deleted when closed. While a vault is open, programs on this computer can read its files; lock it when you are done.",
                 ),
             ],
             Self::Backup => vec![

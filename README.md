@@ -224,6 +224,14 @@ error correction, splitting, secure deletion and an optional key file; the **?**
 the terms. For an encrypted archive, **List contents** shows what is inside without writing
 anything; tick entries to extract only those. The app follows the system light/dark theme.
 
+### Vault (desktop app)
+
+Open an encrypted folder, enter its password and press **Open as a vault…**: the folder opens
+in Finder / Explorer and a bar at the top of the app shows it is open. Work in it as usual, then
+press **Save and lock** to encrypt it again with the same password and remove the open copy.
+On macOS the open copy lives on a RAM disk (memory only); on Windows in a hidden app folder that
+is overwritten and deleted when the vault is closed. Quitting with a vault open asks first.
+
 ### Write to a USB stick (desktop app)
 
 Home › Write to a USB stick: choose an encrypted `.lphy` file and an eligible USB stick, check

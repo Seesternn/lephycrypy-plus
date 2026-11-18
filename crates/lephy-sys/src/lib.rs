@@ -28,6 +28,7 @@ pub mod open_docs;
 pub mod platform;
 pub mod quarantine;
 pub mod quick_action;
+pub mod ramdisk;
 pub mod secure_input;
 pub mod shell;
 pub mod signal;

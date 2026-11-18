@@ -502,6 +502,24 @@ pub fn app_settings_dir() -> Option<std::path::PathBuf> {
     base.map(|b| b.join("lephycrypy+"))
 }
 
+/// Local (not roaming) app data folder: Windows `%LOCALAPPDATA%\lephycrypy+`; elsewhere the
+/// same as [`app_settings_dir`]. Not created here.
+#[must_use]
+#[allow(clippy::disallowed_methods)] // only LOCALAPPDATA is read; not a secret
+pub fn app_local_dir() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .map(|b| b.join("lephycrypy+"))
+    }
+    #[cfg(not(windows))]
+    {
+        app_settings_dir()
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Cloud-sync roots — heuristic list, in one place
 // ---------------------------------------------------------------------------------------------

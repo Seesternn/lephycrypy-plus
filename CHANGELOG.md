@@ -103,6 +103,11 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Desktop app: folder vaults. "Open as a vault…" decrypts an encrypted folder to a RAM disk
+  (macOS) or a hidden app folder (Windows); a bar shows it while open; "Save and lock" encrypts it
+  again with the same settings, verifies and replaces the original atomically, then destroys the
+  open copy. Quitting asks first; vaults left by a crash are found at start. lephy-sys gains
+  `ramdisk`.
 - Desktop app: "Write to a USB stick" page with the `lephy-usb` engine: eligible sticks only, dry
   run, optional exFAT format and free-space fill, label + GiB typed to confirm, read-back check,
   cancel. Quitting while it runs asks first.

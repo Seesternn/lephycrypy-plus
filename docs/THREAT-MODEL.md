@@ -188,6 +188,25 @@ marks) and control characters are replaced with `_`, so a name cannot pose as a 
 extension. The app warns when the output contains programs (by name, such as `.app`, `.command`,
 `.exe`, `.ps1`, or by the executable bit).
 
+## Vault
+A vault is an encrypted folder opened once for work. Opening decrypts it to a private place:
+a RAM disk on macOS (`hdiutil` `ram://`, HFS+, Spotlight off), so decrypted files do not reach
+the SSD; a hidden, non-indexed folder in `%LOCALAPPDATA%\lephycrypy+\vaults` on Windows (not
+allowed inside a cloud-sync folder). "Save and lock" encrypts the folder again next to the
+original with the same password, key file, algorithm, KDF and padding, verifies the new file,
+replaces the original atomically and only then destroys the open copy (RAM disk detached;
+Windows files overwritten once, then removed). If any step fails the original stays untouched
+and the vault stays open.
+
+Limits: while a vault is open its password (NFC) and key-file digest stay in locked memory,
+because locking needs them; every program running as the same user can read and change the open
+files; RAM-disk pages can still reach swap or a hibernation image; on Windows decrypted files are
+written to disk, with the SSD and snapshot limits above. If the app crashes or is killed, the
+RAM disk (or folder) stays until the computer restarts or the app finds it at the next start and
+offers to close it. Vaults are only for archives locked with a password: files encrypted to
+public keys (the recipients' keys are not in the file), with error correction, split files and
+raw streams are refused.
+
 ## Preview
 The desktop app can show a decrypted text, PNG or JPEG file without writing it anywhere: the
 file is decrypted into memory (at most 32 MiB; an archive is still read and checked to the end),
