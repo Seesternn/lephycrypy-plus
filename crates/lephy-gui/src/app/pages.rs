@@ -3,7 +3,7 @@
 
 use super::{
     App, Palette, draw_doc, draw_folder, draw_gear, draw_key, draw_lock, fonts, help, link_button,
-    logic, primary_button, reveal_on_hover, secondary_button, segmented, theme,
+    lockgate, logic, primary_button, reveal_on_hover, secondary_button, segmented, theme,
 };
 use crate::i18n::{Lang, lang, tr};
 use crate::settings::LockVerifier;
@@ -369,7 +369,7 @@ impl App {
         app
     }
 
-    fn save_prefs(&mut self) {
+    pub(super) fn save_prefs(&mut self) {
         if let Err(e) = self.prefs.save() {
             self.settings_note = Some(match lang() {
                 Lang::Tr => format!("Ayarlar kaydedilemedi: {e}"),
@@ -1236,17 +1236,9 @@ impl App {
                     self.lock_edit = false;
                     self.lock_pw.clear();
                 }
-                if off {
+                if off && !self.lock_pw.is_empty() {
                     let pw = self.lock_pw.take();
-                    let ok = self.prefs.lock.is_some_and(|v| v.check(&pw));
-                    if ok {
-                        self.prefs.lock = None;
-                        self.save_prefs();
-                        self.lock_edit = false;
-                        self.lock_msg = Some(tr("Kilit kapatıldı.", "The lock is off.").into());
-                    } else {
-                        self.lock_msg = Some(tr("Parola yanlış.", "Wrong password.").into());
-                    }
+                    self.start_lock_check(ui.ctx(), pw, lockgate::Purpose::TurnOff);
                 }
             });
         } else {
@@ -1267,8 +1259,8 @@ impl App {
             }
             ui.label(
                 RichText::new(tr(
-                    "Parolayı unutursanız kilit, ayarlar dosyası silinerek kaldırılabilir; dosyalarınızı etkilemez.",
-                    "If you forget it, the lock can be removed by deleting the settings file; your files are not affected.",
+                    "Kilit, Anahtar Zinciri'nde (Windows'ta Kimlik Bilgisi Yöneticisi'nde) de saklanır; ayar dosyasını silmek onu kaldırmaz. Parolayı unutursanız oradaki \"lephycrypy+\" kaydını ve ayar dosyasını silin; dosyalarınızı etkilemez.",
+                    "The lock is also kept in the keychain (Credential Manager on Windows); deleting the settings file does not remove it. If you forget the password, delete the \"lephycrypy+\" item there and the settings file; your files are not affected.",
                 ))
                 .color(pal.muted)
                 .size(12.0),
@@ -1299,13 +1291,21 @@ impl App {
                             self.prefs.lock = Some(v);
                             self.save_prefs();
                             self.lock_edit = false;
-                            self.lock_msg = Some(
-                                tr(
+                            self.lock_msg = Some(match self.prefs.save_lock_store() {
+                                Ok(()) => tr(
                                     "Kilit açık: uygulama bir sonraki başlatılışta parola isteyecek.",
                                     "The lock is on: the app asks for the password next time it starts.",
                                 )
                                 .into(),
-                            );
+                                Err(e) => match lang() {
+                                    Lang::Tr => format!(
+                                        "Kilit açık, ama Anahtar Zinciri'ne yazılamadı ({e}); yalnızca ayar dosyasında duruyor."
+                                    ),
+                                    Lang::En => format!(
+                                        "The lock is on, but it could not be written to the keychain ({e}); it is only in the settings file."
+                                    ),
+                                },
+                            });
                         }
                         Err(e) => self.lock_msg = Some(logic::describe_error(&e)),
                     }
@@ -1343,19 +1343,24 @@ impl App {
             );
         });
         ui.add_space(18.0);
-        let (_, enter) = self.lock_pw.ui(ui, true);
+        let busy = self.lock_gate.busy();
+        let wait = self.lock_gate.wait_left();
+        let (_, enter) = self.lock_pw.ui(ui, !busy);
         ui.add_space(10.0);
-        let can = !self.lock_pw.is_empty();
-        if (primary_button(ui, pal, tr("Kilidi aç", "Unlock"), can).clicked() || (enter && can))
-            && let Some(v) = self.prefs.lock
-        {
-            let pw = self.lock_pw.take();
-            if v.check(&pw) {
-                self.locked = false;
-                self.lock_msg = None;
-            } else {
-                self.lock_msg = Some(tr("Parola yanlış.", "Wrong password.").into());
+        let can = !self.lock_pw.is_empty() && !busy && wait == 0;
+        let label = if busy {
+            tr("Denetleniyor…", "Checking…").to_owned()
+        } else if wait > 0 {
+            match lang() {
+                Lang::Tr => format!("{wait} sn bekleyin"),
+                Lang::En => format!("Wait {wait} s"),
             }
+        } else {
+            tr("Kilidi aç", "Unlock").to_owned()
+        };
+        if primary_button(ui, pal, &label, can).clicked() || (enter && can) {
+            let pw = self.lock_pw.take();
+            self.start_lock_check(ui.ctx(), pw, lockgate::Purpose::Unlock);
         }
         if let Some(m) = &self.lock_msg {
             ui.add_space(6.0);

@@ -228,10 +228,19 @@ off by default.
 The desktop app saves a small settings file (`~/Library/Application Support/lephycrypy+/settings`,
 mode `0600`; Windows `%APPDATA%\lephycrypy+`): the language, whether the welcome screen was seen
 and, only if the user turns the lock on, `salt ‖ HKDF(Argon2id(password, salt, 64 MiB, t = 3))`.
-No file names, paths or passwords are written. The app lock is a convenience against casual use
-of an unlocked computer, not protection for data: anyone who can write the settings file can
-remove it, and the encrypted files never depend on it. An attacker with the file can try to guess
-the lock password offline at the Argon2id cost; use a password that is not used elsewhere.
+No file names, paths or passwords are written. The lock verifier is also stored in the system
+credential store (macOS login keychain, generic password "app-lock" / account "lephycrypy+";
+Windows Credential Manager, "lephycrypy+/app-lock"), and that copy wins over the file: deleting
+the settings file does not remove the lock, and writing another verifier into it does not replace
+it. Password checks run off the UI thread, and each wrong password doubles the wait before the
+next try (1 s up to 30 s; the counter resets when the app restarts).
+
+The app lock is a convenience against casual use of an unlocked computer, not protection for
+data. A program running as the same user can still delete the keychain or Credential Manager item
+(on macOS possibly after a keychain prompt) together with the file, and the encrypted files never
+depend on the lock. An attacker with the verifier can try to guess the lock password offline at
+the Argon2id cost; use a password that is not used elsewhere. If the password is forgotten,
+deleting both the credential-store item and the settings file removes the lock.
 
 Closing the window hides the app (macOS) or minimises it while a job runs (Windows); a job keeps
 running. Quitting with Cmd+Q or Dock → Quit asks first while a job runs and then cancels it, so

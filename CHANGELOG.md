@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- Desktop app: the app-lock verifier is also kept in the macOS keychain / Windows Credential
+  Manager and that copy wins, so deleting or editing the settings file no longer removes or
+  replaces the lock. Wrong passwords double the wait before the next try (up to 30 s), and the
+  check no longer blocks the window.
 - Decrypted files keep the download mark of the `.lphy` file they came from (macOS quarantine,
   Windows Mark of the Web), so Gatekeeper and SmartScreen still check programs inside an
   encrypted file. Restored names have bidirectional and control characters replaced, and the app

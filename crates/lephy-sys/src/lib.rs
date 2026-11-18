@@ -18,6 +18,7 @@ pub mod alloc;
 pub mod capture;
 pub mod fdio;
 pub mod fs;
+pub mod keystore;
 pub mod lifecycle;
 pub mod locale;
 pub mod mem;

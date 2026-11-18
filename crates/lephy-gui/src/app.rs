@@ -174,6 +174,8 @@ pub struct App {
     capture_protected: bool,
     /// My keys › restore from paper backup.
     restore: restore::Restore,
+    /// App-lock password checks (background, with back-off).
+    lock_gate: lockgate::LockGate,
 }
 
 impl Default for App {
@@ -249,6 +251,7 @@ impl Default for App {
             scan_on_start: false,
             capture_protected: false,
             restore: restore::Restore::default(),
+            lock_gate: lockgate::LockGate::default(),
         }
     }
 }
@@ -776,6 +779,7 @@ impl App {
             self.stale.scan(&ctx, logic::usual_output_dirs());
         }
         self.poll(&ctx);
+        self.poll_lock_check(&ctx);
         self.guard_capture();
         self.handle_signal(&ctx);
         self.handle_open_requests(&ctx);
@@ -2698,6 +2702,7 @@ pub fn boxed() -> Box<dyn eframe::App> {
 }
 
 mod help;
+mod lockgate;
 mod maintenance;
 mod pages;
 mod restore;
@@ -3268,6 +3273,22 @@ mod tests {
         prefs.lock = Some(crate::settings::LockVerifier::new(&pw).unwrap());
         let mut locked = App::with_prefs(prefs);
         assert!(locked.locked && locked.page == pages::Page::Home);
+        frame(&ctx, &mut locked);
+        // A wrong password waits before the next try; the right one opens the app.
+        let wrong = lephy_sys::mem::SecretBytes::from_slice(b"app lock 124").unwrap();
+        locked.start_lock_check(&ctx, wrong, lockgate::Purpose::Unlock);
+        while locked.lock_gate.busy() {
+            locked.poll_lock_check(&ctx);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(locked.locked && locked.lock_gate.wait_left() > 0);
+        // A try during the wait is ignored.
+        locked.start_lock_check(
+            &ctx,
+            lephy_sys::mem::SecretBytes::from_slice(b"app lock 123").unwrap(),
+            lockgate::Purpose::Unlock,
+        );
+        assert!(!locked.lock_gate.busy());
         frame(&ctx, &mut locked);
         assert!(!App::with_prefs(crate::settings::Settings::default()).locked);
         assert!(App::with_prefs(crate::settings::Settings::default()).page == pages::Page::Welcome);
