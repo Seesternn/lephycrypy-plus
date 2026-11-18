@@ -1781,6 +1781,7 @@ dependencies = [
  "lephy-core",
  "lephy-sys",
  "rfd",
+ "winit",
  "zeroize",
 ]
 

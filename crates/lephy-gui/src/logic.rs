@@ -102,6 +102,44 @@ pub fn create_identity(path: &Path, password: &SecretBytes, kdf_mib: u32) -> Res
     Ok(pk)
 }
 
+/// Puts non-secret text (a public key) on the system clipboard with the system's own tool. The
+/// app itself has no clipboard access, so passwords can never reach it.
+///
+/// # Errors
+/// The tool is missing or failed.
+pub fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    #[cfg(target_os = "macos")]
+    let tool = PathBuf::from("/usr/bin/pbcopy");
+    #[cfg(windows)]
+    let sys = lephy_sys::vol::win::system_directory()?;
+    #[cfg(windows)]
+    let tool = sys.join("clip.exe");
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let tool = PathBuf::from("xclip");
+    let mut cmd = std::process::Command::new(tool);
+    cmd.env_clear();
+    // Windows programs need SystemRoot to load system libraries.
+    #[cfg(windows)]
+    if let Some(root) = sys.parent() {
+        cmd.env("SystemRoot", root);
+    }
+    let mut child = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+    }
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("clipboard tool failed"))
+    }
+}
+
 /// Varsayılan çıktı: şifrelemede aynı dizinde `<8 rastgele hex>.lphy` (D1); çözmede `.lphy`
 /// kaldırılmış ad ya da `<ad>.out`.
 #[must_use]

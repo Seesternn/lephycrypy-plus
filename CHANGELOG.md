@@ -47,6 +47,8 @@ Fixes from the November 2026 internal review (not an independent audit):
   whose time range is narrower; the time is simply not applied.
 
 ### Changed
+- The "Copy" link next to a new public key now really copies it (through the system tool); the
+  app's own clipboard access stays disabled.
 - New dependency for recipient encryption: `curve25519-dalek` 5.0 (pure Rust, BSD-3-Clause), with
   `fiat-crypto` and `curve25519-dalek-derive`. All three are `cargo vet` exemptions until audits
   can be imported; `syn` 2 is allowed next to `syn` 3 because of the derive crate.
@@ -55,6 +57,11 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Opening files from the system. macOS: double-clicking a `.lphy` file opens it in the app, any
+  file or folder can be opened with "Open With → lephycrypy+" in Finder, and files can be dropped
+  on the Dock icon (the app bundle declares the `.lphy` type). Windows: an optional Explorer
+  integration for the current user only — `.lphy` opens with a double-click and every file and
+  folder gets a right-click entry; added and removed from the app after confirmation.
 - Encryption to public keys (X25519), for one or more recipients
   (`lephycrypy keygen`, `encrypt --recipient`, `decrypt/verify --identity`; "With public keys" and
   "Create my own key pair" in the app). Only the holders of the matching identity files can open

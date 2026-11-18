@@ -109,6 +109,11 @@ pub struct App {
     show_keygen: bool,
     /// Public key of the key pair created in this session (shown with a copy link).
     created_pub: Option<String>,
+    /// Files received from the operating system, not yet applied.
+    pending_open: Vec<PathBuf>,
+    /// Windows: the Explorer integration change awaits confirmation.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    confirm_shell: bool,
 }
 
 impl Default for App {
@@ -147,6 +152,8 @@ impl Default for App {
             identity_required: false,
             show_keygen: false,
             created_pub: None,
+            pending_open: Vec::new(),
+            confirm_shell: false,
         }
     }
 }
@@ -441,6 +448,19 @@ impl App {
         ctx.request_repaint_after(Duration::from_millis(400));
     }
 
+    /// Files the operating system asked us to open (Finder, Explorer, Dock). They wait while a
+    /// job runs or a deletion is being confirmed.
+    fn handle_open_requests(&mut self, ctx: &egui::Context) {
+        self.pending_open
+            .extend(lephy_sys::open_docs::take_pending());
+        if self.pending_open.is_empty() || self.running() || self.confirm_delete {
+            return;
+        }
+        let paths = std::mem::take(&mut self.pending_open);
+        self.set_sources(&paths);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
     fn handle_drop(&mut self, ctx: &egui::Context) {
         if self.running() {
             return;
@@ -519,6 +539,7 @@ impl App {
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
         self.handle_signal(&ctx);
+        self.handle_open_requests(&ctx);
         self.handle_drop(&ctx);
         if !self.running()
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::O))
@@ -666,6 +687,79 @@ impl App {
             .color(pal.muted)
             .size(12.5),
         );
+        #[cfg(windows)]
+        self.explorer_integration(ui, pal);
+    }
+
+    /// Windows: add or remove the Explorer integration (current user only), after confirmation.
+    #[cfg(windows)]
+    fn explorer_integration(&mut self, ui: &mut Ui, pal: Palette) {
+        use lephy_sys::shell;
+        ui.add_space(10.0);
+        let registered = shell::is_registered(shell::CLASSES);
+        if !self.confirm_shell {
+            let label = if registered {
+                tr(
+                    "Gezgin entegrasyonunu kaldır",
+                    "Remove the Explorer integration",
+                )
+            } else {
+                tr(
+                    "Gezgin'e ekle: .lphy dosyalarını çift tıkla aç, sağ tık menüsünden şifrele",
+                    "Add to Explorer: open .lphy files with a double-click, encrypt from the right-click menu",
+                )
+            };
+            if link_button(ui, pal, label).clicked() {
+                self.confirm_shell = true;
+            }
+            return;
+        }
+        ui.label(
+            RichText::new(if registered {
+                tr(
+                    "Sağ tık menüsü girişi ve .lphy ilişkilendirmesi bu kullanıcı için kaldırılacak.",
+                    "The right-click entry and the .lphy association will be removed for this user.",
+                )
+            } else {
+                tr(
+                    "Yalnızca bu kullanıcı için kayıt defterine (HKCU) yazılır: .lphy dosyaları bu uygulamayla açılır ve her dosya ile klasörün sağ tık menüsüne bir giriş eklenir. Uygulamayı taşırsanız yeniden ekleyin.",
+                    "Written to the registry for this user only (HKCU): .lphy files open with this app and every file and folder gets a right-click entry. Add it again if you move the app.",
+                )
+            })
+            .color(pal.muted)
+            .size(12.5),
+        );
+        ui.horizontal(|ui| {
+            let ok = link_button(ui, pal, tr("Onayla", "Confirm")).clicked();
+            ui.add_space(12.0);
+            if link_button(ui, pal, tr("Vazgeç", "Cancel")).clicked() {
+                self.confirm_shell = false;
+            }
+            if ok {
+                self.confirm_shell = false;
+                let r = if registered {
+                    shell::unregister(shell::CLASSES)
+                } else {
+                    std::env::current_exe().and_then(|exe| {
+                        shell::register(
+                            shell::CLASSES,
+                            &exe,
+                            shell::Labels {
+                                file_type: tr(
+                                    "lephycrypy+ şifreli dosya",
+                                    "lephycrypy+ encrypted file",
+                                ),
+                                menu: tr(
+                                    "lephycrypy+ ile şifrele / aç",
+                                    "Encrypt or open with lephycrypy+",
+                                ),
+                            },
+                        )
+                    })
+                };
+                self.error = r.err().map(|e| e.to_string());
+            }
+        });
     }
 
     fn source_card(&mut self, ui: &mut Ui, pal: Palette, can_change: bool) {
@@ -1374,6 +1468,7 @@ impl App {
             self.password.clear();
             self.confirm.clear();
         }
+        let mut copied = None;
         if let Some(pk) = self.created_pub.clone() {
             ui.add_space(8.0);
             ui.label(
@@ -1399,8 +1494,13 @@ impl App {
                     },
                 );
                 if link_button(ui, pal, tr("Kopyala", "Copy")).clicked() {
-                    ui.ctx().copy_text(pk.clone());
+                    copied = Some(logic::copy_to_clipboard(&pk).is_ok());
                 }
+            });
+        }
+        if let Some(ok) = copied {
+            self.error = (!ok).then(|| {
+                tr("Panoya kopyalanamadı.", "Could not copy to the clipboard.").to_string()
             });
         }
         if self.show_keygen {

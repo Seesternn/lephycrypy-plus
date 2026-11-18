@@ -45,6 +45,34 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key><string>io.github.seesternn.lephycrypy.encrypted</string>
+      <key>UTTypeDescription</key><string>lephycrypy+ encrypted file</string>
+      <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+      <key>UTTypeIconFile</key><string>AppIcon</string>
+      <key>UTTypeTagSpecification</key>
+      <dict><key>public.filename-extension</key><array><string>lphy</string></array></dict>
+    </dict>
+  </array>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <!-- .lphy: double-click opens the app. -->
+    <dict>
+      <key>CFBundleTypeName</key><string>lephycrypy+ encrypted file</string>
+      <key>CFBundleTypeRole</key><string>Editor</string>
+      <key>LSHandlerRank</key><string>Owner</string>
+      <key>LSItemContentTypes</key><array><string>io.github.seesternn.lephycrypy.encrypted</string></array>
+    </dict>
+    <!-- Any file or folder: listed under "Open With" in Finder's context menu (never the default). -->
+    <dict>
+      <key>CFBundleTypeName</key><string>Any file or folder</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key><array><string>public.item</string></array>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST

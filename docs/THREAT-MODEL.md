@@ -109,6 +109,16 @@ sistem/boot/Time Machine dışlanır.
   araçları kapsam dışıdır.
 - Pano kapalıdır (`clipboard` feature yok; parola alanı kopyala/kes/yapıştır olaylarını yutar).
 - Kalıcı ayar (`persistence`) yoktur; pencere konumu ve geçmiş yollar diske yazılmaz.
+- Opening files from the operating system: on macOS through the open-documents event
+  (double-click on `.lphy`, Finder "Open With", drop on the Dock icon), handled by a method that
+  `lephy-sys` adds to the window library's application delegate. On Windows the optional
+  Explorer integration (added and removed from the app, after confirmation, in `HKCU` only)
+  starts the app with `--open "<absolute path>"`; this is the only argument the app accepts. The
+  path is then visible to other processes of the same user in the process list. A received path
+  is only shown as the selected source; nothing is encrypted or decrypted without the user's
+  password and click.
+- The "Copy" link for a public key uses the system tool (`pbcopy`, `clip.exe`) with an empty
+  environment; the app itself still has no clipboard access, so a password cannot reach it.
 - GUI işlemleri `--strict`, symlink kurma ve `--rename-conflicts` sunmaz (varsayılan güvenli
   politika); bunlar için CLI kullanılır.
 - Tedarik zinciri: egui/eframe zinciri ~400 crate ekler (cargo-vet istisnalarının çoğu);
