@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- macOS: interactive password prompts no longer hang. `poll()` reports POLLNVAL for `/dev/tty`
+  on macOS; the reader now falls through to the blocking read.
 - Desktop app: a request from the operating system to open items (double-click, Quick Action,
   Explorer, `open`) no longer replaces an item that is already chosen; the app asks first, so
   another program cannot swap the file after a password was typed.
@@ -69,6 +71,9 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Paper backup of an identity: `lephycrypy identity backup ID` shows 22 words (EFF wordlist,
+  2-byte checksum; the first word is always `abacus` or `abdomen`), `identity restore OUT`
+  recreates the identity file from them. The Python reference produces the same words.
 - Change who can open a file encrypted to public keys (`lephycrypy recipients FILE -i ID -r KEY…`,
   and "Change the recipient list…" in the app). A current recipient replaces the whole list; the
   content is not re-encrypted. Vector 15 from the Python reference is reproduced byte for byte.

@@ -282,6 +282,9 @@ enum Command {
         #[arg(long, value_name = "PATH", conflicts_with_all = ["stdout", "recover"])]
         only: Vec<String>,
     },
+    /// Paper backup of an identity: show its 22 words, or restore an identity file from them.
+    #[command(subcommand)]
+    Identity(IdentityCommand),
     /// Replaces the recipients of a file encrypted to public keys; your identity must be one of
     /// them. Public keys are not stored in the file, so give the complete new list: everyone who
     /// should keep access, yourself included. The content is not re-encrypted.
@@ -518,6 +521,31 @@ fn new_source_of(n: &NewPasswordArgs) -> Source {
 }
 
 /// Reads the password and converts it to NFC; with `confirm`, asks twice on a terminal.
+/// `lephycrypy identity …`
+#[derive(Subcommand)]
+enum IdentityCommand {
+    /// Shows the 22-word paper backup of an identity. Write the words on paper and keep them
+    /// apart from your computer: anyone with them can open every file encrypted to this identity.
+    Backup {
+        /// Identity file (`.lphykey`); the password asked for is the identity file's.
+        identity: PathBuf,
+        #[command(flatten)]
+        pw: PasswordArgs,
+        /// Print the words even when standard output is not a terminal (a file or a pipe).
+        #[arg(long)]
+        force: bool,
+    },
+    /// Creates a new identity file from a paper backup (the words are asked for without echo).
+    Restore {
+        /// Identity file to create (never overwritten); the public key goes to `<name>.pub`.
+        path: PathBuf,
+        #[command(flatten)]
+        kdf: KdfArgs,
+        #[command(flatten)]
+        pw: PasswordArgs,
+    },
+}
+
 fn read_password(
     source: &Source,
     prompt: &str,
@@ -1038,6 +1066,67 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             };
             let n = ops::verify(input, &nfc, keyfile.as_deref(), u, log)?;
             println!("verified: {n} bytes");
+            Ok(())
+        }
+        Command::Identity(IdentityCommand::Backup {
+            identity,
+            pw,
+            force,
+        }) => {
+            if !*force && !lephy_sys::term::is_tty(&std::io::stdout()) {
+                return Err(Error::Environment(
+                    "standard output is not a terminal; the words would end up in a file or pipe (use --force if that is intended)".into(),
+                ));
+            }
+            let nfc = read_password(&source_of(pw), "Identity password: ", false, false)?;
+            let id = lephy_core::recipient::read_identity_file(
+                identity,
+                &nfc,
+                UnlockOptions::default(),
+                log,
+            )?;
+            drop(nfc);
+            let words = id.paper_backup()?;
+            lephy_sys::term::write_all_raw(&std::io::stdout(), words.expose())?;
+            lephy_sys::term::write_all_raw(&std::io::stdout(), b"\n")?;
+            eprintln!(
+                "public key: {}\nwrite these {} words on paper and keep them safe and apart from this computer; anyone with them can open every file encrypted to this identity",
+                id.public(),
+                lephy_core::paper::WORDS
+            );
+            Ok(())
+        }
+        Command::Identity(IdentityCommand::Restore { path, kdf, pw }) => {
+            if pw.keyfile.is_some() {
+                return Err(Error::Environment(
+                    "identity files are protected by a password only".into(),
+                ));
+            }
+            let kdf = kdf.params();
+            kdf.check_encrypt_policy()?;
+            let pub_path = path.with_extension("pub");
+            if pub_path.exists() {
+                return Err(Error::Exists(disp(&pub_path)));
+            }
+            let words =
+                password::read_raw(&Source::Tty, "Paper backup (22 words, not shown): ", false)?;
+            let id = Identity::from_paper(words.expose())?;
+            drop(words);
+            eprintln!(
+                "public key: {} (check that it is the expected one)",
+                id.public()
+            );
+            let nfc = read_password(&source_of(pw), "New identity password: ", true, false)?;
+            password::check_encrypt_policy(&nfc)?;
+            lephy_core::recipient::write_identity_file(path, &id, &nfc, kdf, &mut OsEntropy, log)?;
+            let pk = id.public().to_string();
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&pub_path)?;
+            std::io::Write::write_all(&mut f, format!("{pk}\n").as_bytes())?;
+            println!("{pk}");
+            eprintln!("identity: {} restored", disp(path));
             Ok(())
         }
         Command::Recipients {

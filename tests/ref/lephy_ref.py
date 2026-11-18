@@ -217,6 +217,22 @@ def build_recipient_header(alg, content_type, padded, chunk_code, prefix, fk, st
     return bytes(h), bytes(ext), {"data_key": data_key}
 
 
+def paper_words(secret: bytes) -> str:
+    """FORMAT.md › Paper backup: secret ‖ BLAKE3("lphy+/paper/v1" ‖ secret)[0..2] as 22 base-7776 words."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "crates", "lephy-core",
+                        "data", "eff_large_wordlist.txt")
+    with open(path, encoding="utf-8") as f:
+        words = [line.split("\t")[1].strip() for line in f if "\t" in line]
+    assert len(words) == 7776
+    n = int.from_bytes(secret + blake3.blake3(b"lphy+/paper/v1" + secret).digest()[:2], "big")
+    digits = []
+    for _ in range(22):
+        n, d = divmod(n, 7776)
+        digits.append(d)
+    assert n == 0
+    return " ".join(words[d] for d in reversed(digits))
+
+
 def chunk_aad(header: bytes) -> bytes:
     return blake3.blake3(header[0:13] + header[64:88]).digest()
 
@@ -416,6 +432,7 @@ def vectors(outdir: str):
     assert chunk_aad(h15) == chunk_aad(h14)
     with open(os.path.join(outdir, "v15.lphy"), "wb") as f:
         f.write(h15 + ext15 + body)
+    meta["paper_words"] = paper_words(sk1)
     meta["v15"] = {"from": "v14", "recipients": [x25519_public(sk2).hex()],
                    "identities": [sk2.hex()], "plaintext": pt14.decode()}
     # 7/8/11: equal KEKs

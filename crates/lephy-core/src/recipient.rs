@@ -182,6 +182,24 @@ fn x25519(scalar: &[u8], point: &[u8; 32]) -> Result<Zeroizing<[u8; 32]>> {
 }
 
 impl Identity {
+    /// The paper backup of this identity: 22 words ([`crate::paper`]).
+    ///
+    /// # Errors
+    /// Locked-memory error.
+    pub fn paper_backup(&self) -> Result<SecretBytes> {
+        let mut s = Zeroizing::new([0u8; 32]);
+        s.copy_from_slice(self.secret.expose());
+        crate::paper::encode(&s)
+    }
+
+    /// Restores an identity from its paper backup.
+    ///
+    /// # Errors
+    /// See [`crate::paper::decode`].
+    pub fn from_paper(words: &[u8]) -> Result<Self> {
+        Self::from_secret(crate::paper::decode(words)?)
+    }
+
     /// A new random identity.
     ///
     /// # Errors

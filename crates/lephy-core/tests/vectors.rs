@@ -426,3 +426,22 @@ fn v15_set_recipients_matches_reference() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn paper_backup_matches_reference() {
+    let sk: Vec<u8> = (0x80u8..0xA0).collect();
+    let want = META
+        .split("\"paper_words\": \"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    let secret: [u8; 32] = sk.clone().try_into().unwrap();
+    let words = lephy_core::paper::encode(&secret).unwrap();
+    assert_eq!(std::str::from_utf8(words.expose()).unwrap(), want);
+    assert_eq!(
+        lephy_core::paper::decode(want.as_bytes()).unwrap().expose(),
+        &sk[..]
+    );
+}

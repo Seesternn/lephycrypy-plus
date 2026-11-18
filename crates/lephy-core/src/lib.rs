@@ -14,6 +14,7 @@ pub mod kdf;
 pub mod names;
 pub mod ops;
 pub mod pad;
+pub mod paper;
 pub mod passphrase;
 pub mod password;
 pub mod pipeline;

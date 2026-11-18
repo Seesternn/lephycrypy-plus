@@ -286,7 +286,10 @@ mod imp {
             if n == 2 && fds[1].revents & libc::POLLIN != 0 {
                 return Err(ReadError::Interrupted);
             }
-            if fds[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+            // macOS: poll() does not support /dev/tty and reports POLLNVAL at once; the blocking
+            // read that follows still works (it returns with EINTR on a signal).
+            if fds[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+            {
                 return Ok(());
             }
         }
