@@ -1,47 +1,57 @@
-# lephycrypy+ dosya biçimi — v1 (normatif taslak)
+# lephycrypy+ file format — v1 (normative draft)
 
-Bu belge normatiftir. Python referans uygulaması (`tests/ref/`) yalnızca bu belgeden yazılır.
-Tüm çok baytlı tamsayılar **little-endian**'dır; STREAM nonce sayacı istisnadır (BE32).
-Kaynaklar: RFC 9106 (Argon2), RFC 5869 (HKDF), draft-irtf-cfrg-xchacha-03, NIST SP 800-38D.
+This document is normative. The Python reference implementation (`tests/ref/`) is written from
+this document only. All multi-byte integers are **little-endian**, except the STREAM nonce
+counter (BE32). Sources: RFC 9106 (Argon2), RFC 5869 (HKDF), draft-irtf-cfrg-xchacha-03,
+NIST SP 800-38D, RFC 7748 (X25519).
 
-## Başlık (256 bayt)
+## Header (256 bytes)
 
-| ofs | boyut | alan | değişmez? |
+| Offset | Size | Field | Immutable? |
 |---|---|---|---|
 | 0 | 6 | magic `"LPHY+\0"` | ✓ |
 | 6 | 2 | version u16 = 1 | ✓ |
-| 8 | 1 | alg_id: 1=XChaCha20-Poly1305, 2=AES-256-GCM | ✓ |
-| 9 | 1 | content_type: 0=ham akış, 1=arşiv | ✓ |
-| 10 | 1 | stream_flags: bit0 padded; bit1..7 rezerve (0) | ✓ |
-| 11 | 1 | chunk_code: 0=64KiB 1=256KiB 2=1MiB(vars.) 3=4MiB 4=16MiB | ✓ |
-| 12 | 1 | reserved (0) | ✓ |
-| 13 | 1 | kdf_id: 1=Argon2id v0x13 | |
-| 14 | 1 | kdf_flags: bit0 keyfile; bit1 v2 rezerve; bit2..7 rezerve (0) | |
+| 8 | 1 | alg_id: 1 = XChaCha20-Poly1305, 2 = AES-256-GCM | ✓ |
+| 9 | 1 | content_type: 0 = raw stream, 1 = archive | ✓ |
+| 10 | 1 | stream_flags: bit0 padded; bits 1..7 reserved (0) | ✓ |
+| 11 | 1 | chunk_code: 0 = 64 KiB, 1 = 256 KiB, 2 = 1 MiB (default), 3 = 4 MiB, 4 = 16 MiB | ✓ |
+| 12 | 1 | reserved (0) — `feature_flags` in v2 | ✓ |
+| 13 | 1 | kdf_id: 1 = Argon2id v0x13 | |
+| 14 | 1 | kdf_flags: bit0 key file; bit1 reserved for v2; bits 2..7 reserved (0) | |
 | 15 | 1 | reserved (0) | |
-| 16 | 4 | argon2 m_kib u32 | |
-| 20 | 4 | argon2 t u32 | |
-| 24 | 4 | argon2 p u32 | |
-| 28 | 4 | reserved (0) | |
+| 16 | 4 | Argon2 m_kib u32 | |
+| 20 | 4 | Argon2 t u32 | |
+| 24 | 4 | Argon2 p u32 | |
+| 28 | 4 | reserved (0) — recipient count in v2 recipient files | |
 | 32 | 32 | salt | |
 | 64 | 24 | stream_nonce_prefix (XChaCha 19 B; AES 7 B, [7..24] = 0) | ✓ |
 | 88 | 24 | wrap_nonce (XChaCha 24 B; AES 12 B, [12..24] = 0) | |
 | 112 | 32 | commit_tag | |
-| 144 | 48 | wrapped_fk = AEAD_{wrap_key}(wrap_nonce, FK, AAD=header[0..144]) | |
-| 192 | 32 | reserved (0, MAC'e dahil) | |
+| 144 | 48 | wrapped_fk = AEAD_{wrap_key}(wrap_nonce, FK, AAD = header[0..144]) | |
+| 192 | 32 | reserved (0, covered by the MAC) | |
 | 224 | 32 | header_mac = BLAKE3-keyed(header_mac_key, header[0..224]) | |
-| **256** | | toplam | |
+| **256** | | total | |
 
-Ofset kontrolü: 0+6=6, +2=8, +1=9, +1=10, +1=11, +1=12, +1=13, +1=14, +1=15, +1=16, +4=20, +4=24, +4=28, +4=32, +32=64, +24=88, +24=112, +32=144, +48=192, +32=224, +32=**256** ✓
+Offset check: 0+6=6, +2=8, +1=9, +1=10, +1=11, +1=12, +1=13, +1=14, +1=15, +1=16, +4=20, +4=24,
++4=28, +4=32, +32=64, +24=88, +24=112, +32=144, +48=192, +32=224, +32=**256** ✓
 
-"Değişmez" alanlar `rekey` ile değişmez; chunk AAD yalnızca bunlardan türetilir.
+"Immutable" fields do not change on `rekey`; the chunk AAD is derived from them only.
 
-**Reserved ve bayrak denetimi (normatif).** Okuyucu ofset 12, 15, 28..32, 192..224 baytlarının `0x00`, `stream_flags` bit1..7 ve `kdf_flags` bit1..7'nin 0 olduğunu doğrular; aksi → "Dosya bozuk (başlık)", kod 4. Bu denetim çözme sırasının 1. adımındadır (KDF'den önce). Yazıcı sıfır yazar.
+**Reserved fields and flags (normative).** In a v1 file the reader checks that bytes 12, 15,
+28..32 and 192..224 are `0x00` and that `stream_flags` bits 1..7 and `kdf_flags` bits 1..7 are 0;
+otherwise "file is damaged (header)", code 4. This check is step 1 of the decryption order
+(before key derivation). Writers write zeros. Version 2 changes bytes 12 and 28..30 only as
+described below.
 
-**Nonce kuyruk kuralı.** alg_id=2 iken `stream_nonce_prefix[7..24]` ve `wrap_nonce[12..24]` sıfırdır; okuyucu doğrular (ihlal → kod 4).
+**Nonce tail rule.** With alg_id = 2, `stream_nonce_prefix[7..24]` and `wrap_nonce[12..24]` are
+zero; the reader checks this (violation → code 4).
 
-**Sınırlar.** `m_kib`: 65536..=4194304 (64 MiB..4 GiB); `t`: 1..=64; `p`: 1..=64; `8·p ≤ m_kib`; ihlal → kod 4. `m_kib × t > 16 GiB·iter` ya da `m_kib > %75 × RAM` → kod 6 (biçim ihlali değil, politika).
+**Limits.** `m_kib`: 65536..=4194304 (64 MiB..4 GiB); `t`: 1..=64; `p`: 1..=64; `8·p ≤ m_kib`;
+violation → code 4. `m_kib × t > 16 GiB·iterations` or `m_kib > 75 % of RAM` → code 6 (a policy,
+not a format violation). If the amount of RAM cannot be determined, a fixed upper limit applies
+(fail closed).
 
-## Anahtar türetme
+## Key derivation
 
 ```
 argon2_out     = Argon2id(P=pwd_nfc, S=salt, p, T=32, m=m_kib, t, v=0x13, K=ε, X=ε, y=2)
@@ -55,12 +65,15 @@ header_mac_key = HKDF-SHA512(ikm=FK,  salt=stream_nonce_prefix, info="lphy+/v1/h
 chunk_aad      = BLAKE3(header[0..13] || header[64..88])
 ```
 
-- `salt = header[32..64]` (32 B); `stream_nonce_prefix = header[64..88]` (24 B'ın tamamı, AES'te kuyruk sıfır). `||` bitiştirme, `ε` boş.
-- **Argon2id (RFC 9106 §3.1):** `v = 0x13`; `K` (secret) ve `X` (associated data) boş (uzunluk alanı 0 kodlanır); `y = 2`; `T = 32`.
-- **HKDF (RFC 5869 §2.2–2.3):** SHA-512, HashLen 64; `L = 32`; salt her zaman açıkça verilir; `L=32` çıktısı T(1)'in ilk 32 baytıdır.
-- **info dizgileri:** ASCII, NUL yok, uzunluk öneki yok:
+- `salt = header[32..64]` (32 B); `stream_nonce_prefix = header[64..88]` (all 24 bytes; the tail
+  is zero for AES). `||` is concatenation, `ε` is empty.
+- **Argon2id (RFC 9106 §3.1):** `v = 0x13`; `K` (secret) and `X` (associated data) are empty
+  (their length fields encode 0); `y = 2`; `T = 32`.
+- **HKDF (RFC 5869 §2.2–2.3):** SHA-512, HashLen 64; `L = 32`; the salt is always given
+  explicitly; the `L = 32` output is the first 32 bytes of T(1).
+- **info strings:** ASCII, no NUL, no length prefix:
 
-| info | uzunluk | hex |
+| info | Length | Hex |
 |---|---|---|
 | `lphy+/v1/kek` | 12 | `6c7068792b2f76312f6b656b` |
 | `lphy+/v1/wrap` | 13 | `6c7068792b2f76312f77726170` |
@@ -68,84 +81,113 @@ chunk_aad      = BLAKE3(header[0..13] || header[64..88])
 | `lphy+/v1/data` | 13 | `6c7068792b2f76312f64617461` |
 | `lphy+/v1/hmac` | 13 | `6c7068792b2f76312f686d6163` |
 
-- `keyfile_bytes`: dosya **içeriği**, bayt bayt; yol/ad/meta veri türetmeye girmez. `BLAKE3` anahtarsız, 32 B. Keyfile 32 B..1 MiB; parola zorunlu (yalnızca-keyfile v1'de yok).
-- `FK`: 32 B rastgele. `wrapped_fk` = 32 B şifreli + 16 B tag. Argon2 salt'ı FK alt anahtarlarında **kullanılmaz** (rekey salt'ı değiştirir, `data_key` sabit kalır).
-- `commit_tag` sır değildir; `subtle::ConstantTimeEq` ile doğrulanır; taahhüt etmeyen AEAD unwrap'i yalnızca bu geçince çalışır.
+- `keyfile_bytes`: the file's **content**, byte for byte; its path, name and metadata are not
+  part of the derivation. `BLAKE3` is unkeyed, 32 B. Key files are 32 B..1 MiB; a password is
+  always required (no key-file-only mode in v1).
+- `FK`: 32 random bytes. `wrapped_fk` = 32 B ciphertext + 16 B tag. The Argon2 salt is **not**
+  used for the FK subkeys (`rekey` changes the salt while `data_key` stays the same).
+- `commit_tag` is not secret; it is compared with `subtle::ConstantTimeEq`; the non-committing
+  AEAD unwrap runs only after it matches.
 - `header_mac = BLAKE3-keyed(header_mac_key, header[0..224])`.
 
-## Parola
+## Password
 
-UTF-8 → NFC = `pwd_nfc`. Kaynak fd/stdin/dosya ise NFC'den önce sondaki tek `\n` veya `\r\n` kırpılır; terminalde kırpma yok. Ham parola ≤ 1024 B. Biçim, parola uzunluğu için kural koymaz; okuyucu her uzunluğu kabul eder. Minimum uzunluk (8 Unicode scalar value, NFC sonrası) yalnızca şifreleme politikasıdır (CLI politikası).
+UTF-8 → NFC = `pwd_nfc`. When the source is an fd, stdin or a file, one trailing `\n` or `\r\n` is
+removed before NFC; nothing is removed for terminal input. Raw password ≤ 1024 B. The format
+sets no rule for the password length; a reader accepts any length. The minimum length (8 Unicode
+scalar values after NFC) is an encryption policy of the tools only.
 
-## Çözme sırası ve hatalar
+## Decryption order and errors
 
-1. parse: sabit alanlar, reserved ve bayrak sıfır, sınırlar, nonce kuyruğu → "Dosya bozuk (başlık)", kod 4
-2. keyfile bayrak/argüman tutarlılığı → kod 3 ("Bu dosya anahtar dosyası gerektiriyor" / "…kullanmıyor"), KDF çalışmaz
-3. KDF bütçesi/RAM → kod 6
-4. KDF
-5. `commit_tag` sabit zamanlı → "Parola veya anahtar dosyası yanlış", kod 3
-6. unwrap → kod 4
-7. türetme (`data_key`, `header_mac_key`)
-8. `header_mac` → kod 4
-9. chunk'lar → "Dosya bozuk (chunk N)", kod 4
+1. Parse: fixed fields, reserved fields and flags zero, limits, nonce tails → "file is damaged
+   (header)", code 4
+2. Key-file flag vs. argument → code 3 ("this file needs a key file" / "…does not use one"); no
+   key derivation runs
+3. KDF budget / RAM → code 6
+4. Key derivation
+5. `commit_tag` in constant time → "wrong password or key file", code 3
+6. Unwrap → code 4
+7. Derivation (`data_key`, `header_mac_key`)
+8. `header_mac` → code 4
+9. Chunks → "file is damaged (chunk N)", code 4
 
 ## STREAM
 
-Başlıktan sonra chunk'lar gelir. `chunk_size = 64 KiB × 4^chunk_code` (0..=4). Ciphertext chunk = `chunk_size + 16` (son hariç).
-Nonce = `prefix || BE32(i) || last(u8)`: XChaCha 19 + 4 + 1 = 24 B; AES 7 + 4 + 1 = 12 B. `i` 0'dan başlar; `last` yalnızca son chunk'ta 1. AAD = `chunk_aad` (32 B).
-- Son chunk 0..=chunk_size bayt düz metin içerir; içerik tam kat ise son chunk tam boydur ve ek boş chunk **yazılmaz**; yalnızca 0 baytlık içerikte tek boş son chunk (16 B ciphertext).
-- Okuyucu `chunk_size + 17` bayt okumayı dener; `chunk_size + 16`'dan az veya eşit geldiyse son chunk'tır.
-- Son chunk'tan sonra bayt → 4; `last=1` ortada → 4; son olmayan chunk kısa → 4; `i ≥ 2^32` → 4.
-- Varsayılan `chunk_code = 2` (1 MiB).
+Chunks follow the header. `chunk_size = 64 KiB × 4^chunk_code` (0..=4). A ciphertext chunk is
+`chunk_size + 16` bytes (except the last). Nonce = `prefix || BE32(i) || last (u8)`: XChaCha
+19 + 4 + 1 = 24 B; AES 7 + 4 + 1 = 12 B. `i` starts at 0; `last` is 1 only on the last chunk.
+AAD = `chunk_aad` (32 B).
+- The last chunk holds 0..=chunk_size plaintext bytes; if the content is an exact multiple, the
+  last chunk is full size and **no** extra empty chunk is written; only 0-byte content has a
+  single empty last chunk (16 B ciphertext).
+- The reader tries to read `chunk_size + 17` bytes; if `chunk_size + 16` or fewer arrive, it is
+  the last chunk.
+- Bytes after the last chunk → 4; `last = 1` in the middle → 4; a short non-last chunk → 4;
+  `i ≥ 2^32` → 4.
+- Default `chunk_code = 2` (1 MiB).
 
-## Arşiv (content_type = 1)
+## Archive (content_type = 1)
 
-Düz metin akışının içinde, ardışık girişler:
-`[u8 tür: 0 dosya, 1 dizin, 2 symlink, 255 END][u16 yol_len][yol NFC, '/' ayırıcı][u32 mode][i64 mtime]`
-- Dosya verisi: `[u32 len][bytes]…[u32 0]` çerçeveleri; `len` 1..=16 MiB.
-- Symlink: hedef tek çerçevede `[u32 len][hedef][u32 0]`, 1..=4096 B, NUL yok, `/` ayırıcı, NFC uygulanmaz; `mode`/`mtime` yazıcı 0 yazar, okuyucu yok sayar.
-- Dizin: veri yok. END: yol_len 0, mode 0, mtime 0, veri yok.
-- Sıra: yazıcı bir dizinin girişini çocuklarından önce yazar; okuyucu üst dizin girişi olmayan
-  bir yolu reddeder (kod 4). Çocuklar ad baytlarına göre artan sırada yazılır (tekrarlanabilirlik).
-- Kök adı arşive girmez: klasör şifrelenirken girişler klasörün içeriğine görelidir; tek dosya
-  şifrelenirken tek giriş dosyanın adıdır.
-- `mode`: POSIX; okuyucu setuid/setgid/sticky siler, `& 0o777`. `mtime`: Unix saniye, ∈ [−2^40, 2^40].
+Consecutive entries inside the plaintext stream:
+`[u8 kind: 0 file, 1 directory, 2 symlink, 255 END][u16 path_len][path NFC, '/' separator][u32 mode][i64 mtime]`
+- File data: `[u32 len][bytes]…[u32 0]` frames; `len` 1..=16 MiB.
+- Symlink: the target in a single frame `[u32 len][target][u32 0]`, 1..=4096 B, no NUL, `/`
+  separator, no NFC; the writer writes 0 for `mode`/`mtime`, the reader ignores them.
+- Directory: no data. END: path_len 0, mode 0, mtime 0, no data.
+- Order: the writer writes a directory's entry before its children; the reader rejects a path
+  without a parent directory entry (code 4). Children are written in ascending order of their
+  name bytes (reproducibility).
+- The root name is not stored: when a folder is encrypted, entries are relative to its content;
+  when a single file is encrypted, the only entry is the file's name.
+- `mode`: POSIX; the reader clears setuid/setgid/sticky, `& 0o777`. `mtime`: Unix seconds,
+  ∈ [−2^40, 2^40].
 
-Sınırlar (ihlal → kod 4): çerçeve ≤ 16 MiB; bileşen ≤ 255 B; yol ≤ 4096 B; derinlik ≤ 256; giriş ≤ 1 000 000; toplam yol baytı (symlink hedefleri dahil) ≤ 64 MiB; yolda `..`, boş bileşen, `/` ile başlama, `\`, NUL, sürücü harfi (`[A-Za-z]:`) yasak; yinelenen (NFC + harf katlama) yasak.
-Symlink hedefinin güvenli/güvensiz sınıflandırması çıkarma politikasıdır, biçim ihlali değildir; okuyucu symlink'leri tüm dosya ve dizinlerden sonra kurar.
-END zorunlu; END sonrası: padded ise yalnızca sıfır bayt, değilse hiçbir bayt.
+Limits (violation → code 4): frame ≤ 16 MiB; component ≤ 255 B; path ≤ 4096 B; depth ≤ 256;
+entries ≤ 1 000 000; total path bytes (including symlink targets) ≤ 64 MiB; `..`, empty
+components, a leading `/`, `\`, NUL and drive letters (`[A-Za-z]:`) are forbidden in paths;
+duplicates (NFC + case folding) are forbidden. Classifying a symlink target as safe or unsafe is
+an extraction policy, not a format violation; the reader creates symlinks after all files and
+directories. END is mandatory; after END: only zero bytes if padded, otherwise no bytes.
 
 ## PADMÉ
 
-`P(L)`: PADMÉ hedefi (Nikitin ve diğ., 2019): `E = floor(log2 L)`, `S = floor(log2 E) + 1`, `z = E − S`, `m = 2^z − 1`, `P(L) = (L + m) & ~m`.
-- content_type=0 (`stream_flags.bit0 = 1`): düz metin = `[u64 LE L][veri][sıfır dolgu]`, toplam `P(L+8)`; L baştan bilinmelidir.
-- content_type=1: END sonrası sıfır dolgu, toplam = `P(END'e kadar yazılan bayt)`.
-- Okuyucu sıfır olmayan dolgu baytı → kod 4.
+`P(L)`: the PADMÉ target (Nikitin et al., 2019): `E = floor(log2 L)`, `S = floor(log2 E) + 1`,
+`z = E − S`, `m = 2^z − 1`, `P(L) = (L + m) & ~m`.
+- content_type = 0 (`stream_flags.bit0 = 1`): plaintext = `[u64 LE L][data][zero padding]`,
+  total `P(L+8)`; L must be known in advance.
+- content_type = 1: zero padding after END, total = `P(bytes written up to and including END)`.
+- A non-zero padding byte → code 4.
 
-## Test vektörleri (şablon)
+## Test vectors
 
-Python referansı yalnızca bu belgeden yazılır; Rust tarafı `test-vectors` feature'ıyla üretir.
-Ortak: parola `"test"`, m=64 MiB, t=1, p=1, salt=`00..1f`, stream_nonce_prefix=`20..37` (AES: `20..26`+sıfır), wrap_nonce=`40..57` (AES: `40..4b`+sıfır), FK=`60..7f`.
+The Python reference is written from this document only; the Rust side produces the same files
+with the `test-vectors` feature. Common values: password `"test"`, m = 64 MiB, t = 1, p = 1,
+salt = `00..1f`, stream_nonce_prefix = `20..37` (AES: `20..26` + zeros), wrap_nonce = `40..57`
+(AES: `40..4b` + zeros), FK = `60..7f`.
 
-| # | alg | ct | pad | düz metin | çıktı |
+| # | alg | ct | pad | Plaintext | Output |
 |---|---|---|---|---|---|
-| 1 | 1 | 0 | 0 | 0 B | _ |
-| 2 | 1 | 0 | 0 | 64 KiB (chunk_code 0, tam kat) | _ |
-| 3 | 1 | 0 | 0 | 64 KiB+1 | _ |
-| 4 | 2 | 0 | 0 | "hello" | _ |
-| 5 | 1 | 1 | 1 | `a.txt`="hi" | _ |
-| 6 | 1 | 0 | 1 | "hello" (ham + pad) | _ |
-| 7 | — | — | — | NFD "ş ğ İ é" ≡ NFC | KEK eşitliği |
-| 8 | — | — | — | fd kaynağı `"test\r\n"` ≡ `"test"` | KEK eşitliği |
-| 9 | 1 | 0 | 0 | "hello", keyfile = bayt 00..3f (64 B), kdf_flags=1 | _ |
-| 10 | — | — | — | HKDF info baytları (hex tablosu) | wrap_key, commit_tag, data_key, header_mac_key |
-| 11 | — | — | — | stdin kaynağı `"test\n"` ≡ `"test"` | KEK eşitliği |
+| 1 | 1 | 0 | 0 | 0 B | file |
+| 2 | 1 | 0 | 0 | 64 KiB (chunk_code 0, exact multiple) | file |
+| 3 | 1 | 0 | 0 | 64 KiB + 1 | file |
+| 4 | 2 | 0 | 0 | "hello" | file |
+| 5 | 1 | 1 | 1 | `a.txt` = "hi" | file |
+| 6 | 1 | 0 | 1 | "hello" (raw + padding) | file |
+| 7 | — | — | — | NFD "ş ğ İ é" ≡ NFC | equal KEK |
+| 8 | — | — | — | fd source `"test\r\n"` ≡ `"test"` | equal KEK |
+| 9 | 1 | 0 | 0 | "hello", key file = bytes 00..3f (64 B), kdf_flags = 1 | file |
+| 10 | — | — | — | HKDF info bytes (hex table) | wrap_key, commit_tag, data_key, header_mac_key |
+| 11 | — | — | — | stdin source `"test\n"` ≡ `"test"` | equal KEK |
 
-Resmî KAT'lar: Argon2id RFC 9106 §5.3; HKDF RFC 5869 Ek A (SHA-256/SHA-1; SHA-512 Python çapraz kontrol); XChaCha20-Poly1305 draft-irtf-cfrg-xchacha-03 Ek A; AES-256-GCM NIST CAVP `gcmEncryptExtIV256.rsp`; BLAKE3 `test_vectors.json` (hash + keyed).
+Official KATs: Argon2id RFC 9106 §5.3; HKDF RFC 5869 Appendix A (SHA-256/SHA-1; SHA-512 by
+Python cross-check); XChaCha20-Poly1305 draft-irtf-cfrg-xchacha-03 Appendix A; AES-256-GCM NIST
+CAVP `gcmEncryptExtIV256.rsp`; BLAKE3 `test_vectors.json` (hash + keyed); X25519 RFC 7748 §6.1.
 
-## Sürüm politikası
+## Version policy
 
-v1 okuma ≥ 5 yıl / 3 major. Yazıcı, dosyayı ifade edebilen **en düşük** sürümü yazar (v2 yalnızca bir v2 özelliği açıksa). Bilinmeyen `version` → kod 4. `kdf_flags.bit1` gelecekteki bir yalnızca-keyfile modu için rezerve.
+Version 1 files remain readable for at least 5 years / 3 major releases. A writer writes the
+**lowest** version that can express the file (version 2 only when a v2 feature is used). An
+unknown `version` → code 4. `kdf_flags.bit1` is reserved for a future key-file-only mode.
 
 ## Format version 2 (compression)
 

@@ -1,26 +1,29 @@
-# Güvenlik politikası
+# Security policy
 
-lephycrypy+ henüz bağımsız kriptografik denetimden geçmemiştir (bkz. docs/THREAT-MODEL.md › Diğer).
-1.0 öncesi hiçbir sürüm üretim verisi için önerilmez.
+lephycrypy+ has not yet had an independent cryptographic audit (see docs/THREAT-MODEL.md › Other).
+No pre-1.0 release is recommended for production data. The November 2026 internal review is
+summarised in [docs/SECURITY-REVIEW-2026-11.md](docs/SECURITY-REVIEW-2026-11.md).
 
-## Zafiyet bildirimi
+## Reporting a vulnerability
 
-- Lütfen zafiyetleri herkese açık issue olarak **açmayın**.
-- GitHub "Report a vulnerability" (Security Advisories) özelliğini kullanın; depo açıldığında etkinleştirilecektir.
-- Yanıt hedefi: 7 gün içinde ilk yanıt, 90 gün koordineli açıklama.
+- Please **do not** open a public issue for a vulnerability.
+- Use GitHub's "Report a vulnerability" (private security advisories) on this repository.
+- Target: first response within 7 days, coordinated disclosure within 90 days.
 
-## Kapsam
+## In scope
 
-- Biçim (docs/FORMAT.md) ve anahtar türetme hataları
-- Bellekte sır kalıntısı iddiaları
-- Arşiv çıkarma (zip-slip, symlink, yinelenen ad) ve atomik yazma ihlalleri
-- Tedarik zinciri (deny.toml, supply-chain/)
+- Format (docs/FORMAT.md) and key-derivation flaws, including recipient (public-key) encryption
+- Secret residue in memory
+- Archive extraction (zip-slip, symbolic links, duplicate names) and atomic-write violations
+- USB mode erasing or writing the wrong device
+- Operating-system integration (file associations, `--open` handling)
+- Supply chain (deny.toml, supply-chain/)
 
-Kapsam dışı: docs/THREAT-MODEL.md'de açıkça "kapsam dışı" veya "önlem yok" denilen maddeler
-(hibernation, swap, OS indeksleme, bulut senkron, SIGKILL, vb.).
+Out of scope: items that docs/THREAT-MODEL.md explicitly marks as out of scope or "no
+mitigation" (hibernation, swap, OS indexing, cloud sync, SIGKILL, and so on).
 
-## Desteklenen sürümler
+## Supported versions
 
-| Sürüm | Destek |
+| Version | Support |
 |---|---|
-| 0.x | yalnızca geliştirme; destek yok |
+| 0.x | development only; no support |

@@ -1,106 +1,162 @@
 # lephycrypy+
 
-Açık kaynaklı, Rust ile yazılmış dosya/klasör şifreleme aracı. Hedef: parolayla klasör/arşiv
-saklama; adlar ve yapı her zaman şifreli; akışlı işleme; atomik yazma; bellekte sır kalıntılarını
-**en iyi çaba ile** en aza indirme.
+[Türkçe](README.tr.md) · English
 
-> **Durum: 1.0 öncesi.** Bağımsız bir güvenlik denetiminden geçmemiştir; önemli verileriniz için
-> tek yedek olarak kullanmayın. Biçim [docs/FORMAT.md](docs/FORMAT.md)'de, güvenlik sınırları
-> [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)'de anlatılır.
+An open-source file and folder encryption tool written in Rust. Encrypt with a password or to
+other people's public keys; file names and folder structure are always encrypted; large files are
+streamed; output is written atomically; secrets in memory are kept to a minimum on a **best
+effort** basis.
+
+> **Status: pre-1.0.** lephycrypy+ has not had an independent security audit. Do not use it as
+> the only copy of important data. The file format is specified in [docs/FORMAT.md](docs/FORMAT.md),
+> the security boundaries in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 
 <p>
-  <img src="docs/images/pick.png" width="32%" alt="Dosya bırakma ekranı">
-  <img src="docs/images/ready.png" width="32%" alt="Parola ve kayıt yeri ekranı">
-  <img src="docs/images/done.png" width="32%" alt="İşlem tamamlandı ekranı">
+  <img src="docs/images/pick.png" width="32%" alt="Drop a file or folder">
+  <img src="docs/images/ready.png" width="32%" alt="Password and destination">
+  <img src="docs/images/done.png" width="32%" alt="Finished">
 </p>
 
-## Platformlar
+## Features
 
-| Platform | Durum |
+- **Files and folders** become one `.lphy` archive: names, structure and (by default) size are
+  hidden. XChaCha20-Poly1305 or AES-256-GCM, Argon2id key derivation (512 MiB by default).
+- **Password or public keys.** Use a password (optionally plus a key file), or encrypt to one or
+  more X25519 public keys so only their owners can open the file — no shared password needed.
+- **Batch encryption.** Several files or folders at once, each to its own `.lphy`.
+- **Damage tolerance.** Optional Reed–Solomon error correction repairs damage from failing USB
+  sticks and disks; a recovery mode saves what can be saved from a damaged file.
+- **Practical extras.** Split output into parts (e.g. for FAT32), optional compression,
+  passphrase and key-file generators, secure deletion of originals after verification (with
+  confirmation and honest limits), `rekey` and `reencrypt`.
+- **USB mode.** Wipe a removable USB stick and write only the encrypted file to it, with identity
+  checks before every destructive step.
+- **Desktop app** for macOS and Windows in English and Turkish: drag and drop, double-click `.lphy`
+  files, Finder "Open With" and an optional Explorer right-click entry.
+- **Engineering.** All `unsafe` code in one small crate; format checked byte for byte against an
+  independent Python reference; fuzzing; `cargo deny`, `cargo audit` and `cargo vet` in CI.
+
+See [docs/COMPARISON.md](docs/COMPARISON.md) for how it relates to age, Picocrypt, VeraCrypt and
+Cryptomator.
+
+## Platforms
+
+| Platform | Status |
 |---|---|
-| macOS (aarch64, x86_64) | desteklenir |
-| Windows (x86_64) | desteklenir |
-| Linux | derlenir, en iyi çaba; `usb` ve GUI yok |
+| macOS (aarch64, x86_64) | supported |
+| Windows (x86_64) | supported |
+| Linux | builds, best effort; no `usb` and no desktop app |
 
-MSRV: Rust 1.95.0 (`rust-toolchain.toml` ile sabit).
+MSRV: Rust 1.95.0 (pinned in `rust-toolchain.toml`).
 
-## Crate'ler
-
-| Crate | Rol | unsafe |
-|---|---|---|
-| `lephy-sys` | tek FFI/unsafe crate: bellek kilitleme, süreç sertleştirme, dosya sistemi, birim, terminal, sinyal | evet, her blokta `// SAFETY:` |
-| `lephy-core` | kriptografi, biçim, arşiv, pipeline | `#![forbid(unsafe_code)]` |
-| `lephy-cli` | `lephycrypy` komut satırı | `#![forbid(unsafe_code)]` |
-| `lephy-usb` | yalnızca çıkarılabilir USB: uygunluk, onay, kimlik yeniden denetimi, silme/biçimlendirme, doldurma, yazma, geri okuma | `#![forbid(unsafe_code)]` |
-| `lephy-gui` | `lephycrypy-gui`: egui/eframe tek pencere (macOS/Windows) | `#![forbid(unsafe_code)]`; sıfırlayan global ayırıcı |
-
-## Kullanım
+## Command line
 
 ```bash
-lephycrypy encrypt Belgeler/ -o a1b2c3d4.lphy
+lephycrypy encrypt Documents/ -o a1b2c3d4.lphy
 ```
 
 ```bash
-lephycrypy decrypt a1b2c3d4.lphy -o Belgeler
+lephycrypy decrypt a1b2c3d4.lphy -o Documents
 ```
 
-Dosya ve klasörler her zaman **arşiv** olarak yazılır: adlar ve yapı şifrelidir, boyut PADMÉ ile
-yuvarlanır (`--no-pad` kapatır). Tek dosyalık arşiv çözülürken dosya doğrudan hedefe yazılır.
-`encrypt -` (stdin) ve `--raw` ham akış üretir (`--pad` ile ham akışta da dolgu; stdin'de olmaz).
-Çözümde symlink'ler varsayılan kurulmaz: `--restore-symlinks` yalnızca göreli/`..`'siz hedefleri,
-`--restore-symlinks unsafe` hepsini kurar. `--strict` atlanan/değiştirilen her girişi hata sayar;
-`--rename-conflicts` büyük/küçük harf çakışmalarında `_2` ekler. Bilinen bulut senkron
-klasörlerine çıkarma onay ister (`--allow-cloud-dir`).
+Files and folders are always written as an **archive**: names and structure are encrypted and
+the size is rounded with PADMÉ (`--no-pad` turns this off). A single-file archive is decrypted
+straight to the destination file. `encrypt -` (stdin) and `--raw` write a raw stream (`--pad`
+pads a raw stream too; not with stdin). Symbolic links are not restored by default:
+`--restore-symlinks` restores only relative targets without `..`, `--restore-symlinks unsafe`
+restores all. `--strict` treats every skipped or changed entry as an error; `--rename-conflicts`
+adds `_2` on case conflicts. Extracting into a known cloud-sync folder asks first
+(`--allow-cloud-dir`).
 
-Varsayılanlar: XChaCha20-Poly1305, 1 MiB chunk, Argon2id 512 MiB / 3 / 4. `--alg aes256gcm`,
-`--chunk-size 64k|256k|1m|4m|16m`, `--kdf-memory/--kdf-time/--kdf-parallelism`, `--keyfile`,
-`--force`, `--strict-memory`, `--delete-original`, `--stdout` (yalnızca ham akış), `--allow-large-kdf`.
-Betikler için `--password-stdin`, `--password-fd` (Unix) ve `--password-file`; parola **asla**
-argv/env'den alınmaz. `rekey` parolayı değiştirir ama dosya anahtarını korur; gerçek rotasyon
-`reencrypt`.
+Defaults: XChaCha20-Poly1305, 1 MiB chunks, Argon2id 512 MiB / 3 / 4. Options include
+`--alg aes256gcm`, `--chunk-size 64k|256k|1m|4m|16m`, `--kdf-memory/--kdf-time/--kdf-parallelism`,
+`--keyfile`, `--force`, `--strict-memory`, `--stdout` (raw streams only) and `--allow-large-kdf`.
 
-## USB belleğe yazma
+| Task | Command |
+|---|---|
+| Several sources, one `.lphy` each | `lephycrypy encrypt a.pdf photos/ notes.txt --out-dir out/` |
+| Compress first (see the side-channel note in FORMAT.md) | `encrypt … --compress` |
+| Add error correction (~7 % larger) | `encrypt … --error-correction` |
+| Split into parts | `encrypt … --split-size 650m` (decrypt the `.001` file) |
+| Delete the originals after verification | `encrypt … --delete-original` or `--secure-delete` |
+| Recover what is readable from a damaged file | `decrypt damaged.lphy --recover` |
+| Check without writing | `lephycrypy verify file.lphy` |
+| Show unencrypted header data | `lephycrypy info file.lphy` |
+| Change the password (same file key) | `lephycrypy rekey file.lphy` |
+| Change the password and the file key | `lephycrypy reencrypt file.lphy` |
+| Generate a passphrase / key file | `lephycrypy passphrase`, `lephycrypy keyfile-gen key.bin` |
+| Remove leftover temporary files | `lephycrypy cleanup DIR` |
+
+### Public keys
+
+```bash
+lephycrypy keygen me.lphykey
+```
+
+This writes your password-protected identity to `me.lphykey` and your public key (`lphy1…`) to
+`me.pub` and to the screen. Share only the public key.
+
+```bash
+lephycrypy encrypt report.pdf -o report.lphy -r lphy1… -r friend.pub
+```
+
+```bash
+lephycrypy decrypt report.lphy -i me.lphykey
+```
+
+Any listed recipient can open the file; the password asked for is the identity file's. Public
+keys carry a checksum, so a mistyped key is rejected.
+
+### Password sources
+
+Passwords are **never** read from argv or environment variables. For scripts there are
+`--password-stdin` (all platforms), `--password-fd <n>` (Unix only) and `--password-file <path>`.
+A plaintext password file stays on disk; prefer tmpfs, a RAM disk or a named pipe. On Windows only
+local (`\\.\pipe\…`) pipes owned by the same user are accepted.
+
+## Writing to a USB stick
 
 ```bash
 lephycrypy usb list
 ```
 
 ```bash
-lephycrypy usb write yedek.lphy --target /Volumes/USBBELLEK
+lephycrypy usb write backup.lphy --target /Volumes/USBSTICK
 ```
 
-Yalnızca **USB veriyolu ve çıkarılabilir ortam** kabul edilir; dahili, sanal, sistem ve Time
-Machine birimleri ile "Fixed" görünen harici USB SSD/HDD'ler reddedilir (kod 1, bayrakla aşılamaz).
-Windows'ta seri numarası boş aygıtlar da reddedilir. Komut önce silinecekleri gösterir, sonra
-birim etiketini **ve** boyutu GiB olarak aynen yazmanızı ister (betikte `--confirm-label` +
-`--confirm-size-gib`); uyuşmazlık kod 5'tir ve hiçbir şey silinmez. Her adımdan önce aygıt kimliği
-yeniden okunur; değişmişse kod 5 ile durur. Yalnızca geçerli `.lphy` dosyaları yazılır.
-`--format` birimi exFAT olarak biçimlendirir (Windows'ta yönetici oturumu gerekir),
-`--fill-free-space` boş alanı rastgele veriyle doldurur. FAT/exFAT dizin kalıntıları, NTFS
-resident dosyalar ve wear-leveling yüzünden fiziksel silme garantisi yoktur.
+Only **USB-bus, removable media** are accepted; internal, virtual, system and Time Machine
+volumes and external USB SSDs/HDDs that report as "fixed" are refused (code 1; no flag overrides
+this). On Windows, devices without a serial number are refused too. The command shows what will
+be erased, then asks you to type the volume label **and** its size in GiB (`--confirm-label` and
+`--confirm-size-gib` in scripts); a mismatch is code 5 and nothing is erased. The device identity
+is re-read before every step; if it changed, the command stops with code 5. Only valid `.lphy`
+files are written. `--format` formats the volume as exFAT (an administrator session is needed on
+Windows), `--fill-free-space` fills free space with random data. FAT/exFAT directory remnants,
+NTFS resident files and wear levelling mean physical erasure is not guaranteed.
 
-## Masaüstü uygulaması
+## Desktop app
 
-`lephycrypy-gui` (macOS ve Windows) tek pencerelik sade bir uygulamadır:
+`lephycrypy-gui` (macOS and Windows) is a single, simple window:
 
-1. Bir dosya ya da klasörü pencereye bırakın veya **Dosya seç** / **Klasör seç** ile seçin.
-   `.lphy` dosyaları açılır, diğer her şey şifrelenir.
-2. Parolayı girin. Şifrelerken parola iki kez istenir; en az 8 karakter olmalı ve eşleşme
-   anında gösterilir.
-3. Kaydedilecek yeri gerekirse **Değiştir** ile seçin ve **Şifrele** ya da **Şifreyi çöz**'e basın.
-4. İş bitince **Klasörde göster** sonucu Finder'da ya da Gezgin'de açar.
+1. Drop files or folders on the window, or use **Choose file** / **Choose folder**. `.lphy` files
+   are opened; everything else is encrypted.
+2. Choose **With a password** or **With public keys**. A password is asked twice and must be at
+   least 8 characters; a strength estimate and a passphrase generator help. With public keys,
+   paste the recipients' keys or create your own key pair.
+3. Change the destination if needed and press **Encrypt** or **Decrypt**.
+4. When it is done, **Show in folder** opens the result in Finder or Explorer.
 
-Kısayol: Cmd+O (Windows'ta Ctrl+O) dosya seçme penceresini açar. Finder'da `.lphy` dosyasına çift
-tıklayarak açma henüz desteklenmiyor; dosyayı pencereye bırakın.
+On macOS, double-clicking a `.lphy` file opens it in the app, and any file or folder can be
+opened with **Open With → lephycrypy+**. On Windows, the start screen offers an optional Explorer
+integration (for the current user only) that does the same and adds a right-click entry.
+Shortcut: Cmd+O (Ctrl+O on Windows) opens the file picker.
 
-Parola alanı maskelidir; kopyalama ve yapıştırma kapalıdır, metin doğrudan kilitli bellekte
-tutulur. **Gelişmiş ayarlar** altında algoritma, parola türetme belleği (Hızlı, Önerilen, Güçlü,
-En güçlü), boyut gizleme ve isteğe bağlı anahtar dosyası seçilir; **?** düğmesi bu terimleri
-açıklar. Anahtar dosyasıyla şifrelenmiş bir dosya açılırken anahtar dosyası ayrıca istenir.
-Bulut senkron klasörüne çözme ayrıca onay ister. Uygulama sistemin açık/koyu temasını izler ve
-sistem yazı tiplerini kullanır. Linux'ta masaüstü uygulaması yoktur.
+The password field is masked, copy and paste are disabled and the text is kept in locked memory.
+**Advanced settings** offer the algorithm, password-derivation memory, size hiding, compression,
+error correction, splitting, secure deletion and an optional key file; the **?** button explains
+the terms. The app follows the system light/dark theme and language.
 
-## Derleme
+## Building
 
 ```bash
 cargo build --locked
@@ -110,83 +166,66 @@ cargo build --locked
 cargo test --locked --workspace
 ```
 
-Masaüstü uygulaması:
+Desktop app:
 
 ```bash
 cargo run --release -p lephy-gui
 ```
 
-macOS'ta Finder'dan açılan bir uygulama paketi (`target/macos/lephycrypy+.app`) ve isteğe bağlı
-disk görüntüsü için:
+macOS app bundle (`target/macos/lephycrypy+.app`) and optional disk image:
 
 ```bash
 scripts/macos-app.sh --dmg
 ```
 
-Paket ad-hoc imzalıdır; yalnızca derlendiği Mac'te sorunsuz açılır.
+The bundle is signed ad hoc; it opens without warnings only on the Mac that built it.
 
-Fuzz hedefleri `fuzz/` altındadır (ayrı workspace, nightly + `cargo-fuzz`). Biçim vektörleri,
-yalnızca FORMAT.md okunarak yazılmış Python referansıyla (`tests/ref/lephy_ref.py`) bayt bayt
-karşılaştırılır: `cargo test -p lephy-core --features test-vectors`.
+Fuzz targets live in `fuzz/` (a separate workspace; nightly and `cargo-fuzz`). Format vectors are
+compared byte for byte with a Python reference written only from FORMAT.md
+(`tests/ref/lephy_ref.py`): `cargo test -p lephy-core --features test-vectors`.
 
-## Çıkış kodları
+## Crates
 
-| kod | anlam |
+| Crate | Role | unsafe |
+|---|---|---|
+| `lephy-sys` | the only FFI/unsafe crate: memory locking, process hardening, file system, volumes, terminal, signals, OS integration | yes, every block has a `// SAFETY:` comment |
+| `lephy-core` | cryptography, format, archive, pipeline | `#![forbid(unsafe_code)]` |
+| `lephy-cli` | the `lephycrypy` command | `#![forbid(unsafe_code)]` |
+| `lephy-usb` | removable USB only: eligibility, confirmation, identity re-checks, wipe/format, fill, write, read-back | `#![forbid(unsafe_code)]` |
+| `lephy-gui` | `lephycrypy-gui`: egui/eframe single window (macOS/Windows) | `#![forbid(unsafe_code)]`; zeroizing global allocator |
+
+## Exit codes
+
+| Code | Meaning |
 |---|---|
-| 0 | başarı |
-| 1 | G/Ç, ortam veya genel hata |
-| 2 | kullanım hatası (yalnızca clap) |
-| 3 | parola veya anahtar dosyası yanlış |
-| 4 | dosya bozuk / biçim ihlali |
-| 5 | kullanıcı iptali / onay uyuşmazlığı |
-| 6 | KDF bütçesi/RAM yetersiz (`--allow-large-kdf`) |
-| 7 | hedef mevcut (`--force`) |
-| 8 | disk alanı / FAT32 4 GiB sınırı |
-| 130 | SIGINT/SIGTERM/Ctrl+C (Windows'ta da 130; geleneksel 0xC000013A'dan bilinçli sapma) |
+| 0 | success |
+| 1 | I/O, environment or general error |
+| 2 | usage error (argument parsing only) |
+| 3 | wrong password, key file or identity |
+| 4 | damaged file / format violation |
+| 5 | cancelled by the user / confirmation mismatch |
+| 6 | key-derivation budget or RAM insufficient (`--allow-large-kdf`) |
+| 7 | destination exists (`--force`) |
+| 8 | disk space / FAT32 4 GiB limit |
+| 130 | SIGINT/SIGTERM/Ctrl+C (also 130 on Windows, deliberately instead of 0xC000013A) |
 
-## Neden age/rage değil?
+## Memory limits
 
-age (Go) ve rage (Rust) aynı `age-encryption.org/v1` biçimini kullanır; genel amaçlı şifreleme için
-iyi araçlardır. lephycrypy+ daha dar bir hedefe yöneliktir: parolayla klasör/arşiv saklama.
+Small secrets are locked with `mlock`/`VirtualLock`; failure is a warning, or an error with
+`--strict-memory`. `RLIMIT_MEMLOCK` (Unix) and the working-set limit (Windows) can prevent
+locking. Hibernation, swap/pagefile and OS background services are covered in
+docs/THREAT-MODEL.md.
 
-- **KDF:** age parola modunda scrypt kullanır (N kullanıcı ayarlı, r=8, p=1) ve scrypt kaydı
-  başlıktaki tek kayıt olmak zorundadır (DOĞRULANDI: https://github.com/C2SP/C2SP/blob/main/age.md,
-  erişim 2026-11-16). lephycrypy+ Argon2id (RFC 9106), min 64 MiB, varsayılan 512 MiB.
-- **Ad/yapı gizliliği:** age tek bayt akışını şifreler; klasör için `tar | age` gerekir, çıktı adı
-  kullanıcıya kalır (DOĞRULANDI: age README, https://github.com/FiloSottile/age). lephycrypy+
-  adları ve yapıyı her zaman şifreli arşivde tutar, varsayılan çıktı adı rastgeledir.
-- **Boyut gizleme:** age spesifikasyonu dolgu tanımlamaz (DOĞRULANDI, aynı spec). lephycrypy+
-  arşivde PADMÉ varsayılan.
-- **Akış:** her ikisi 64 KiB chunk'lı STREAM benzeri yapı (age: 11 B BE sayaç + son-chunk bayrağı —
-  DOĞRULANDI). lephycrypy+ 64 KiB–16 MiB chunk ve paralel işleme.
-- **Parola değişimi:** age/rage CLI'ında yeniden şifrelemeden parola değiştiren komut yok
-  (**DOĞRULANMADI**). lephycrypy+ `rekey` sunar, sınırlarıyla (THREAT-MODEL).
-- **age'in avantajları:** olgun, yaygın; birden çok bağımsız uygulama ve resmî spesifikasyon;
-  asimetrik alıcılar (X25519, post-kuantum hibrit, ssh anahtarları, YubiKey eklentileri).
-  lephycrypy+'ta bunlar yok. age/rage için yayımlanmış bağımsız denetim raporu README'lerde
-  belirtilmiyor (**DOĞRULANMADI**; "denetlenmiş" iddiası yazılmaz). lephycrypy+ henüz denetlenmedi.
-- **Ne zaman age:** başkasına açık anahtarla gönderim veya boru hatlarında yaygın/kararlı biçim
-  gerekiyorsa age/rage.
+## Debugging
 
-## Parola kaynakları
+Release binaries use `PT_DENY_ATTACH` on macOS; `--allow-debugger` does not allow attaching a
+debugger to a notarized binary. Use a local unsigned build for debugging.
 
-Parola argv veya ortam değişkeninden **asla** okunmaz. Betik kullanımı için `--password-stdin`
-(tüm platformlar), `--password-fd <n>` (yalnızca Unix) ve `--password-file <yol>` vardır.
-`--password-file` düz metin parola dosyası diskte kalır; tmpfs/RAM disk ya da isimli pipe tercih
-edin. Windows'ta yalnızca yerel (`\\.\pipe\…`) ve aynı kullanıcıya ait pipe'lar kabul edilir.
+## Contributing and security
 
-## Bellek sınırları
+See [CONTRIBUTING.md](CONTRIBUTING.md). Please report vulnerabilities privately as described in
+[SECURITY.md](SECURITY.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
-Küçük sırlar `mlock`/`VirtualLock` ile kilitlenir; başarısızlık uyarıdır, `--strict-memory` ile
-hataya dönüşür. `RLIMIT_MEMLOCK` (Unix) ve working set sınırı (Windows) kilitlemeyi engelleyebilir.
-Hibernation, swap/pagefile ve OS arka plan hizmetleri için docs/THREAT-MODEL.md'ye bakın.
+## License
 
-## Hata ayıklama
-
-Release ikilileri macOS'ta `PT_DENY_ATTACH` kullanır ve notarize + hardened runtime ile imzalanır;
-`--allow-debugger` notarize ikilide debugger bağlanmasını sağlamaz. Hata ayıklama için yerel
-imzasız derleme kullanın.
-
-## Lisans
-
-MIT veya Apache-2.0, tercihinize göre. Üçüncü taraf içerik için NOTICE.
+MIT or Apache-2.0, at your option. See NOTICE for third-party content.

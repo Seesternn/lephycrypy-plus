@@ -1,114 +1,130 @@
-# lephycrypy+ tehdit modeli (taslak)
+# lephycrypy+ threat model (draft)
 
-Hedef, sır kalıntılarını **en iyi çaba ile** en aza indirmektir; mutlak "iz bırakmama" vaat edilmez.
-Her "önlem yok" / "kapsam dışı" maddesi bilinçli bir sınırdır. "DOĞRULANMADI" etiketli iddialar
-kaynak bulunana kadar varsayımdır.
+The goal is to keep secret residue to a minimum on a **best effort** basis; leaving "no trace at
+all" is not promised. Every "no mitigation" / "out of scope" item is a deliberate limit. Claims
+marked "UNVERIFIED" are assumptions until a source is found.
 
-## Korunanlar
-İçerik, adlar/yapı, isteğe bağlı boyut (PADMÉ); başlık/chunk bütünlüğü; kesme/sıra/birleştirme;
-anahtar taahhüdü (commit_tag — invisible salamander / partitioning oracle); küçük sırların kilitli
-ve sıfırlanan bellekte tutulması (en iyi çaba); yarım çıktı yok (atomik yazma).
+## Protected
+Content, names and structure, optionally the size (PADMÉ); header and chunk integrity;
+truncation, reordering and splicing; key commitment (`commit_tag` — invisible salamanders /
+partitioning oracles); small secrets held in locked, zeroized memory (best effort); no partial
+output (atomic writes).
 
-## Açık (şifrelenmeyen) meta veri
-Sürüm, algoritma, KDF parametreleri, keyfile/padded bayrakları, chunk boyutu, salt/nonce'lar,
-commit_tag, toplam şifreli boyut (pad yoksa ±chunk), chunk sayısı; FS zaman damgaları; dosya ve
-keyfile **yolları** argv'de (`ps`, Windows Event Log 4688 komut satırı alanı — denetim ilkesine
-bağlı, varsayılan DOĞRULANMADI); parola asla argv'de değildir; GUI'de yollar argv'ye gitmez.
+## Unencrypted metadata
+Version, algorithm, KDF parameters, key-file / padding / compression flags, number of recipients,
+chunk size, salts and nonces, `commit_tag`, total encrypted size (± one chunk without padding),
+number of chunks; file-system timestamps. File and key-file **paths** appear in argv (`ps`,
+Windows Event Log 4688 command-line field — depends on the audit policy, default UNVERIFIED).
+Passwords are never in argv. The desktop app receives paths in argv only from the optional
+Windows Explorer integration (`--open`).
 
-## Rekey sınırı
-`rekey` FK'yı değiştirmez: eski parola + eski başlık kopyası (256 B) yeni dosyayı açar. Gerçek
-rotasyon `reencrypt`.
+## Rekey limit
+`rekey` does not change the file key: the old password plus a copy of the old header (256 B)
+still opens the new file. Real rotation is `reencrypt`.
 
-## Bellek
-Panikte Drop'lar çalışmaz (`panic=abort`); panik hook'u (1) arenayı ve kayıtlı büyük bölgeleri
-sıfırlar, (2) tmp'leri siler, (3) terminali geri yükler, sonra abort eder (core dump kapalı).
-Sır envanterinden kilitlenmeyen/sıfırlanmayanlar:
-- Unicode normalleştirme yineleyicisinin iç tamponları; Argon2 H0/Blake2b iç durumu (DOĞRULANMADI).
-- AEAD çağrısı başına işçi yığınındaki durumlar (ChaCha20 akış durumu, XChaCha alt anahtarı,
-  Poly1305 tek kullanımlık anahtarı, GHASH kopyası, tag maskesi); Poly1305 için zeroize yok;
-  bunlar chunk'a özgüdür, `data_key`'i doğrudan açığa çıkarmaz.
-- HKDF/HMAC/BLAKE3 taşıma kopyaları ve yazmaç taşmaları; AES `ni`/`armv8` 0.9'da tur anahtarı
-  sıfırlaması DOĞRULANMADI.
-- Düz metin chunk havuzu (≤ 64 MiB) kilitlenmez; swap/pagefile'a düşebilir (kullanım sonrası
-  sıfırlanır).
-- Dosya/dizin adları heap'te sıfırlanmaz; ad gizliliği diskteki çıktı içindir.
-- Çekirdek sayfa önbelleği, tty satır tamponu, parola dosyası/borusunun çekirdek tamponları
-  kapsam dışı.
-- GUI (1.2): egui/winit olay kuyruğu ve IME kompozisyonu; OS klavye kaydı kapsam dışı.
-- zxcvbn (etkinse) parola kopyalarını sıfırlamaz (varsayım, kod incelemesi).
-- Hibernation (kilitli bellek de sleepimage/hiberfil'e yazılabilir); swap (macOS şifreli
-  varsayılan, Windows pagefile değil); mlock başarısızlığı (RLIMIT_MEMLOCK, working set) → uyarı;
-  MADV_DONTDUMP/PR_SET_DUMPABLE yalnızca Linux (best-effort); macOS/Windows'ta Argon2 belleği için
-  döküm hariç tutma yok, yalnızca RLIMIT_CORE=0/WER kapatma; WER dökümleri `LocalDumps` ile süreç
-  dışından alınabilir (hook arenayı önceden sıfırlar, diğer kopyalar bulunabilir);
-  `PT_DENY_ATTACH`/`PR_SET_DUMPABLE` caydırıcıdır, güvenlik sınırı değildir; notarize + hardened
-  runtime ikilide `--allow-debugger` debugger bağlanmasını sağlamaz.
-- Yan kanal: AES-GCM yazılım arka ucu bitsliced/sabit zamanlı; aynı makinedeki önbellek/zamanlama
-  saldırıları kapsam dışı.
+## Memory
+Drops do not run on panic (`panic=abort`); the panic hook (1) zeroizes the arena and registered
+large regions, (2) deletes temporary files, (3) restores the terminal, then aborts (core dumps
+disabled). Not locked or not zeroized:
+- Internal buffers of the Unicode normalisation iterator; Argon2 H0 / Blake2b internal state
+  (UNVERIFIED).
+- Per-call AEAD state on worker stacks (ChaCha20 stream state, XChaCha subkey, Poly1305 one-time
+  key, GHASH copy, tag mask); Poly1305 has no zeroize. These are chunk specific and do not reveal
+  `data_key` directly.
+- HKDF/HMAC/BLAKE3 move copies and register spills; round-key zeroization in the AES `ni`/`armv8`
+  back ends is UNVERIFIED.
+- X25519 scalars are copied by value into the curve library for each multiplication; those copies
+  are wrapped in `Zeroizing` on our side, internal temporaries are not (UNVERIFIED).
+- The plaintext chunk pool (≤ 64 MiB) is not locked; it can reach swap/pagefile (it is zeroized
+  after use).
+- File and directory names are not zeroized on the heap; name secrecy is about the output on
+  disk.
+- Kernel page cache, tty line buffer and kernel buffers of a password file or pipe are out of
+  scope.
+- Desktop app: the egui/winit event queue and IME composition; OS keyboard logging is out of
+  scope.
+- Hibernation (locked memory can be written to sleepimage/hiberfil); swap (encrypted by default
+  on macOS, pagefile not on Windows); `mlock` failure (RLIMIT_MEMLOCK, working set) → warning;
+  MADV_DONTDUMP / PR_SET_DUMPABLE on Linux only (best effort); on macOS/Windows there is no dump
+  exclusion for Argon2 memory, only RLIMIT_CORE=0 / WER disabled; WER dumps can be taken from
+  outside the process with `LocalDumps` (the hook zeroizes the arena first, other copies may be
+  found); `PT_DENY_ATTACH` / `PR_SET_DUMPABLE` deter, they are not a security boundary;
+  `--allow-debugger` does not allow attaching to a notarized, hardened-runtime binary.
+- Side channels: the AES-GCM software back end is bitsliced/constant time; cache and timing
+  attacks from the same machine are out of scope.
 
-**Panik hook'u çalışmayan durumlar:** OOM (`handle_alloc_error` hook'suz abort), çift panik / hook
-içinde panik, stack overflow, SIGKILL/`TerminateProcess`, `unsafe` kaynaklı SIGSEGV/SIGBUS, güç
-kesintisi. Bu durumlarda tmp kalabilir (`cleanup`), arena sıfırlanmaz (kilitli olduğundan diske
-yazılmaz, hibernation istisnası). Hook yığın/yazmaç/heap kopyalarına erişemez; hook sırasında
-diğer iş parçacıkları çalışmaya devam eder (bozuk chunk'lar hedefe ulaşmaz); asılı FS'de tmp silme
-bloklanabilir; çıkarma tmp ağacı hook'ta silinmez.
+**When the panic hook does not run:** out of memory (`handle_alloc_error` aborts without the
+hook), double panic or a panic inside the hook, stack overflow, SIGKILL / `TerminateProcess`,
+SIGSEGV/SIGBUS from `unsafe` code, power loss. Temporary files may then remain (`cleanup`), the
+arena is not zeroized (it is locked and so not written to disk, except on hibernation). The hook
+cannot reach stack, register or heap copies; other threads keep running during the hook (damaged
+chunks do not reach the destination); deleting temporary files can block on a hung file system;
+the extraction temp tree is not deleted by the hook.
 
-**Sinyaller:** KDF sırasında kesinti KDF bitene kadar gecikir; ikinci sinyal `_exit(130)` tmp
-temizliği yapmaz; gecikme ≤ bir chunk G/Ç; Windows konsol kapatma temizliği ~5 s ile sınırlı;
-oturum kapatma olayları etkileşimli uygulamalara ulaşmaz; SIGKILL yakalanamaz.
+**Signals:** an interruption during key derivation waits until it finishes; a second signal
+calls `_exit(130)` without cleaning up; the delay is at most one chunk of I/O; Windows console
+close cleanup is limited to about 5 s; log-off events do not reach interactive apps; SIGKILL
+cannot be caught.
 
-## Dosya sistemi
-Çözme tmp'si düz metindir; SSD/APFS kalıntısı. `--delete-original` kalıntı bırakır; güvenli silme
-sunulmaz; orijinal APFS/Time Machine snapshot, VSS ve bulut sürüm geçmişinde kalabilir. Windows'ta
-dizin fsync yok. Noclobber: FAT/exFAT/ağ FS'de `RENAME_NOREPLACE`/`RENAME_EXCL` desteksiz olabilir
-→ `link` geri dönüşü yoksa kontrol-sonra-rename yarış penceresi (uyarı). Windows tmp ACL
-kısıtlaması DOĞRULANMADI. `--password-file` düz metin parola dosyası bırakır; tmpfs/RAM disk/pipe
-tercih edilmeli. Windows isimli pipe ele geçirme: aynı adla önceden pipe açan saldırgan kendi
-parolasını verebilir → yalnızca yerel ve aynı kullanıcı SID'li pipe kabul edilir.
+## File system
+The decryption temp tree is plaintext; SSD/APFS remnants remain. `--delete-original` leaves
+remnants. `--secure-delete` overwrites each file once with random data before unlinking it, but
+on SSDs (wear levelling, TRIM), copy-on-write file systems (APFS, Btrfs, ReFS) and with snapshots
+the old content can survive; files with other hard links are only unlinked. Originals can remain
+in APFS / Time Machine snapshots, VSS and cloud version history. No directory fsync on Windows.
+No-clobber: FAT/exFAT/network file systems may not support `RENAME_NOREPLACE`/`RENAME_EXCL` →
+without the `link` fallback a check-then-rename race window remains (warning). Restricting the
+Windows temp ACL is UNVERIFIED. `--password-file` leaves a plaintext password file; prefer
+tmpfs, a RAM disk or a pipe. Windows named-pipe squatting: an attacker who opens a pipe with the
+same name first could supply their own password → only local pipes owned by the same user SID are
+accepted.
 
-## İşletim sistemi sızıntıları
-Araç düz metni yalnızca kendi belleğinde ve geçici dosyalarında tutsa da OS arka plan hizmetleri
-geçici veya nihai düz metni, adları ya da varlığı araç kontrolü dışında kopyalayabilir /
-indeksleyebilir / ağa gönderebilir. "Geçici tmp" önlemleri yalnızca araç çalışırken ürettiği
-dosyaları korur; kullanıcının yazdığı nihai düz metin çıktı, bulunduğu konumun normal OS
-davranışına tabidir.
+## Operating-system leaks
+Even though the tool keeps plaintext only in its own memory and temporary files, OS background
+services may copy, index or upload temporary or final plaintext, names or the fact that a file
+exists, outside the tool's control. The temp-file measures only protect files the tool creates
+while running; the final plaintext output follows the normal OS behaviour of its location.
 
-| Kaynak | Ne sızar | Platform | Önlem / durum |
+| Source | What leaks | Platform | Mitigation / status |
 |---|---|---|---|
-| Spotlight (`.Spotlight-V100`) | içerik + ad | macOS | tmp dizin/dosya adı `.noindex` ile biter (sonek mekanizması DOĞRULANMADI); nihai çıktı normal indekslenir |
-| QuickLook thumbnail önbelleği | içerik (önizleme) + ad | macOS | araç QuickLook kullanmaz; kullanıcı önizlerse önbelleğe düşebilir; 10.14+ DataVault korumalı; konum DOĞRULANMADI |
-| APFS snapshot / Time Machine yerel snapshot | içerik + ad (orijinal) | macOS | önlem yok; `--delete-original` sonrası snapshot'ta kalabilir |
-| iCloud Drive / OneDrive / Dropbox / Google Drive | içerik (düz metin buluta) + ad | macOS, Windows | bulut kökü tespiti → onay + `--allow-cloud-dir`; liste sezgisel, eksik olabilir |
-| Windows Search indeksi | içerik + ad | Windows | tmp `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED` (DOĞRULANDI); nihai çıktı dizin ayarına göre |
-| VSS gölge kopyaları | içerik + ad (orijinal) | Windows | önlem yok; belgelenir |
-| Microsoft Defender otomatik örnek gönderimi | içerik (dosya buluta) + ad | Windows | önlem yok; bulut analizi karara varamazsa dosya Microsoft'a gönderilebilir (DOĞRULANDI: https://learn.microsoft.com/en-us/defender-endpoint/cloud-protection-microsoft-antivirus-sample-submission); `SubmitSamplesConsent` kullanıcı ayarı |
-| Recent items / jump list / Finder Son Kullanılanlar | ad + varlık | macOS, Windows | önlem yok (shell/OS kaydeder) |
-| Dosya yolları argv'de | ad + varlık | macOS (`ps`), Windows (Event Log 4688) | parola asla argv'de; yollar görünür; GUI'de argv yok |
+| Spotlight (`.Spotlight-V100`) | content + name | macOS | temp directory/file names end in `.noindex` (suffix mechanism UNVERIFIED); final output is indexed normally |
+| QuickLook thumbnail cache | content (preview) + name | macOS | the tool does not use QuickLook; previews by the user may be cached; DataVault protected on 10.14+; location UNVERIFIED |
+| APFS snapshots / Time Machine local snapshots | content + name (original) | macOS | no mitigation; may remain after deleting the original |
+| iCloud Drive / OneDrive / Dropbox / Google Drive | content (plaintext to the cloud) + name | macOS, Windows | cloud-root detection → confirmation and `--allow-cloud-dir`; the list is heuristic and may be incomplete |
+| Windows Search index | content + name | Windows | temp files get `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED` (VERIFIED); final output follows the folder setting |
+| VSS shadow copies | content + name (original) | Windows | no mitigation; documented |
+| Microsoft Defender automatic sample submission | content (file to the cloud) + name | Windows | no mitigation; if cloud analysis is inconclusive the file may be sent to Microsoft (VERIFIED: https://learn.microsoft.com/en-us/defender-endpoint/cloud-protection-microsoft-antivirus-sample-submission); `SubmitSamplesConsent` is a user setting |
+| Recent items / jump lists / Finder Recents | name + existence | macOS, Windows | no mitigation (recorded by the shell/OS) |
+| File paths in argv | name + existence | macOS (`ps`), Windows (Event Log 4688) | passwords never in argv; paths visible; desktop app only via the Explorer integration |
 
-## USB (1.1)
-FAT/exFAT silinmiş dizin girişleri, NTFS resident dosyalar, sistem klasörleri, wear-leveling →
-fiziksel garanti yok; `--format` denetleyici düzeyinde garanti vermez; geri okuma unmount
-yapılamadıysa "önbellekten doğrulandı"; is_removable tutarsız; harici USB SSD/HDD ("Fixed")
-desteklenmez; kimlik yeniden doğrulaması ile çağrı arasında TOCTOU penceresi kalır;
-sistem/boot/Time Machine dışlanır.
-- macOS `diskutil` seri numarası vermez: seri zorunluluğu yalnızca Windows'ta.
-  macOS fiziksel kimliği `MediaName|DiskUUID|ParentWholeDisk` + boyut + `st_dev`'dir.
-- Windows'ta yeniden bağlama (`FSCTL_DISMOUNT_VOLUME`) uygulanmadı: geri okuma her zaman
-  "önbellekten doğrulandı" etiketi alır.
-- `diskutil` anahtar adları dahili disk çıktısından doğrulandı; bir USB bellekte aldıkları değerler,
-  Windows `STORAGE_DEVICE_DESCRIPTOR` alanlarının USB bellekteki değerleri, `diskutil eraseVolume`
-  ve `Format-Volume -Path` uçtan uca davranışı **gerçek donanımla doğrulanmadı**.
-- PowerShell `Format-Volume` değerleri komut dizgisine gömülmez, alt sürecin ortamından okunur;
-  `powershell.exe` imzası (`WinVerifyTrust`) denetlenmez.
-- Boş alan doldurma ChaCha20 anahtar akışıdır (dosya başına ayrı nonce, ≤ 64 GiB/dosya).
+## USB
+FAT/exFAT deleted directory entries, NTFS resident files, system folders and wear levelling →
+no physical guarantee; `--format` gives no controller-level guarantee; read-back is labelled
+"verified from cache" if unmounting failed; `is_removable` is inconsistent across systems;
+external USB SSDs/HDDs reporting as "fixed" are not supported; a TOCTOU window remains between
+re-checking the identity and the call; system, boot and Time Machine volumes are excluded.
+- macOS `diskutil` does not report serial numbers: a serial is required only on Windows. The
+  macOS physical identity is `MediaName|DiskUUID|ParentWholeDisk` + size + `st_dev`, and erasing
+  is done by volume UUID.
+- Windows remount (`FSCTL_DISMOUNT_VOLUME`) is not implemented: read-back is always labelled
+  "verified from cache".
+- `diskutil` key names were checked against internal-disk output; their values on a USB stick,
+  Windows `STORAGE_DEVICE_DESCRIPTOR` fields on a USB stick, and the end-to-end behaviour of
+  `diskutil eraseVolume` and `Format-Volume -Path` are **not verified on real hardware**.
+- PowerShell `Format-Volume` values are not embedded in the command string; they are read from
+  the child process's environment. The `powershell.exe` signature (`WinVerifyTrust`) is not
+  checked.
+- Free-space filling uses a ChaCha20 key stream (a separate nonce per file, ≤ 64 GiB per file).
 
-## GUI (1.2)
-- egui/winit olay kuyruğu (`Event::Text`) ve IME kompozisyonu parola metninin heap kopyalarını
-  üretir; sıfırlayan global ayırıcı bunları serbest bırakılırken siler, ama serbest bırakılana
-  kadar ve yığın/yazmaç kopyaları için garanti yoktur. OS klavye kaydı/erişilebilirlik
-  araçları kapsam dışıdır.
-- Pano kapalıdır (`clipboard` feature yok; parola alanı kopyala/kes/yapıştır olaylarını yutar).
-- Kalıcı ayar (`persistence`) yoktur; pencere konumu ve geçmiş yollar diske yazılmaz.
+## Desktop app
+- The egui/winit event queue (`Event::Text`) and IME composition create heap copies of the
+  password text; the zeroizing global allocator wipes them when freed, but nothing is guaranteed
+  before they are freed or for stack/register copies. OS keyboard logging and accessibility
+  tools are out of scope. On macOS the password field enables Secure Event Input while focused.
+- The clipboard is disabled (no `clipboard` feature; the password field swallows copy, cut and
+  paste events).
+- No persistent settings (`persistence`); window position and recent paths are not written to
+  disk.
 - Opening files from the operating system: on macOS through the open-documents event
   (double-click on `.lphy`, Finder "Open With", drop on the Dock icon), handled by a method that
   `lephy-sys` adds to the window library's application delegate. On Windows the optional
@@ -119,21 +135,22 @@ sistem/boot/Time Machine dışlanır.
   password and click.
 - The "Copy" link for a public key uses the system tool (`pbcopy`, `clip.exe`) with an empty
   environment; the app itself still has no clipboard access, so a password cannot reach it.
-- GUI işlemleri `--strict`, symlink kurma ve `--rename-conflicts` sunmaz (varsayılan güvenli
-  politika); bunlar için CLI kullanılır.
-- Tedarik zinciri: egui/eframe zinciri ~400 crate ekler (cargo-vet istisnalarının çoğu);
-  çekirdek bu zincirden ayrı, sıkı kademede denetlenir (deny.toml `--exclude lephy-gui`).
+- The app does not offer `--strict`, restoring symbolic links or `--rename-conflicts` (safe
+  defaults); use the command line for these.
+- Supply chain: the egui/eframe tree adds about 400 crates (most `cargo vet` exemptions); the
+  core is checked separately in the strict tier (deny.toml with `--exclude lephy-gui`).
 
-## Arşiv
-Harf katlama erken uyarısı `char::to_lowercase` ile yapılır (CaseFolding.txt C+S ile tam eşdeğerlik
-DOĞRULANMADI); otorite dosya sistemidir. Yazıcı çerçeve verisini ≤ 1 MiB'lık sıfırlanan ara
-tampondan geçirir (plandaki "ayrı çerçeve tamponu yok" ifadesinden küçük sapma). mtime/izin
-uygulaması best-effort'tur (başarısızlık sessizdir). Windows'ta tmp dizin ACL kısıtlaması yoktur.
-xattr, ACL, resource fork, sahiplik, sert bağlar (kopya), FIFO/soket/aygıt desteklenmez;
-`--stdout` kısmi çıktı; harf katlama erken uyarı, otorite FS. Symlink'ler varsayılan kurulmaz;
-`--restore-symlinks` yalnızca göreli/`..`'siz hedefler; `--restore-symlinks=unsafe` ile kurulan
-bağlar çıkarmadan sonra başka programlar için kök dışını gösterebilir (uyarı); Windows'ta
-ayrıcalık/Developer Mode yoksa kurulamaz, ağaç eksik kalır.
+## Archive
+The early case-folding warning uses `char::to_lowercase` (full equivalence with CaseFolding.txt
+C+S is UNVERIFIED); the file system is the authority. The writer passes frame data through a
+zeroized intermediate buffer of at most 1 MiB. Applying mtime and permissions is best effort
+(failures are silent). There is no temp-directory ACL restriction on Windows. Extended
+attributes, ACLs, resource forks, ownership, hard links (stored as copies), FIFOs, sockets and
+devices are not supported; `--stdout` can leave partial output. Symbolic links are not restored
+by default; `--restore-symlinks` restores only relative targets without `..`; links restored with
+`--restore-symlinks=unsafe` can point outside the destination for other programs after
+extraction (warning); on Windows without privilege or Developer Mode they cannot be created and
+the tree is incomplete.
 
 ## Recipient (public-key) encryption
 A file encrypted to public keys can be opened by the holder of any listed identity; there is no
@@ -153,7 +170,12 @@ STREAM authentication. Recovery mode deliberately writes output that failed auth
 (damaged chunks replaced with zeros) to a new `.recovered` path and lists the damaged chunks; its
 output must be treated as untrusted and possibly incomplete.
 
-## Diğer
-Zayıf parola; keyfile yalnızca ek faktör. Linux best-effort: test edilmez, Linux'a özgü korumalar
-(MADV_DONTDUMP, PR_SET_DUMPABLE, renameat2) doğrulanmamış sayılır. **Henüz bağımsız kriptografik
-denetim yapılmamıştır.**
+## Compression
+The compressed size reveals information about the content, especially when an attacker controls
+part of the input (CRIME/BREACH style). PADMÉ reduces but does not remove this. Compression is
+off by default.
+
+## Other
+Weak passwords; a key file is only an additional factor. Linux is best effort: it is not tested,
+and Linux-specific protections (MADV_DONTDUMP, PR_SET_DUMPABLE, renameat2) are considered
+unverified. **No independent cryptographic audit has been done yet.**

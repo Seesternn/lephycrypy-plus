@@ -57,6 +57,9 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Documentation in English: README (Turkish version in README.tr.md), SECURITY, the file format
+  and the threat model; new CONTRIBUTING, CODE_OF_CONDUCT, issue and pull-request templates, and
+  a sourced comparison with age, Picocrypt, VeraCrypt and Cryptomator (docs/COMPARISON.md).
 - Opening files from the system. macOS: double-clicking a `.lphy` file opens it in the app, any
   file or folder can be opened with "Open With → lephycrypy+" in Finder, and files can be dropped
   on the Dock icon (the app bundle declares the `.lphy` type). Windows: an optional Explorer
