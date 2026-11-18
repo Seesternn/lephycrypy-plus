@@ -226,7 +226,9 @@ impl App {
     fn set_sources(&mut self, paths: &[PathBuf]) {
         self.show_settings = false;
         self.confirm_shell = false;
-        match paths {
+        // Every part of a split set stands for the set (its first part).
+        let paths = logic::collapse_parts(paths);
+        match paths.as_slice() {
             [] => {}
             [one] => self.set_source(one),
             many => {

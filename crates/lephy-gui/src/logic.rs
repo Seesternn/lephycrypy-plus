@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use lephy_core::cipher::AlgId;
 use lephy_core::entropy::{Entropy, OsEntropy};
 use lephy_core::error::{Error, ExitCode, Result};
-use lephy_core::header::{HEADER_LEN, Header};
+use lephy_core::header::HEADER_LEN;
 use lephy_core::kdf::KdfParams;
 use lephy_core::ops::{self, DecryptOptions, EncryptOptions, Identity, Input, Output, PublicKey};
 use lephy_core::password;
@@ -23,34 +23,76 @@ pub enum Mode {
     Decrypt,
 }
 
-/// Decrypt if there is a valid `.lphy` header, otherwise encrypt.
+/// Mode from the content: an encrypted file (with or without an error-correction envelope, a single
+/// file or the first part of a set) is decrypted; so is a file named `.lphy` / `.lphy.NNN` whose
+/// header cannot be read (damaged: decryption reports it and offers recovery instead of encrypting
+/// it a second time). Everything else is encrypted.
 #[must_use]
 pub fn detect_mode(path: &Path) -> Mode {
-    let Ok(md) = path.metadata() else {
-        return Mode::Encrypt;
-    };
-    if !md.is_file() || md.len() < HEADER_LEN as u64 {
+    if !path.is_file() {
         return Mode::Encrypt;
     }
-    let mut h = [0u8; HEADER_LEN];
-    let ok = std::fs::File::open(path)
-        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut h))
-        .is_ok();
-    if ok && Header::parse(&h).is_ok() {
+    if ops::info(path).is_ok() || has_lphy_name(path) || ops::has_error_correction(path) {
         Mode::Decrypt
     } else {
         Mode::Encrypt
     }
 }
 
+fn lower_ext(p: &Path) -> Option<String> {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+}
+
+fn is_part_ext(e: &str) -> bool {
+    e.len() == 3 && e.bytes().all(|b| b.is_ascii_digit()) && e != "000"
+}
+
+/// `name.lphy` or a part `name.lphy.NNN`.
+fn has_lphy_name(path: &Path) -> bool {
+    match lower_ext(path).as_deref() {
+        Some("lphy") => true,
+        Some(e) if is_part_ext(e) => lower_ext(&path.with_extension("")).as_deref() == Some("lphy"),
+        _ => false,
+    }
+}
+
+/// A later part of a set (`name.lphy.002`, …) stands for the whole set: its first part, if that
+/// exists. Any other path is returned unchanged.
+#[must_use]
+pub fn first_part_of(path: &Path) -> PathBuf {
+    if let Some(e) = lower_ext(path)
+        && is_part_ext(&e)
+        && e != "001"
+        && lower_ext(&path.with_extension("")).as_deref() == Some("lphy")
+    {
+        let first = path.with_extension("001");
+        if first.is_file() {
+            return first;
+        }
+    }
+    path.to_path_buf()
+}
+
+/// The chosen paths with every part of a set reduced to its first part (duplicates dropped,
+/// order kept).
+#[must_use]
+pub fn collapse_parts(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for p in paths {
+        let q = first_part_of(p);
+        if !out.contains(&q) {
+            out.push(q);
+        }
+    }
+    out
+}
+
 /// Whether the encrypted file needs a key file (`false` if the header cannot be read).
 #[must_use]
 pub fn needs_keyfile(path: &Path) -> bool {
-    let mut h = [0u8; HEADER_LEN];
-    std::fs::File::open(path)
-        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut h))
-        .is_ok()
-        && Header::parse(&h).is_ok_and(|hd| hd.keyfile)
+    ops::info(path).is_ok_and(|h| h.keyfile)
 }
 
 /// Is the file encrypted to public keys (header unreadable: `false`).
@@ -887,6 +929,62 @@ mod tests {
         let e = run(job).unwrap_err();
         assert_eq!(e.exit_code(), ExitCode::WrongPassword);
         assert!(describe_error(&e).starts_with("Parola yanlış"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn encrypted_files_are_always_decrypted() {
+        let d = std::env::temp_dir().join(format!("lphy-gui-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut big = vec![0u8; 3 * 1024 * 1024];
+        OsEntropy.fill(&mut big).unwrap();
+        std::fs::write(d.join("a.bin"), &big).unwrap();
+        let job = |output: &str, ecc: bool, split: Option<u64>| Job {
+            list_only: false,
+            only: Vec::new(),
+            mode: Mode::Encrypt,
+            items: vec![Item {
+                input: d.join("a.bin"),
+                output: d.join(output),
+            }],
+            password: secret("mode pass 123"),
+            confirm: Some(secret("mode pass 123")),
+            kdf_mib: 64,
+            aes: false,
+            pad: true,
+            allow_cloud: true,
+            keyfile: None,
+            secure_delete: false,
+            split,
+            compress: false,
+            ecc,
+            recover: false,
+            recipients: Vec::new(),
+            identity: None,
+        };
+        // With an error-correction envelope (starts with "LPHYRS1", not the .lphy header).
+        run(job("ecc.lphy", true, None)).unwrap();
+        assert_eq!(detect_mode(&d.join("ecc.lphy")), Mode::Decrypt);
+        assert!(header_summary(&d.join("ecc.lphy")).is_some());
+        // Split, with and without the envelope: every part stands for the set.
+        run(job("s.lphy", false, Some(1024 * 1024))).unwrap();
+        run(job("se.lphy", true, Some(1024 * 1024))).unwrap();
+        for base in ["s.lphy", "se.lphy"] {
+            let p1 = d.join(format!("{base}.001"));
+            let p2 = d.join(format!("{base}.002"));
+            assert_eq!(detect_mode(&p1), Mode::Decrypt, "{base}");
+            assert_eq!(first_part_of(&p2), p1);
+            assert_eq!(detect_mode(&first_part_of(&p2)), Mode::Decrypt);
+            assert_eq!(collapse_parts(&[p2.clone(), p1.clone()]), vec![p1.clone()]);
+        }
+        // A damaged .lphy is decrypted (recovery), never encrypted again.
+        std::fs::write(d.join("broken.lphy"), b"not really encrypted").unwrap();
+        assert_eq!(detect_mode(&d.join("broken.lphy")), Mode::Decrypt);
+        // Ordinary files and folders are encrypted.
+        assert_eq!(detect_mode(&d.join("a.bin")), Mode::Encrypt);
+        assert_eq!(detect_mode(&d), Mode::Encrypt);
+        assert_eq!(first_part_of(&d.join("a.bin")), d.join("a.bin"));
         let _ = std::fs::remove_dir_all(&d);
     }
 

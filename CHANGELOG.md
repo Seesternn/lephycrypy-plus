@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- Desktop app: an encrypted file with error correction (`--error-correction`) was offered for
+  encryption again instead of decryption, because only the bare `.lphy` header was recognised.
+  Files are now recognised through the envelope and split sets as well; any part of a set opens the
+  set, and a damaged `.lphy` file goes to decryption (with recovery) instead of being encrypted
+  again. Key-file and identity detection use the same path.
 - macOS: interactive password prompts no longer hang. `poll()` reports POLLNVAL for `/dev/tty`
   on macOS; the reader now falls through to the blocking read.
 - Desktop app: a request from the operating system to open items (double-click, Quick Action,
