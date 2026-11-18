@@ -69,6 +69,9 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Change who can open a file encrypted to public keys (`lephycrypy recipients FILE -i ID -r KEY…`,
+  and "Change the recipient list…" in the app). A current recipient replaces the whole list; the
+  content is not re-encrypted. Vector 15 from the Python reference is reproduced byte for byte.
 - List an archive without extracting it (`lephycrypy list`, and "List contents" in the app) and
   extract only some paths (`decrypt --only PATH`, or check boxes in the app). Listing decrypts and
   checks the whole file but writes nothing; selected folders bring everything below them.

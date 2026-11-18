@@ -407,6 +407,17 @@ def vectors(outdir: str):
     meta["v14"] = {"alg": 1, "chunk_code": 0, "content_type": 0, "padded": False,
                    "recipients": [x25519_public(sk1).hex(), x25519_public(sk2).hex()],
                    "identities": [sk1.hex(), sk2.hex()], "plaintext": pt14.decode()}
+    # 15: v14 with its recipient list replaced by the second recipient only (set_recipients):
+    # same FK, prefix and chunks; a new stanza.
+    e3 = bytes(range(0x10, 0x30))
+    wrap3 = bytes(range(0x30, 0x48))
+    h15, ext15, _ = build_recipient_header(
+        1, 0, False, 0, PREFIX, FK, [(x25519_public(sk2), e3, wrap3)])
+    assert chunk_aad(h15) == chunk_aad(h14)
+    with open(os.path.join(outdir, "v15.lphy"), "wb") as f:
+        f.write(h15 + ext15 + body)
+    meta["v15"] = {"from": "v14", "recipients": [x25519_public(sk2).hex()],
+                   "identities": [sk2.hex()], "plaintext": pt14.decode()}
     # 7/8/11: equal KEKs
     nfd = "ş ğ İ é".encode("utf-8")
     nfc = "ş ğ İ é".encode("utf-8")

@@ -166,7 +166,10 @@ anonymous to an observer: recipients' public keys are not stored, though the num
 recipients is visible in the header. The sender is not authenticated — anyone who knows a
 recipient's public key can create a file for them, so a valid file proves nothing about who made
 it. A recipient who can open the file can also learn the file key and could re-encrypt different
-content for the other recipients. `rekey`/`reencrypt` do not apply to these files. There is no
+content for the other recipients. `rekey`/`reencrypt` do not apply to these files; instead any
+recipient can replace the recipient list (`recipients`). That keeps the file key, so removing a
+recipient only stops access to the new file: a removed recipient who kept a copy of the old file,
+or noted its file key, can still read the content. There is no
 post-quantum protection: a future quantum computer that records the file could recover the file
 key from the stanzas.
 

@@ -121,6 +121,8 @@ pub struct App {
     selected: std::collections::BTreeSet<String>,
     /// Filter text for the listing.
     list_filter: String,
+    /// Decrypting a file encrypted to public keys: replace its recipient list instead.
+    edit_recipients: bool,
     /// The system integration change (Explorer on Windows, Quick Action on macOS) awaits
     /// confirmation.
     #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
@@ -172,6 +174,7 @@ impl Default for App {
             listing: None,
             selected: std::collections::BTreeSet::new(),
             list_filter: String::new(),
+            edit_recipients: false,
             confirm_shell: false,
             settings_note: None,
         }
@@ -216,6 +219,7 @@ impl App {
         self.listing = None;
         self.selected.clear();
         self.list_filter.clear();
+        self.edit_recipients = false;
     }
 
     /// Several sources: all must suit the same operation (all encrypted or none).
@@ -326,6 +330,11 @@ impl App {
                     && self.password.char_count() >= MIN_SCALARS
                     && self.password.same_as(&self.confirm)
             }
+            Mode::Decrypt if self.identity_required && self.edit_recipients => {
+                !self.password.is_empty()
+                    && self.identity.is_some()
+                    && logic::parse_recipients(&self.recipients_text).is_ok_and(|k| !k.is_empty())
+            }
             Mode::Decrypt => {
                 !self.password.is_empty()
                     && (!self.keyfile_required || self.keyfile.is_some())
@@ -365,7 +374,8 @@ impl App {
                 output: output.clone(),
             }]
         };
-        let key_mode = mode == Mode::Encrypt && self.use_keys;
+        let key_mode = (mode == Mode::Encrypt && self.use_keys)
+            || (mode == Mode::Decrypt && self.identity_required && self.edit_recipients);
         let recipients = if key_mode {
             logic::parse_recipients(&self.recipients_text).unwrap_or_default()
         } else {
@@ -1184,7 +1194,11 @@ impl App {
         submit: bool,
     ) {
         ui.add_space(14.0);
-        self.output_row(ui, pal);
+        if self.editing_recipients() {
+            self.recipient_editor(ui, pal);
+        } else {
+            self.output_row(ui, pal);
+        }
         if let Some(root) = self.cloud_root() {
             ui.add_space(6.0);
             ui.label(
@@ -1220,10 +1234,13 @@ impl App {
         };
         let label = match mode {
             Mode::Encrypt => tr("Şifrele", "Encrypt"),
+            Mode::Decrypt if self.editing_recipients() => {
+                tr("Alıcıları güncelle", "Update recipients")
+            }
             Mode::Decrypt if !self.selected.is_empty() && self.listing.is_some() => &picked,
             Mode::Decrypt => tr("Şifreyi çöz", "Decrypt"),
         };
-        if mode == Mode::Decrypt && !self.batch() {
+        if mode == Mode::Decrypt && !self.batch() && !self.editing_recipients() {
             self.contents_view(ui, ctx, pal);
             self.recover_option(ui, pal);
         }
@@ -1393,6 +1410,54 @@ impl App {
             );
         }
         ui.add_space(8.0);
+    }
+
+    fn editing_recipients(&self) -> bool {
+        self.edit_recipients && self.identity_required && !self.batch()
+    }
+
+    /// Public-key file: switch between opening it and replacing its recipient list.
+    fn recipient_editor(&mut self, ui: &mut Ui, pal: Palette) {
+        ui.label(
+            RichText::new(tr("Yeni alıcı listesi", "New recipient list"))
+                .font(fonts::semibold(13.5))
+                .color(pal.ink),
+        );
+        ui.label(
+            RichText::new(tr(
+                "Açık anahtarlar dosyada saklanmaz; bu yüzden tam listeyi yazın: erişimi kalacak herkes, siz de dahil. İçerik yeniden şifrelenmez. Çıkarılan biri dosyanın eski bir kopyasını sakladıysa onu açabilir.",
+                "Public keys are not stored in the file, so write the complete list: everyone who keeps access, yourself included. The content is not re-encrypted. A removed recipient who kept a copy of the old file can still open that copy.",
+            ))
+            .color(pal.muted)
+            .size(12.5),
+        );
+        ui.add_space(6.0);
+        ui.add(
+            egui::TextEdit::multiline(&mut self.recipients_text)
+                .hint_text("lphy1…")
+                .desired_rows(4)
+                .desired_width(f32::INFINITY)
+                .font(egui::TextStyle::Monospace),
+        );
+        match logic::parse_recipients(&self.recipients_text) {
+            Ok(k) if !k.is_empty() => {
+                ui.label(
+                    RichText::new(match lang() {
+                        Lang::Tr => format!("{} geçerli anahtar.", k.len()),
+                        Lang::En => format!("{} valid key(s).", k.len()),
+                    })
+                    .color(pal.accent)
+                    .size(12.5),
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                ui.label(RichText::new(e).color(pal.danger).size(12.5));
+            }
+        }
+        if link_button(ui, pal, tr("Vazgeç, dosyayı aç", "Cancel, open the file")).clicked() {
+            self.edit_recipients = false;
+        }
     }
 
     /// Recovery-mode option (single-file decryption).
@@ -2057,6 +2122,19 @@ impl App {
         ui.add_space(10.0);
         let (_, s) = self.password.ui(ui, true);
         *submit = s;
+        if !self.edit_recipients
+            && !self.batch()
+            && link_button(
+                ui,
+                pal,
+                tr("Alıcı listesini değiştir…", "Change the recipient list…"),
+            )
+            .clicked()
+        {
+            self.edit_recipients = true;
+            self.listing = None;
+            self.selected.clear();
+        }
     }
 
     fn keyfile_row(&mut self, ui: &mut Ui, pal: Palette, required: bool) {
@@ -2261,6 +2339,9 @@ impl App {
             ui.add_space(14.0);
             ui.label(
                 RichText::new(match mode {
+                    _ if out.recipients_set.is_some() => {
+                        tr("Alıcılar güncellendi", "Recipients updated")
+                    }
                     Mode::Encrypt => tr("Şifrelendi", "Encrypted"),
                     Mode::Decrypt => tr("Şifre çözüldü", "Decrypted"),
                 })

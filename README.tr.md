@@ -97,6 +97,16 @@ lephycrypy encrypt rapor.pdf -o rapor.lphy -r lphy1… -r arkadas.pub
 lephycrypy decrypt rapor.lphy -i ben.lphykey
 ```
 
+Dosyayı kimin açabileceğini değiştirmek için mevcut alıcılardan biri listenin tamamını yeniler.
+Açık anahtarlar dosyada saklanmadığından, erişimi kalacak herkesi (kendiniz dahil) verin:
+
+```bash
+lephycrypy recipients rapor.lphy -i ben.lphykey -r ben.pub -r yeni-is-arkadasi.pub
+```
+
+İçerik yeniden şifrelenmez; çıkarılan biri eski dosyanın bir kopyasını sakladıysa onu açabilir.
+Uygulamada: kimlik ekranında **Alıcı listesini değiştir…**.
+
 Parola argv'den ya da ortam değişkeninden **asla** okunmaz; betikler için `--password-stdin`,
 `--password-fd` (Unix) ve `--password-file` vardır.
 

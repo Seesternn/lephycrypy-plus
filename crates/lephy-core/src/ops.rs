@@ -196,6 +196,17 @@ pub fn build_recipient_header(
     recipients: &[PublicKey],
     entropy: &mut dyn Entropy,
 ) -> Result<Unlocked> {
+    build_recipient_header_with(params, recipients, Reuse::default(), entropy)
+}
+
+/// [`build_recipient_header`] that keeps FK and `stream_nonce_prefix` when given (`set_recipients`);
+/// only the missing ones are drawn from `entropy`.
+fn build_recipient_header_with(
+    params: &NewHeaderParams,
+    recipients: &[PublicKey],
+    reuse: Reuse<'_>,
+    entropy: &mut dyn Entropy,
+) -> Result<Unlocked> {
     let count = u16::try_from(recipients.len())
         .ok()
         .filter(|n| (1..=crate::header::MAX_RECIPIENTS).contains(n))
@@ -206,10 +217,18 @@ pub fn build_recipient_header(
             ))
         })?;
     let mut prefix = [0u8; 24];
-    entropy.fill(&mut prefix[..params.alg.prefix_len()])?;
+    if let Some(p) = reuse.prefix {
+        prefix = *p;
+    } else {
+        entropy.fill(&mut prefix[..params.alg.prefix_len()])?;
+    }
     let mut fk = SecretBytes::with_capacity(KEY_LEN).map_err(arena_err)?;
-    fk.set_len(KEY_LEN).map_err(arena_err)?;
-    entropy.fill(fk.expose_mut())?;
+    if let Some(old) = reuse.fk {
+        fk.push_slice(old.expose()).map_err(arena_err)?;
+    } else {
+        fk.set_len(KEY_LEN).map_err(arena_err)?;
+        entropy.fill(fk.expose_mut())?;
+    }
     let mut header = Header {
         alg: params.alg,
         content_type: params.content_type,
@@ -1458,6 +1477,74 @@ pub fn list(
     let entries = ex.take_listing();
     ex.finish()?;
     Ok(entries)
+}
+
+/// Replaces the recipient list of a file encrypted to public keys. `identity` must be one of the
+/// current recipients (it unlocks the file key). Recipients' public keys are not stored in the file,
+/// so the new list is complete: it replaces every current recipient. FK, `stream_nonce_prefix` and
+/// all chunks stay the same (the chunk AAD does not cover the recipient fields); every stanza is
+/// new. Entropy order: per recipient the ephemeral secret and `wrap_nonce`. Atomic, in place.
+///
+/// A removed recipient who kept a copy of the old file can still open that copy.
+///
+/// # Errors
+/// 3 (identity not among the recipients), 4, 1 (not a recipient file, error correction, symlink or
+/// hard link, 1..=64 recipients), 130.
+pub fn set_recipients(
+    path: &Path,
+    identity: &Identity,
+    recipients: &[PublicKey],
+    opts: UnlockOptions<'_>,
+    entropy: &mut dyn Entropy,
+    log: &mut dyn FnMut(&str),
+) -> Result<()> {
+    let orig_md = require_plain_file(path)?;
+    let mut f = File::open(path)?;
+    let b = read_header(&mut f)?;
+    if !Header::parse(&b).is_ok_and(|h| h.recipients > 0) {
+        return Err(Error::Environment(
+            "this file is not encrypted to public keys; use rekey to change a password".into(),
+        ));
+    }
+    let ext = read_ext(&mut f, &b)?;
+    let opts = UnlockOptions {
+        identity: Some(identity),
+        ..opts
+    };
+    let empty = SecretBytes::with_capacity(0).map_err(arena_err)?;
+    let u = unlock_header(&b, &ext, &empty, None, opts, log)?;
+    let params = NewHeaderParams {
+        alg: u.header.alg,
+        content_type: u.header.content_type,
+        padded: u.header.padded,
+        chunk_code: u.header.chunk_code,
+        kdf: u.header.kdf,
+        keyfile: false,
+        compressed: u.header.compressed,
+    };
+    let nu = build_recipient_header_with(
+        &params,
+        recipients,
+        Reuse {
+            fk: Some(&u.fk),
+            prefix: Some(&u.header.stream_nonce_prefix),
+        },
+        entropy,
+    )?;
+    debug_assert_eq!(chunk_aad(&u.bytes), chunk_aad(&nu.bytes));
+    let mut w = AtomicWriter::create(path, true)?;
+    w.file().write_all(&nu.bytes)?;
+    w.file().write_all(&nu.ext)?;
+    f.seek(SeekFrom::Start((HEADER_LEN + ext.len()) as u64))?;
+    copy_rest(&mut f, w.file())?;
+    drop(f);
+    w.commit(true)?;
+    let _ = std::fs::set_permissions(path, orig_md.permissions());
+    if !recipients.contains(&identity.public()) {
+        log("warning: your own key is not in the new list; you can no longer open this file");
+    }
+    log("warning: a removed recipient who kept a copy of the old file can still open that copy");
+    Ok(())
 }
 
 /// New credentials (rekey/reencrypt).

@@ -273,9 +273,17 @@ Public keys are not stored in the file.
 **Identity file (`.lphykey`).** An ordinary password-protected v1 file (raw stream, no padding,
 no compression) whose 40-byte content is `"LPHYID1\0" ‖ sk`.
 
+**Replacing the recipients.** A current recipient may rewrite the header and stanzas for a new,
+complete list (`lephycrypy recipients`): `FK` and `stream_nonce_prefix` are kept, so `data_key`,
+`chunk_aad` (it does not cover bytes 28..30) and every chunk stay byte for byte the same; every
+stanza is new (fresh `e` and `wrap_nonce`) because the wrap AAD covers the recipient count, and
+`header_mac` is recomputed. Because public keys are not stored, recipients cannot be added to or
+removed from the existing list individually.
+
 | # | alg | chunk_code | content_type | Input | Note |
 |---|---|---|---|---|---|
 | 14 | 1 | 0 | 0 | `"to a public key"`, two recipients `sk1 = 80..9f`, `sk2 = a0..bf`; `e1 = c0..df`, `wrap_nonce1 = 40..57`; `e2 = e0..ff`, `wrap_nonce2 = 58..6f`; prefix and FK as above | byte-identical both ways |
+| 15 | 1 | 0 | 0 | vector 14 with its recipients replaced by `sk2` only: `e = 10..2f`, `wrap_nonce = 30..47`; same chunks | byte-identical |
 
 ## Split output (informative)
 

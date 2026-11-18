@@ -49,6 +49,16 @@
    "605a725d2a4adfeeb1a29e17edd621c1b7593ee8cdbc44ac6c4ab6e2f805d23c"
   ]
  },
+ "v15": {
+  "from": "v14",
+  "identities": [
+   "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+  ],
+  "plaintext": "to a public key",
+  "recipients": [
+   "605a725d2a4adfeeb1a29e17edd621c1b7593ee8cdbc44ac6c4ab6e2f805d23c"
+  ]
+ },
  "v2": {
   "alg": 1,
   "chunk_code": 0,

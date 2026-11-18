@@ -208,7 +208,9 @@ pub struct Job {
     pub ecc: bool,
     /// Recovery mode when decrypting: extract what can be saved from a damaged file.
     pub recover: bool,
-    /// Encrypt to these public keys instead of the password (empty = password).
+    /// Encrypt to these public keys instead of the password (empty = password). When decrypting a
+    /// file encrypted to public keys: replace its recipients with this list instead (needs
+    /// `identity`; nothing is extracted).
     pub recipients: Vec<PublicKey>,
     /// Decrypt with this identity file; `password` is then the identity's password.
     pub identity: Option<PathBuf>,
@@ -239,6 +241,8 @@ pub struct Outcome {
     pub incomplete: bool,
     /// Contents of the archive (a listing job; nothing was written).
     pub listing: Option<Vec<lephy_core::archive::ListEntry>>,
+    /// The recipient list was replaced with this many keys.
+    pub recipients_set: Option<usize>,
 }
 
 #[allow(clippy::struct_excessive_bools, reason = "independent job switches")]
@@ -280,6 +284,23 @@ pub fn run(job: Job) -> Result<Outcome> {
         }
         _ => None,
     };
+    if job.mode == Mode::Decrypt && !job.recipients.is_empty() {
+        let id = identity.as_ref().ok_or(Error::IdentityRequired)?;
+        let mut out = Outcome::default();
+        for item in &job.items {
+            ops::set_recipients(
+                &item.input,
+                id,
+                &job.recipients,
+                ops::UnlockOptions::default(),
+                &mut OsEntropy,
+                &mut |_| {},
+            )?;
+            out.outputs.push(item.input.clone());
+        }
+        out.recipients_set = Some(job.recipients.len());
+        return Ok(out);
+    }
     let keyfile = job
         .keyfile
         .as_deref()
@@ -914,6 +935,74 @@ mod tests {
         .unwrap();
         assert_eq!(std::fs::read(d.join("back/sub/b.txt")).unwrap(), b"b");
         assert!(!d.join("back/a.txt").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn replace_recipients_from_the_app() {
+        let d = std::env::temp_dir().join(format!("lphy-gui-rcp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("m.txt"), b"shared").unwrap();
+        let pa = create_identity(&d.join("a.lphykey"), &secret("identity pass a"), 64).unwrap();
+        let pb = create_identity(&d.join("b.lphykey"), &secret("identity pass b"), 64).unwrap();
+        let job = |mode, input: &str, output: &str, keys: &str, id: Option<&str>, pw: &str| Job {
+            list_only: false,
+            only: Vec::new(),
+            mode,
+            items: vec![Item {
+                input: d.join(input),
+                output: d.join(output),
+            }],
+            password: secret(pw),
+            confirm: None,
+            kdf_mib: 64,
+            aes: false,
+            pad: true,
+            allow_cloud: true,
+            keyfile: None,
+            secure_delete: false,
+            split: None,
+            compress: false,
+            ecc: false,
+            recover: false,
+            recipients: parse_recipients(keys).unwrap(),
+            identity: id.map(|i| d.join(i)),
+        };
+        run(job(Mode::Encrypt, "m.txt", "m.lphy", &pa, None, "")).unwrap();
+        // A replaces the list with B only.
+        let out = run(job(
+            Mode::Decrypt,
+            "m.lphy",
+            "x",
+            &pb,
+            Some("a.lphykey"),
+            "identity pass a",
+        ))
+        .unwrap();
+        assert_eq!(out.recipients_set, Some(1));
+        assert!(!d.join("x").exists(), "nothing is extracted");
+        run(job(
+            Mode::Decrypt,
+            "m.lphy",
+            "by-b",
+            "",
+            Some("b.lphykey"),
+            "identity pass b",
+        ))
+        .unwrap();
+        assert_eq!(std::fs::read(d.join("by-b")).unwrap(), b"shared");
+        assert!(
+            run(job(
+                Mode::Decrypt,
+                "m.lphy",
+                "by-a",
+                "",
+                Some("a.lphykey"),
+                "identity pass a"
+            ))
+            .is_err()
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

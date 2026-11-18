@@ -31,6 +31,7 @@ const V12: &[u8] = include_bytes!("../../../tests/kat/vectors/v12.lphy");
 const V13: &[u8] = include_bytes!("../../../tests/kat/vectors/v13.lphy");
 /// v2 recipient vector (X25519, two stanzas): byte-identical in both directions.
 const V14: &[u8] = include_bytes!("../../../tests/kat/vectors/v14.lphy");
+const V15: &[u8] = include_bytes!("../../../tests/kat/vectors/v15.lphy");
 const META: &str = include_str!("../../../tests/kat/vectors/vectors.json");
 
 fn common_kdf() -> KdfParams {
@@ -362,5 +363,66 @@ fn v14_recipients_match_reference_both_ways() {
         .unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"to a public key");
     }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn v15_set_recipients_matches_reference() {
+    use lephy_core::ops::{Identity, UnlockOptions};
+    let d = std::env::temp_dir().join(format!("lphy-v15-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let range = |a: u16, b: u16| -> Vec<u8> { (a..b).map(|x| x as u8).collect() };
+    let id1 = Identity::from_secret(SecretBytes::from_slice(&range(0x80, 0xA0)).unwrap()).unwrap();
+    let id2 = Identity::from_secret(SecretBytes::from_slice(&range(0xA0, 0xC0)).unwrap()).unwrap();
+    // The first recipient replaces the list with the second recipient only.
+    let file = d.join("f.lphy");
+    std::fs::write(&file, V14).unwrap();
+    let mut e = FixedEntropy::new(vec![range(0x10, 0x30), range(0x30, 0x48)]);
+    ops::set_recipients(
+        &file,
+        &id1,
+        &[id2.public()],
+        UnlockOptions::default(),
+        &mut e,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), V15);
+    let open = |id: &Identity, n: u32| {
+        ops::decrypt(
+            &file,
+            &ops::Output::Path(&d.join(format!("out{n}")), false),
+            &pwd(""),
+            None,
+            DecryptOptions {
+                unlock: UnlockOptions {
+                    identity: Some(id),
+                    ..UnlockOptions::default()
+                },
+                ..DecryptOptions::default()
+            },
+            &mut |_| {},
+        )
+    };
+    open(&id2, 2).unwrap();
+    assert_eq!(std::fs::read(d.join("out2")).unwrap(), b"to a public key");
+    assert!(matches!(
+        open(&id1, 1),
+        Err(lephy_core::error::Error::NoMatchingIdentity)
+    ));
+    // A password file is refused.
+    std::fs::write(&file, V1).unwrap();
+    assert!(
+        ops::set_recipients(
+            &file,
+            &id2,
+            &[id1.public()],
+            UnlockOptions::default(),
+            &mut lephy_core::entropy::OsEntropy,
+            &mut |_| {}
+        )
+        .is_err()
+    );
     let _ = std::fs::remove_dir_all(&d);
 }

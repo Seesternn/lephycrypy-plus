@@ -282,6 +282,28 @@ enum Command {
         #[arg(long, value_name = "PATH", conflicts_with_all = ["stdout", "recover"])]
         only: Vec<String>,
     },
+    /// Replaces the recipients of a file encrypted to public keys; your identity must be one of
+    /// them. Public keys are not stored in the file, so give the complete new list: everyone who
+    /// should keep access, yourself included. The content is not re-encrypted.
+    Recipients {
+        /// Encrypted file (changed in place, atomically).
+        input: PathBuf,
+        /// Your identity file (`.lphykey`); the password asked for is the identity file's.
+        #[arg(short = 'i', long, value_name = "PATH")]
+        identity: PathBuf,
+        /// New recipient: an `lphy1…` public key or a file with keys; repeatable.
+        #[arg(
+            short = 'r',
+            long = "recipient",
+            value_name = "KEY|FILE",
+            required = true
+        )]
+        recipients: Vec<String>,
+        #[command(flatten)]
+        pw: PasswordArgs,
+        #[command(flatten)]
+        unlock: UnlockArgs,
+    },
     /// Lists the contents of an encrypted archive without writing anything.
     List {
         /// Encrypted file.
@@ -1018,6 +1040,21 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             println!("verified: {n} bytes");
             Ok(())
         }
+        Command::Recipients {
+            input,
+            identity,
+            recipients,
+            pw,
+            unlock,
+        } => {
+            let keys = recipient_keys(recipients)?;
+            let (_, _, id) = unlock_material(input, Some(identity), pw, *unlock, log)?;
+            let id = id.ok_or(Error::IdentityRequired)?;
+            memory_warning(unlock.strict_memory)?;
+            ops::set_recipients(input, &id, &keys, unlock.opts(), &mut OsEntropy, log)?;
+            println!("recipients replaced: {} key(s)", keys.len());
+            Ok(())
+        }
         Command::List {
             input,
             identity,
@@ -1298,7 +1335,16 @@ fn recipient_keys(values: &[String]) -> Result<Vec<PublicKey>> {
             out.extend(keys);
         }
     }
-    out.dedup();
+    // Duplicates removed, first occurrence kept (order is preserved).
+    let mut seen = Vec::with_capacity(out.len());
+    out.retain(|k| {
+        if seen.contains(k) {
+            false
+        } else {
+            seen.push(*k);
+            true
+        }
+    });
     Ok(out)
 }
 

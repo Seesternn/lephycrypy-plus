@@ -110,6 +110,16 @@ lephycrypy decrypt report.lphy -i me.lphykey
 Any listed recipient can open the file; the password asked for is the identity file's. Public
 keys carry a checksum, so a mistyped key is rejected.
 
+To change who can open a file, any current recipient replaces the whole list (public keys are not
+stored in the file, so give everyone who keeps access, yourself included):
+
+```bash
+lephycrypy recipients report.lphy -i me.lphykey -r me.pub -r new-colleague.pub
+```
+
+The content is not re-encrypted; a removed recipient who kept a copy of the old file can still
+open that copy. In the app: **Change the recipient list…** on the identity screen.
+
 ### Password sources
 
 Passwords are **never** read from argv or environment variables. For scripts there are
