@@ -960,6 +960,8 @@ pub struct DecryptOptions<'a> {
     pub unlock: UnlockOptions<'a>,
     /// Extraction policy (`padded` is filled in from the header).
     pub extract: ExtractOptions,
+    /// Archives: extract only these paths (and everything below them); `None` = everything.
+    pub only: Option<&'a [String]>,
 }
 
 /// Creates a directory (0700) and excludes it from indexing on Windows.
@@ -1068,6 +1070,9 @@ pub fn decrypt(
             // With compression the padding is at the end of the compressed stream (checked by InflateWriter).
             eo.padded = u.header.padded && !u.header.compressed;
             let mut ex = Extractor::new(&tmp, eo)?;
+            if let Some(only) = opts.only {
+                ex.select_only(only);
+            }
             if u.header.compressed {
                 let mut iw = crate::compress::InflateWriter::new(ex, u.header.padded);
                 report.plain_len = decrypt_stream(&sp, &mut f, &mut iw).map_err(map_adaptor)?;
@@ -1407,6 +1412,52 @@ pub fn verify(
         }
         ContentType::Raw => verify_stream(&sp, &mut f),
     }
+}
+
+/// Lists the entries of an encrypted archive without writing anything: the whole file is
+/// decrypted and checked exactly as by [`verify`].
+///
+/// # Errors
+/// As [`verify`]; a file that is not an archive (`--raw`, stdin) → code 1.
+pub fn list(
+    path: &Path,
+    pwd_nfc: &SecretBytes,
+    keyfile_digest: Option<&[u8; 32]>,
+    opts: UnlockOptions<'_>,
+    log: &mut dyn FnMut(&str),
+) -> Result<Vec<crate::archive::ListEntry>> {
+    let (input, u) = open_stream_and_unlock(path, pwd_nfc, keyfile_digest, opts, false, log)?;
+    if u.header.content_type != ContentType::Archive {
+        return Err(Error::Environment(
+            "not an archive (a raw stream has no entries to list)".into(),
+        ));
+    }
+    let mut f = input.reader;
+    let cipher = SharedCipher::new(u.header.alg, key32(&u.data_key)?)?;
+    let aad = chunk_aad(&u.bytes);
+    let sp = StreamParams {
+        cipher: &cipher,
+        prefix: &u.header.stream_nonce_prefix,
+        aad: &aad,
+        chunk_size: u.header.chunk_size(),
+    };
+    let eo = ExtractOptions {
+        padded: u.header.padded && !u.header.compressed,
+        ..ExtractOptions::default()
+    };
+    let mut ex = Extractor::verifier(eo);
+    ex.enable_listing();
+    let mut ex = if u.header.compressed {
+        let mut iw = crate::compress::InflateWriter::new(ex, u.header.padded);
+        decrypt_stream(&sp, &mut f, &mut iw).map_err(map_adaptor)?;
+        iw.finish().map_err(Error::from_io)?.0
+    } else {
+        decrypt_stream(&sp, &mut f, &mut ex).map_err(map_adaptor)?;
+        ex
+    };
+    let entries = ex.take_listing();
+    ex.finish()?;
+    Ok(entries)
 }
 
 /// New credentials (rekey/reencrypt).
@@ -2459,6 +2510,96 @@ mod tests {
     }
 
     #[test]
+    fn list_and_extract_only_selected_paths() {
+        use crate::archive::EntryKind;
+        let d = tmpdir("only");
+        let src = d.join("tree");
+        std::fs::create_dir_all(src.join("docs/deep")).unwrap();
+        std::fs::create_dir_all(src.join("photos")).unwrap();
+        std::fs::write(src.join("a.txt"), b"aaa").unwrap();
+        std::fs::write(src.join("docs/deep/x.bin"), vec![7u8; 5000]).unwrap();
+        std::fs::write(src.join("docs/y.txt"), b"y").unwrap();
+        std::fs::write(src.join("photos/p.jpg"), b"jpg").unwrap();
+        let p = pwd("parola parola");
+        let mut log = |_: &str| {};
+        for compress in [false, true] {
+            let out = d.join(format!("t{compress}.lphy"));
+            let mut o = opts(false, None);
+            o.compress = compress;
+            encrypt(
+                &Input::Path(&src),
+                &out,
+                &p,
+                None,
+                &o,
+                &mut OsEntropy,
+                &mut log,
+            )
+            .unwrap();
+            let l = list(&out, &p, None, UnlockOptions::default(), &mut log).unwrap();
+            let paths: Vec<&str> = l.iter().map(|e| e.path.as_str()).collect();
+            assert_eq!(
+                paths,
+                [
+                    "a.txt",
+                    "docs",
+                    "docs/deep",
+                    "docs/deep/x.bin",
+                    "docs/y.txt",
+                    "photos",
+                    "photos/p.jpg"
+                ]
+            );
+            let x = l.iter().find(|e| e.path == "docs/deep/x.bin").unwrap();
+            assert_eq!((x.kind, x.size), (EntryKind::File, 5000));
+            assert_eq!(l[1].kind, EntryKind::Dir);
+            // Only one folder (with its parents) is written.
+            let only = vec!["docs/deep".to_string()];
+            let dst = d.join(format!("only{compress}"));
+            let dopts = DecryptOptions {
+                only: Some(&only),
+                ..DecryptOptions::default()
+            };
+            decrypt(&out, &Output::Path(&dst, false), &p, None, dopts, &mut log).unwrap();
+            assert_eq!(
+                std::fs::read(dst.join("docs/deep/x.bin")).unwrap(),
+                vec![7u8; 5000]
+            );
+            assert!(!dst.join("a.txt").exists());
+            assert!(!dst.join("docs/y.txt").exists());
+            assert!(!dst.join("photos").exists());
+            // A path that is not in the archive is an error and nothing is left behind.
+            let missing = vec!["nope.txt".to_string()];
+            let dst = d.join(format!("missing{compress}"));
+            let dopts = DecryptOptions {
+                only: Some(&missing),
+                ..DecryptOptions::default()
+            };
+            assert!(matches!(
+                decrypt(&out, &Output::Path(&dst, false), &p, None, dopts, &mut log),
+                Err(Error::Environment(_))
+            ));
+            assert!(!dst.exists());
+        }
+        // A raw stream has nothing to list.
+        let raw = d.join("raw.lphy");
+        let mut ro = opts(false, None);
+        ro.raw = true;
+        encrypt(
+            &Input::Path(&src.join("a.txt")),
+            &raw,
+            &p,
+            None,
+            &ro,
+            &mut OsEntropy,
+            &mut log,
+        )
+        .unwrap();
+        assert!(list(&raw, &p, None, UnlockOptions::default(), &mut log).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn folder_with_one_file_decrypts_to_a_folder() {
         let d = tmpdir("onefile");
         let src = d.join("folder");
@@ -2469,6 +2610,7 @@ mod tests {
         let dopts = || DecryptOptions {
             unlock: UnlockOptions::default(),
             extract: ExtractOptions::default(),
+            only: None,
         };
         // A folder (even with a single file inside) comes back as a folder.
         let out = d.join("f.lphy");
@@ -2597,6 +2739,7 @@ mod tests {
                 symlinks: SymlinkPolicy::Safe,
                 ..Default::default()
             },
+            only: None,
         };
         let r = decrypt(&out, &Output::Path(&dst, false), &p, None, dopts, &mut log).unwrap();
         assert_eq!(r.archive.as_ref().unwrap().entries, 5);

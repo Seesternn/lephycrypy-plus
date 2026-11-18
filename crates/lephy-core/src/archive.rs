@@ -630,6 +630,30 @@ struct Deferred {
     depth: usize,
 }
 
+/// Kind of an archive entry in a listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    /// Regular file.
+    File,
+    /// Directory.
+    Dir,
+    /// Symbolic link.
+    Symlink,
+}
+
+/// One entry of an archive listing ([`Extractor::enable_listing`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListEntry {
+    /// Path inside the archive (`/` separator).
+    pub path: String,
+    /// Kind.
+    pub kind: EntryKind,
+    /// File size in bytes (0 for directories and symlinks).
+    pub size: u64,
+    /// Modification time (Unix seconds).
+    pub mtime: i64,
+}
+
 /// Archive extractor (`Write`). `root` is the cap-std handle of the temp directory (0700, created
 /// by the caller); with `None` only the structure is checked and nothing is written (`Extractor::verifier`).
 pub struct Extractor {
@@ -655,6 +679,12 @@ pub struct Extractor {
     /// only that file.
     pub single_file: Option<String>,
     top_level: usize,
+    /// Entries seen so far, when listing is enabled.
+    listing: Option<Vec<ListEntry>>,
+    /// Only these paths (and everything below them) are written; `None` = everything.
+    only: Option<Vec<(String, bool)>>,
+    /// The current entry is written (selected by `only`).
+    cur_selected: bool,
 }
 
 impl Extractor {
@@ -695,7 +725,61 @@ impl Extractor {
             report: Report::default(),
             single_file: None,
             top_level: 0,
+            listing: None,
+            only: None,
+            cur_selected: true,
         }
+    }
+
+    /// Records every entry (path, kind, size, time); read them with [`Self::take_listing`].
+    pub fn enable_listing(&mut self) {
+        self.listing = Some(Vec::new());
+    }
+
+    /// The entries recorded so far (empty unless [`Self::enable_listing`] was called).
+    pub fn take_listing(&mut self) -> Vec<ListEntry> {
+        self.listing.take().unwrap_or_default()
+    }
+
+    /// Writes only these archive paths and everything below them; the parent folders of a
+    /// selected path are created too. Every other entry is still read and checked, but not
+    /// written. [`Self::finish`] fails if a path matched nothing.
+    pub fn select_only(&mut self, paths: &[String]) {
+        let clean = paths
+            .iter()
+            .map(|p| {
+                let p = p.trim_start_matches("./").trim_end_matches('/');
+                (
+                    unicode_normalization::UnicodeNormalization::nfc(p).collect::<String>(),
+                    false,
+                )
+            })
+            .collect();
+        self.only = Some(clean);
+    }
+
+    /// Whether `path` is written: selected, below a selection, or (for a folder) above one.
+    fn select(&mut self, path: &str, ty: u8) -> bool {
+        let Some(only) = self.only.as_mut() else {
+            return true;
+        };
+        let mut keep = false;
+        for (want, hit) in only.iter_mut() {
+            let below = path
+                .strip_prefix(want.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+            if below {
+                *hit = true;
+                keep = true;
+            } else if ty == T_DIR
+                && want
+                    .strip_prefix(path)
+                    .is_some_and(|rest| rest.starts_with('/'))
+            {
+                keep = true;
+            }
+        }
+        keep
     }
 
     fn violation(d: &str) -> io::Error {
@@ -814,9 +898,23 @@ impl Extractor {
             return Err(Self::violation("mtime out of range"));
         }
         let path = self.admit_path(&raw, ty)?;
+        let selected = self.select(&path, ty);
+        self.cur_selected = selected;
+        if let Some(list) = self.listing.as_mut() {
+            list.push(ListEntry {
+                path: path.clone(),
+                kind: match ty {
+                    T_DIR => EntryKind::Dir,
+                    T_SYMLINK => EntryKind::Symlink,
+                    _ => EntryKind::File,
+                },
+                size: 0,
+                mtime,
+            });
+        }
         match ty {
             T_DIR => {
-                if let Some(root) = &self.root {
+                if let Some(root) = self.root.as_ref().filter(|_| selected) {
                     root.create_dir(&path).map_err(|e| {
                         if e.kind() == io::ErrorKind::AlreadyExists {
                             Self::violation(&format!(
@@ -829,11 +927,13 @@ impl Extractor {
                     })?;
                 }
                 self.dirs.insert(path.clone());
-                self.defer(&path, mode & SAFE_MODE_MASK, mtime);
+                if selected {
+                    self.defer(&path, mode & SAFE_MODE_MASK, mtime);
+                }
                 self.state = PState::Header;
             }
             T_FILE => {
-                let cur = if let Some(root) = &self.root {
+                let cur = if let Some(root) = self.root.as_ref().filter(|_| selected) {
                     let mut oo = cap_std::fs::OpenOptions::new();
                     oo.write(true).create_new(true);
                     #[cfg(unix)]
@@ -855,9 +955,12 @@ impl Extractor {
                 } else {
                     Current::Discard
                 };
+                let written = matches!(cur, Current::File(_));
                 self.cur = Some(cur);
                 self.cur_path = path.clone();
-                self.defer(&path, mode & SAFE_MODE_MASK, mtime);
+                if written {
+                    self.defer(&path, mode & SAFE_MODE_MASK, mtime);
+                }
                 self.state = PState::FrameLen;
             }
             T_SYMLINK => {
@@ -891,7 +994,9 @@ impl Extractor {
                     return Err(Self::violation("total path bytes > 64 MiB"));
                 }
                 let p = std::mem::take(&mut self.cur_path);
-                self.symlinks.push((p, target));
+                if self.cur_selected {
+                    self.symlinks.push((p, target));
+                }
             }
         }
         self.state = PState::Header;
@@ -952,6 +1057,11 @@ impl Extractor {
                 }
                 PState::FrameData(remaining) => {
                     let take = remaining.min(rest.len());
+                    if let Some(e) = self.listing.as_mut().and_then(|l| l.last_mut())
+                        && e.kind == EntryKind::File
+                    {
+                        e.size += take as u64;
+                    }
                     match self.cur.as_mut() {
                         Some(Current::File(f)) => f.write_all(&rest[..take])?,
                         Some(Current::Discard) => {}
@@ -1029,6 +1139,14 @@ impl Extractor {
             });
         }
         self.report.entries = self.entries;
+        if let Some(only) = &self.only
+            && let Some((missing, _)) = only.iter().find(|(_, hit)| !hit)
+        {
+            return Err(Error::Environment(format!(
+                "not in the archive: {}",
+                names::escape_display(missing)
+            )));
+        }
         let Some(root) = self.root.take() else {
             // Verification: the disk is not touched; symlink targets were already checked in end_entry.
             return Ok(self.report);

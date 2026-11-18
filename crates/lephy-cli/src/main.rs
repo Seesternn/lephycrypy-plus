@@ -278,6 +278,22 @@ enum Command {
         /// Parts that fail verification are zero-filled; the output may contain untrustworthy data.
         #[arg(long, conflicts_with_all = ["stdout", "force"])]
         recover: bool,
+        /// Archives: extract only this path (and everything below it); repeatable. See `list`.
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["stdout", "recover"])]
+        only: Vec<String>,
+    },
+    /// Lists the contents of an encrypted archive without writing anything.
+    List {
+        /// Encrypted file.
+        input: PathBuf,
+        /// Identity file (`.lphykey`) for files encrypted to a public key; the password asked
+        /// for is the identity file's.
+        #[arg(short = 'i', long, value_name = "PATH")]
+        identity: Option<PathBuf>,
+        #[command(flatten)]
+        pw: PasswordArgs,
+        #[command(flatten)]
+        unlock: UnlockArgs,
     },
     /// Verifies a file without writing anything.
     Verify {
@@ -864,6 +880,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             strict,
             allow_cloud_dir,
             recover,
+            only,
         } => {
             let (keyfile, nfc, id) = unlock_material(input, identity.as_deref(), pw, *unlock, log)?;
             memory_warning(unlock.strict_memory)?;
@@ -934,6 +951,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                     rename_conflicts: *rename_conflicts,
                     padded: false,
                 },
+                only: (!only.is_empty()).then_some(only.as_slice()),
             };
             if *stdout {
                 eprintln!(
@@ -998,6 +1016,41 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             };
             let n = ops::verify(input, &nfc, keyfile.as_deref(), u, log)?;
             println!("verified: {n} bytes");
+            Ok(())
+        }
+        Command::List {
+            input,
+            identity,
+            pw,
+            unlock,
+        } => {
+            let (keyfile, nfc, id) = unlock_material(input, identity.as_deref(), pw, *unlock, log)?;
+            memory_warning(unlock.strict_memory)?;
+            let u = UnlockOptions {
+                identity: id.as_ref(),
+                ..unlock.opts()
+            };
+            let entries = ops::list(input, &nfc, keyfile.as_deref(), u, log)?;
+            let (mut files, mut bytes) = (0u64, 0u64);
+            for e in &entries {
+                let (kind, size) = match e.kind {
+                    lephy_core::archive::EntryKind::Dir => ("dir ", String::new()),
+                    lephy_core::archive::EntryKind::Symlink => ("link", String::new()),
+                    lephy_core::archive::EntryKind::File => {
+                        files += 1;
+                        bytes += e.size;
+                        ("file", e.size.to_string())
+                    }
+                };
+                let path = lephy_core::names::escape_display(&e.path);
+                let suffix = if e.kind == lephy_core::archive::EntryKind::Dir {
+                    "/"
+                } else {
+                    ""
+                };
+                println!("{kind} {size:>14}  {path}{suffix}");
+            }
+            println!("{} entries, {files} files, {bytes} bytes", entries.len());
             Ok(())
         }
         Command::Info { input } => {

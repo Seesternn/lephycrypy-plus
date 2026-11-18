@@ -212,6 +212,10 @@ pub struct Job {
     pub recipients: Vec<PublicKey>,
     /// Decrypt with this identity file; `password` is then the identity's password.
     pub identity: Option<PathBuf>,
+    /// Decrypting an archive: only list its contents, write nothing.
+    pub list_only: bool,
+    /// Decrypting an archive: extract only these paths (empty = everything).
+    pub only: Vec<String>,
 }
 
 /// Job result.
@@ -233,8 +237,11 @@ pub struct Outcome {
     pub damaged: usize,
     /// During recovery the file was truncated or extraction stopped early.
     pub incomplete: bool,
+    /// Contents of the archive (a listing job; nothing was written).
+    pub listing: Option<Vec<lephy_core::archive::ListEntry>>,
 }
 
+#[allow(clippy::struct_excessive_bools, reason = "independent job switches")]
 struct Ctx<'a> {
     nfc: &'a SecretBytes,
     recipients: &'a [PublicKey],
@@ -245,6 +252,8 @@ struct Ctx<'a> {
     secure_delete: bool,
     split: Option<u64>,
     recover: bool,
+    list_only: bool,
+    only: &'a [String],
 }
 
 /// Runs the job. With a single item an error is returned directly; in a batch failed items go to
@@ -252,6 +261,7 @@ struct Ctx<'a> {
 ///
 /// # Errors
 /// Core errors (the message and exit-code category are shown in the UI).
+#[allow(clippy::too_many_lines, reason = "one linear setup of the job")]
 pub fn run(job: Job) -> Result<Outcome> {
     let mut nfc = password::normalize_nfc(&job.password)?;
     drop(job.password);
@@ -325,6 +335,12 @@ pub fn run(job: Job) -> Result<Outcome> {
         secure_delete: job.secure_delete && job.mode == Mode::Encrypt && !key_mode,
         split: job.split.filter(|_| job.mode == Mode::Encrypt),
         recover: job.recover && job.mode == Mode::Decrypt,
+        list_only: job.list_only && job.mode == Mode::Decrypt,
+        only: if job.mode == Mode::Decrypt {
+            &job.only
+        } else {
+            &[]
+        },
     };
     let single = job.items.len() == 1;
     let mut out = Outcome::default();
@@ -415,6 +431,11 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
                 .into(),
             ));
         }
+        if ctx.list_only {
+            let entries = ops::list(&item.input, ctx.nfc, ctx.kf, unlock, &mut log)?;
+            out.listing = Some(entries);
+            return Ok(());
+        }
         if ctx.recover {
             let r = ops::recover(&item.input, &item.output, ctx.nfc, ctx.kf, unlock, &mut log)?;
             out.outputs.push(r.output.clone());
@@ -430,6 +451,7 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
             ctx.kf,
             DecryptOptions {
                 unlock,
+                only: (!ctx.only.is_empty()).then_some(ctx.only),
                 ..DecryptOptions::default()
             },
             &mut log,
@@ -724,6 +746,8 @@ mod tests {
             "çıktı adı kaynak adını sızdırmamalı"
         );
         let job = Job {
+            list_only: false,
+            only: Vec::new(),
             mode: Mode::Encrypt,
             items: vec![Item {
                 input: d.join("a.txt"),
@@ -760,6 +784,8 @@ mod tests {
             d.join("x")
         );
         let job = Job {
+            list_only: false,
+            only: Vec::new(),
             mode: Mode::Decrypt,
             items: vec![Item {
                 input: d.join("x.lphy"),
@@ -787,6 +813,8 @@ mod tests {
         // Mismatched repeat and a short password
         for (p, c) in [("gui parola 1234", "başka parola 99"), ("kisa", "kisa")] {
             let job = Job {
+                list_only: false,
+                only: Vec::new(),
                 mode: Mode::Encrypt,
                 items: vec![Item {
                     input: d.join("a.txt"),
@@ -813,6 +841,8 @@ mod tests {
         }
         // Wrong password → code 3
         let job = Job {
+            list_only: false,
+            only: Vec::new(),
             mode: Mode::Decrypt,
             items: vec![Item {
                 input: d.join("x.lphy"),
@@ -840,6 +870,54 @@ mod tests {
     }
 
     #[test]
+    fn list_then_extract_selected() {
+        let d = std::env::temp_dir().join(format!("lphy-gui-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("src/sub")).unwrap();
+        std::fs::write(d.join("src/a.txt"), b"a").unwrap();
+        std::fs::write(d.join("src/sub/b.txt"), b"b").unwrap();
+        let job = |mode, input: &str, output: &str, list_only, only: Vec<String>| Job {
+            list_only,
+            only,
+            mode,
+            items: vec![Item {
+                input: d.join(input),
+                output: d.join(output),
+            }],
+            password: secret("list pass 123"),
+            confirm: (mode == Mode::Encrypt).then(|| secret("list pass 123")),
+            kdf_mib: 64,
+            aes: false,
+            pad: true,
+            allow_cloud: true,
+            keyfile: None,
+            secure_delete: false,
+            split: None,
+            compress: false,
+            ecc: false,
+            recover: false,
+            recipients: Vec::new(),
+            identity: None,
+        };
+        run(job(Mode::Encrypt, "src", "s.lphy", false, Vec::new())).unwrap();
+        let out = run(job(Mode::Decrypt, "s.lphy", "unused", true, Vec::new())).unwrap();
+        let paths: Vec<String> = out.listing.unwrap().into_iter().map(|e| e.path).collect();
+        assert_eq!(paths, ["a.txt", "sub", "sub/b.txt"]);
+        assert!(!d.join("unused").exists(), "listing writes nothing");
+        run(job(
+            Mode::Decrypt,
+            "s.lphy",
+            "back",
+            false,
+            vec!["sub".into()],
+        ))
+        .unwrap();
+        assert_eq!(std::fs::read(d.join("back/sub/b.txt")).unwrap(), b"b");
+        assert!(!d.join("back/a.txt").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn recipients_and_identity_roundtrip() {
         let d = std::env::temp_dir().join(format!("lphy-gui-keys-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -853,6 +931,8 @@ mod tests {
         assert_eq!(keys.len(), 1);
         assert!(parse_recipients("lphy1nope").is_err());
         let base = |mode, input: &str, output: &str| Job {
+            list_only: false,
+            only: Vec::new(),
             mode,
             items: vec![Item {
                 input: d.join(input),
@@ -906,6 +986,8 @@ mod tests {
             output: d.join("out").join(out),
         };
         let job = Job {
+            list_only: false,
+            only: Vec::new(),
             mode: Mode::Encrypt,
             items: vec![
                 item("a.txt", "1.lphy"),
@@ -934,6 +1016,8 @@ mod tests {
         assert!(!d.join("a.txt").exists() && !d.join("b.txt").exists());
         // If all fail, an error is returned.
         let job = Job {
+            list_only: false,
+            only: Vec::new(),
             mode: Mode::Encrypt,
             items: vec![item("yok1", "4.lphy"), item("yok2", "5.lphy")],
             password: secret("toplu parola 1234"),
@@ -963,6 +1047,8 @@ mod tests {
         let data: Vec<u8> = (0..3_500_000u32).map(|i| (i % 253) as u8).collect();
         std::fs::write(d.join("a.bin"), &data).unwrap();
         let mk = |mode, input: &str, output: &str, split| Job {
+            list_only: false,
+            only: Vec::new(),
             mode,
             items: vec![Item {
                 input: d.join(input),
@@ -1005,6 +1091,8 @@ mod tests {
         std::fs::write(d.join("a.txt"), b"anahtar dosyasi testi").unwrap();
         std::fs::write(d.join("key.bin"), [7u8; 64]).unwrap();
         let job = |mode, input: &str, output: &str, kf: bool| Job {
+            list_only: false,
+            only: Vec::new(),
             mode,
             items: vec![Item {
                 input: d.join(input),

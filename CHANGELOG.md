@@ -69,6 +69,9 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- List an archive without extracting it (`lephycrypy list`, and "List contents" in the app) and
+  extract only some paths (`decrypt --only PATH`, or check boxes in the app). Listing decrypts and
+  checks the whole file but writes nothing; selected folders bring everything below them.
 - Settings page in the desktop app (gear button on the start screen): language, and the optional
   system integration. The language switch no longer sits on every screen.
 - macOS Finder Quick Action ("Encrypt or open with lephycrypy+" under Quick Actions in the

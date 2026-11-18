@@ -73,6 +73,8 @@ yuvarlanır (`--no-pad` kapatır). Tek dosyalık arşiv çözülürken dosya do�
 | Doğrulamadan sonra orijinali sil | `encrypt … --delete-original` ya da `--secure-delete` |
 | Bozuk dosyadan kurtarılabileni çıkar | `decrypt bozuk.lphy --recover` |
 | Yazmadan doğrula | `lephycrypy verify dosya.lphy` |
+| Arşivi çıkarmadan listele | `lephycrypy list dosya.lphy` |
+| Yalnızca bazı yolları çıkar | `decrypt dosya.lphy --only belgeler/ --only not.txt` |
 | Şifresiz başlık bilgisi | `lephycrypy info dosya.lphy` |
 | Parolayı değiştir (dosya anahtarı aynı) | `lephycrypy rekey dosya.lphy` |
 | Parolayı ve dosya anahtarını değiştir | `lephycrypy reencrypt dosya.lphy` |
@@ -129,6 +131,9 @@ Aç → lephycrypy+** ile açılabilir. Açılış ekranındaki dişli düğmesi
   her dosya ve klasöre sağ tık girişi eklenir.
 
 İki entegrasyon da yalnızca onaydan sonra eklenir ve kaldırılır.
+
+Şifreli bir arşivde **İçeriği listele**, hiçbir şey yazmadan içinde ne olduğunu gösterir; yalnızca
+işaretlediğiniz öğeler çıkarılır.
 
 ## Derleme
 

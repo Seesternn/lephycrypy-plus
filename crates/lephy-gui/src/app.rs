@@ -113,6 +113,14 @@ pub struct App {
     pending_open: Vec<PathBuf>,
     /// The settings page (language, system integration) is open instead of the drop zone.
     show_settings: bool,
+    /// The chosen encrypted file is an archive (its contents can be listed).
+    is_archive: bool,
+    /// Contents of the chosen archive, after "List contents".
+    listing: Option<Vec<lephy_core::archive::ListEntry>>,
+    /// Paths chosen for extraction from `listing` (empty = everything).
+    selected: std::collections::BTreeSet<String>,
+    /// Filter text for the listing.
+    list_filter: String,
     /// The system integration change (Explorer on Windows, Quick Action on macOS) awaits
     /// confirmation.
     #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
@@ -160,6 +168,10 @@ impl Default for App {
             created_pub: None,
             pending_open: Vec::new(),
             show_settings: false,
+            is_archive: false,
+            listing: None,
+            selected: std::collections::BTreeSet::new(),
+            list_filter: String::new(),
             confirm_shell: false,
             settings_note: None,
         }
@@ -198,6 +210,12 @@ impl App {
         self.show_keygen = false;
         self.password.clear();
         self.confirm.clear();
+        self.is_archive = mode == Mode::Decrypt
+            && lephy_core::ops::info(p)
+                .is_ok_and(|h| h.content_type == lephy_core::header::ContentType::Archive);
+        self.listing = None;
+        self.selected.clear();
+        self.list_filter.clear();
     }
 
     /// Several sources: all must suit the same operation (all encrypted or none).
@@ -318,6 +336,11 @@ impl App {
     }
 
     fn start(&mut self, ctx: &egui::Context) {
+        self.start_job(ctx, false);
+    }
+
+    /// Starts a job; `list_only` lists the archive's contents instead of extracting.
+    fn start_job(&mut self, ctx: &egui::Context, list_only: bool) {
         let (Some(src), Some(output)) = (&self.source, &self.output) else {
             return;
         };
@@ -369,6 +392,12 @@ impl App {
             compress: self.compress,
             ecc: self.ecc,
             recover: self.recover,
+            list_only,
+            only: if list_only || self.listing.is_none() {
+                Vec::new()
+            } else {
+                self.selected.iter().cloned().collect()
+            },
         };
         self.confirm_delete = false;
         self.confirm.clear();
@@ -409,8 +438,15 @@ impl App {
     fn poll(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.job else { return };
         match rx.try_recv() {
-            Ok(Ok(out)) => {
-                self.stage = Stage::Done(out);
+            Ok(Ok(mut out)) => {
+                if let Some(entries) = out.listing.take() {
+                    // A listing: back to the decryption screen with the contents shown.
+                    self.listing = Some(entries);
+                    self.selected.clear();
+                    self.stage = Stage::Ready;
+                } else {
+                    self.stage = Stage::Done(out);
+                }
                 self.job = None;
             }
             Ok(Err(msg)) => {
@@ -1178,11 +1214,17 @@ impl App {
         }
 
         ui.add_space(18.0);
+        let picked = match lang() {
+            Lang::Tr => format!("Seçilenleri çıkar ({})", self.selected.len()),
+            Lang::En => format!("Extract selected ({})", self.selected.len()),
+        };
         let label = match mode {
             Mode::Encrypt => tr("Şifrele", "Encrypt"),
+            Mode::Decrypt if !self.selected.is_empty() && self.listing.is_some() => &picked,
             Mode::Decrypt => tr("Şifreyi çöz", "Decrypt"),
         };
         if mode == Mode::Decrypt && !self.batch() {
+            self.contents_view(ui, ctx, pal);
             self.recover_option(ui, pal);
         }
         let enabled = self.can_start();
@@ -1200,6 +1242,157 @@ impl App {
             ui.add_space(8.0);
             ui.label(RichText::new(e).color(pal.danger).size(13.5));
         }
+    }
+
+    /// Archive contents: "List contents" (decrypts and checks the whole file, writes nothing),
+    /// then a filterable list with check boxes to extract only some entries.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one card; splitting it would scatter the layout"
+    )]
+    fn contents_view(&mut self, ui: &mut Ui, ctx: &egui::Context, pal: Palette) {
+        const MAX_ROWS: usize = 400;
+        if !self.is_archive || self.recover {
+            return;
+        }
+        let Some(entries) = &self.listing else {
+            let can = self.can_start();
+            let resp = ui.add_enabled(
+                can,
+                egui::Button::new(
+                    RichText::new(tr(
+                        "İçeriği listele (hiçbir şey yazılmaz)",
+                        "List contents (nothing is written)",
+                    ))
+                    .color(pal.accent)
+                    .size(14.0),
+                )
+                .frame(false)
+                .min_size(vec2(0.0, 28.0)),
+            );
+            if resp.clicked() {
+                self.start_job(ctx, true);
+            }
+            ui.add_space(6.0);
+            return;
+        };
+        let files = entries
+            .iter()
+            .filter(|e| e.kind == lephy_core::archive::EntryKind::File)
+            .count();
+        let bytes: u64 = entries.iter().map(|e| e.size).sum();
+        let mut clear = false;
+        egui::Frame::new()
+            .fill(pal.surface)
+            .stroke(Stroke::new(1.0, pal.line))
+            .corner_radius(CornerRadius::same(theme::R_INPUT))
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    RichText::new(match lang() {
+                        Lang::Tr => format!(
+                            "{} öğe, {files} dosya, {}",
+                            entries.len(),
+                            logic::human_size(bytes)
+                        ),
+                        Lang::En => format!(
+                            "{} entries, {files} files, {}",
+                            entries.len(),
+                            logic::human_size(bytes)
+                        ),
+                    })
+                    .font(fonts::semibold(13.5))
+                    .color(pal.ink),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.list_filter)
+                        .hint_text(tr("Ada göre süz…", "Filter by name…"))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(4.0);
+                let needle = self.list_filter.to_lowercase();
+                let shown: Vec<&lephy_core::archive::ListEntry> = entries
+                    .iter()
+                    .filter(|e| needle.is_empty() || e.path.to_lowercase().contains(&needle))
+                    .take(MAX_ROWS + 1)
+                    .collect();
+                let rows = shown.len().min(MAX_ROWS);
+                #[allow(clippy::cast_precision_loss)]
+                let height = (rows as f32 * 28.0).clamp(28.0, 240.0);
+                egui::ScrollArea::vertical()
+                    .max_height(height)
+                    .min_scrolled_height(height)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        for e in shown.iter().take(MAX_ROWS) {
+                            let mut on = self.selected.contains(&e.path);
+                            let shown_path = escape_display(&e.path);
+                            let text = match e.kind {
+                                lephy_core::archive::EntryKind::Dir => format!("{shown_path}/"),
+                                lephy_core::archive::EntryKind::Symlink => {
+                                    format!("{shown_path} →")
+                                }
+                                lephy_core::archive::EntryKind::File => {
+                                    format!("{shown_path}  ·  {}", logic::human_size(e.size))
+                                }
+                            };
+                            if ui
+                                .checkbox(&mut on, RichText::new(text).size(13.0))
+                                .changed()
+                            {
+                                if on {
+                                    self.selected.insert(e.path.clone());
+                                } else {
+                                    self.selected.remove(&e.path);
+                                }
+                            }
+                        }
+                    });
+                if shown.len() > MAX_ROWS {
+                    ui.label(
+                        RichText::new(tr(
+                            "Yalnızca ilk 400 satır gösteriliyor; daraltmak için süzün.",
+                            "Only the first 400 rows are shown; filter to narrow down.",
+                        ))
+                        .color(pal.muted)
+                        .size(12.5),
+                    );
+                }
+                ui.label(
+                    RichText::new(if self.selected.is_empty() {
+                        tr(
+                            "Hiçbir şey seçilmezse her şey çıkarılır. Bir klasör seçmek altındaki her şeyi seçer.",
+                            "If nothing is selected, everything is extracted. Selecting a folder selects everything below it.",
+                        )
+                    } else {
+                        tr(
+                            "Yalnızca seçilenler ve üst klasörleri çıkarılır.",
+                            "Only the selected entries and their parent folders are extracted.",
+                        )
+                    })
+                    .color(pal.muted)
+                    .size(12.5),
+                );
+                if !self.selected.is_empty() {
+                    clear = link_button(ui, pal, tr("Seçimi temizle", "Clear selection")).clicked();
+                }
+            });
+        if clear {
+            self.selected.clear();
+        }
+        if self.password.char_count() == 0 {
+            ui.label(
+                RichText::new(tr(
+                    "Çıkarmak için parolayı yeniden girin (parola listelemeden sonra bellekten silindi).",
+                    "Enter the password again to extract (it was wiped from memory after listing).",
+                ))
+                .color(pal.muted)
+                .size(12.5),
+            );
+        }
+        ui.add_space(8.0);
     }
 
     /// Recovery-mode option (single-file decryption).

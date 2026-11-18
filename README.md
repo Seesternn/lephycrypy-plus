@@ -82,6 +82,8 @@ Defaults: XChaCha20-Poly1305, 1 MiB chunks, Argon2id 512 MiB / 3 / 4. Options in
 | Delete the originals after verification | `encrypt … --delete-original` or `--secure-delete` |
 | Recover what is readable from a damaged file | `decrypt damaged.lphy --recover` |
 | Check without writing | `lephycrypy verify file.lphy` |
+| List an archive without extracting | `lephycrypy list file.lphy` |
+| Extract only some paths | `decrypt file.lphy --only docs/ --only notes.txt` |
 | Show unencrypted header data | `lephycrypy info file.lphy` |
 | Change the password (same file key) | `lephycrypy rekey file.lphy` |
 | Change the password and the file key | `lephycrypy reencrypt file.lphy` |
@@ -164,7 +166,8 @@ Shortcut: Cmd+O (Ctrl+O on Windows) opens the file picker.
 The password field is masked, copy and paste are disabled and the text is kept in locked memory.
 **Advanced settings** offer the algorithm, password-derivation memory, size hiding, compression,
 error correction, splitting, secure deletion and an optional key file; the **?** button explains
-the terms. The app follows the system light/dark theme.
+the terms. For an encrypted archive, **List contents** shows what is inside without writing
+anything; tick entries to extract only those. The app follows the system light/dark theme.
 
 ## Building
 
