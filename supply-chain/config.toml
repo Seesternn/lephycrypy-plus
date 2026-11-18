@@ -1391,6 +1391,16 @@ criteria = "safe-to-deploy"
 version = "0.6.8"
 criteria = "safe-to-deploy"
 
+[[exemptions.zune-core]]
+version = "0.5.1"
+criteria = "safe-to-deploy"
+notes = "Shared types of zune-jpeg (desktop preview of decrypted JPEGs); decoding runs with size and allocation limits; no audit imported yet"
+
+[[exemptions.zune-jpeg]]
+version = "0.5.15"
+criteria = "safe-to-deploy"
+notes = "JPEG decoder behind image's jpeg feature (desktop preview, in memory, size and allocation limits; contains SIMD unsafe); no audit imported yet"
+
 [[exemptions.zvariant]]
 version = "5.15.1"
 criteria = "safe-to-deploy"

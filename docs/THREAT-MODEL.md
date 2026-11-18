@@ -183,6 +183,17 @@ marks) and control characters are replaced with `_`, so a name cannot pose as a 
 extension. The app warns when the output contains programs (by name, such as `.app`, `.command`,
 `.exe`, `.ps1`, or by the executable bit).
 
+## Preview
+The desktop app can show a decrypted text, PNG or JPEG file without writing it anywhere: the
+file is decrypted into memory (at most 32 MiB; an archive is still read and checked to the end),
+the kind is taken from the content, and closing the preview drops the texture and the bytes.
+While it is open the window is hidden from screen capture. Limits: decrypted bytes can still
+reach swap or a hibernation image, and the picture lives in graphics memory while shown.
+Decoding images from files anyone could have made is new attack surface, so only PNG and JPEG
+are accepted, with at most 8192 × 8192 pixels and 256 MiB of decoder allocations; the decoder
+(`image` with `png` / `zune-jpeg`) is fuzzed (`fuzz/fuzz_targets/preview_image.rs`). A decoder
+panic aborts the app (release builds use panic = abort); it cannot write anything.
+
 ## Recipient (public-key) encryption
 A file encrypted to public keys can be opened by the holder of any listed identity; there is no
 password to guess, but the identity file is only as strong as its own password. Encryption is

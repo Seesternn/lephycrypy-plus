@@ -1684,6 +1684,119 @@ pub fn list(
     Ok(entries)
 }
 
+/// A decrypted file held in memory for a preview.
+pub struct Preview {
+    /// Archive path of the file (empty for a raw stream).
+    pub name: String,
+    /// The content (wiped when dropped).
+    pub data: zeroize::Zeroizing<Vec<u8>>,
+}
+
+/// Collects a raw stream in memory up to a limit.
+struct CapWriter {
+    buf: zeroize::Zeroizing<Vec<u8>>,
+    max: usize,
+}
+
+impl Write for CapWriter {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        if self.buf.len() + b.len() > self.max {
+            return Err(std::io::Error::other(PREVIEW_TOO_BIG));
+        }
+        self.buf.extend_from_slice(b);
+        Ok(b.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+const PREVIEW_TOO_BIG: &str = "the file is larger than the preview limit";
+
+/// Decrypts one file into memory for a preview; nothing is written to disk. Archives: the file at
+/// `entry`, or the first file when `None`; the whole archive is still read and checked. Raw
+/// streams: the stream itself. Files larger than `max` bytes are refused.
+///
+/// # Errors
+/// As [`decrypt`]; code 1 if the entry is not in the archive or is larger than `max`.
+pub fn preview(
+    path: &Path,
+    pwd_nfc: &SecretBytes,
+    keyfile_digest: Option<&[u8; 32]>,
+    opts: UnlockOptions<'_>,
+    entry: Option<&str>,
+    max: usize,
+    log: &mut dyn FnMut(&str),
+) -> Result<Preview> {
+    let (input, u) = open_stream_and_unlock(path, pwd_nfc, keyfile_digest, opts, false, log)?;
+    let mut f = input.reader;
+    let cipher = SharedCipher::new(u.header.alg, key32(&u.data_key)?)?;
+    let aad = chunk_aad(&u.bytes);
+    let sp = StreamParams {
+        cipher: &cipher,
+        prefix: &u.header.stream_nonce_prefix,
+        aad: &aad,
+        chunk_size: u.header.chunk_size(),
+    };
+    let too_big = || Error::Environment(PREVIEW_TOO_BIG.into());
+    if u.header.content_type == ContentType::Raw {
+        let cap = CapWriter {
+            buf: zeroize::Zeroizing::new(Vec::new()),
+            max,
+        };
+        let map = |e: Error| match &e {
+            Error::Io(io) if io.to_string().contains(PREVIEW_TOO_BIG) => too_big(),
+            _ => e,
+        };
+        let cap = if u.header.compressed {
+            let mut iw = crate::compress::InflateWriter::new(cap, u.header.padded);
+            decrypt_stream(&sp, &mut f, &mut iw)
+                .map_err(map_adaptor)
+                .map_err(map)?;
+            iw.finish().map_err(Error::from_io).map_err(map)?.0
+        } else if u.header.padded {
+            let mut pw = RawPadWriter::new(cap);
+            decrypt_stream(&sp, &mut f, &mut pw)
+                .map_err(map_adaptor)
+                .map_err(map)?;
+            pw.finish().map_err(Error::from_io).map_err(map)?.0
+        } else {
+            let mut cap = cap;
+            decrypt_stream(&sp, &mut f, &mut cap).map_err(map)?;
+            cap
+        };
+        return Ok(Preview {
+            name: String::new(),
+            data: cap.buf,
+        });
+    }
+    let eo = ExtractOptions {
+        padded: u.header.padded && !u.header.compressed,
+        ..ExtractOptions::default()
+    };
+    let mut ex = Extractor::verifier(eo);
+    ex.capture_file(entry, max);
+    let mut ex = if u.header.compressed {
+        let mut iw = crate::compress::InflateWriter::new(ex, u.header.padded);
+        decrypt_stream(&sp, &mut f, &mut iw).map_err(map_adaptor)?;
+        iw.finish().map_err(Error::from_io)?.0
+    } else {
+        decrypt_stream(&sp, &mut f, &mut ex).map_err(map_adaptor)?;
+        ex
+    };
+    let got = ex.take_capture();
+    ex.finish()?;
+    let got = got.ok_or_else(|| Error::Environment("no such file in the archive".into()))?;
+    if got.too_big {
+        return Err(too_big());
+    }
+    Ok(Preview {
+        name: got.name,
+        data: got.data,
+    })
+}
+
 /// Replaces the recipient list of a file encrypted to public keys. `identity` must be one of the
 /// current recipients (it unlocks the file key). Recipients' public keys are not stored in the file,
 /// so the new list is complete: it replaces every current recipient. FK, `stream_nonce_prefix` and
@@ -3079,6 +3192,61 @@ mod tests {
         .unwrap();
         assert!(!r.marked);
         assert_eq!(lephy_sys::quarantine::read(&dst2), None);
+    }
+
+    #[test]
+    fn preview_keeps_one_file_in_memory() {
+        let d = tmpdir("preview");
+        let src = d.join("folder");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("a.txt"), b"first").unwrap();
+        std::fs::write(src.join("sub/b.txt"), b"second file").unwrap();
+        let p = pwd("parola parola");
+        let mut log = |_: &str| {};
+        let out = d.join("p.lphy");
+        encrypt(
+            &Input::Path(&src),
+            &out,
+            &p,
+            None,
+            &opts(false, None),
+            &mut OsEntropy,
+            &mut log,
+        )
+        .unwrap();
+        let u = UnlockOptions::default();
+        let one = preview(&out, &p, None, u, Some("sub/b.txt"), 1024, &mut log).unwrap();
+        assert_eq!(
+            (one.name.as_str(), &one.data[..]),
+            ("sub/b.txt", &b"second file"[..])
+        );
+        let first = preview(&out, &p, None, u, None, 1024, &mut log).unwrap();
+        assert!(matches!(first.name.as_str(), "a.txt" | "sub/b.txt"));
+        assert!(preview(&out, &p, None, u, Some("sub/b.txt"), 4, &mut log).is_err());
+        assert!(preview(&out, &p, None, u, Some("missing"), 1024, &mut log).is_err());
+        // Nothing was written next to the file.
+        let names: Vec<_> = std::fs::read_dir(&d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        // A raw stream is previewed as a whole.
+        let raw = d.join("r.lphy");
+        let mut o = opts(false, None);
+        o.raw = true;
+        encrypt(
+            &Input::Path(&src.join("a.txt")),
+            &raw,
+            &p,
+            None,
+            &o,
+            &mut OsEntropy,
+            &mut log,
+        )
+        .unwrap();
+        let r = preview(&raw, &p, None, u, None, 1024, &mut log).unwrap();
+        assert_eq!(&r.data[..], b"first");
+        assert!(preview(&raw, &p, None, u, None, 2, &mut log).is_err());
     }
 
     #[test]

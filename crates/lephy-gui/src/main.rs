@@ -26,6 +26,10 @@ mod logic;
 #[cfg(any(target_os = "macos", windows))]
 mod motion;
 #[cfg(any(target_os = "macos", windows))]
+mod preview;
+#[cfg(any(target_os = "macos", windows))]
+mod preview_decode;
+#[cfg(any(target_os = "macos", windows))]
 mod secret_field;
 #[cfg(any(target_os = "macos", windows))]
 mod settings;

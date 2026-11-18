@@ -184,6 +184,8 @@ pub struct App {
     settings_pane: settings_ui::Pane,
     /// Decrypt screen › More actions (verify, change password, renew key).
     tools: tools::Tools,
+    /// In-memory preview window.
+    preview: Option<preview_ui::PreviewState>,
 }
 
 impl Default for App {
@@ -264,6 +266,7 @@ impl Default for App {
             toast: None,
             settings_pane: settings_ui::Pane::Root,
             tools: tools::Tools::default(),
+            preview: None,
         }
     }
 }
@@ -390,6 +393,7 @@ impl App {
 
     fn reset(&mut self) {
         self.tools.reset();
+        self.preview = None;
         self.source = None;
         self.output = None;
         self.stage = Stage::Pick;
@@ -878,6 +882,7 @@ impl App {
                             }
                         });
                         self.toast_view(&ctx, pal);
+                        self.preview_window(&ctx, pal);
                         let h = r.response.rect.height();
                         if (h - self.content_h).abs() > 1.0 {
                             self.content_h = h;
@@ -977,6 +982,7 @@ impl App {
             || self.generated.is_some()
             || (self.id_show_paper && self.page == pages::Page::Keys)
             || self.restore.words_visible()
+            || self.preview.is_some()
             || self.locked
     }
 
@@ -1360,6 +1366,31 @@ impl App {
             Mode::Decrypt => tr("Şifreyi çöz", "Decrypt"),
         };
         if mode == Mode::Decrypt && !self.batch() && !self.editing_recipients() {
+            if !self.recover {
+                let can = self.can_preview();
+                if ui
+                    .add_enabled(
+                        can,
+                        egui::Button::new(
+                            RichText::new(tr(
+                                "Önizle (diske yazmadan)",
+                                "Preview (nothing is written)",
+                            ))
+                            .color(pal.accent)
+                            .size(14.0),
+                        )
+                        .frame(false)
+                        .min_size(vec2(0.0, 28.0)),
+                    )
+                    .on_hover_text(tr(
+                        "Metin, PNG ve JPEG dosyaları yalnızca bellekte açılır. Arşivde ilk dosya gösterilir; başkası için içeriği listeleyin.",
+                        "Text, PNG and JPEG files are opened in memory only. In an archive the first file is shown; list the contents for another.",
+                    ))
+                    .clicked()
+                {
+                    self.start_preview(ctx, None);
+                }
+            }
             self.contents_view(ui, ctx, pal);
             self.recover_option(ui, pal);
         }
@@ -1421,6 +1452,8 @@ impl App {
             .count();
         let bytes: u64 = entries.iter().map(|e| e.size).sum();
         let mut clear = false;
+        let mut preview_entry: Option<String> = None;
+        let can_look = self.can_preview();
         egui::Frame::new()
             .fill(pal.surface)
             .stroke(Stroke::new(1.0, pal.line))
@@ -1477,15 +1510,36 @@ impl App {
                                     format!("{shown_path}  ·  {}", logic::human_size(e.size))
                                 }
                             };
-                            if ui
-                                .checkbox(&mut on, RichText::new(text).size(13.0))
-                                .changed()
-                            {
-                                if on {
-                                    self.selected.insert(e.path.clone());
-                                } else {
-                                    self.selected.remove(&e.path);
+                            let mut look = false;
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .checkbox(&mut on, RichText::new(text).size(13.0))
+                                    .changed()
+                                {
+                                    if on {
+                                        self.selected.insert(e.path.clone());
+                                    } else {
+                                        self.selected.remove(&e.path);
+                                    }
                                 }
+                                if e.kind == lephy_core::archive::EntryKind::File {
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        look = ui
+                                            .add_enabled(
+                                                can_look,
+                                                egui::Button::new(
+                                                    RichText::new(tr("Önizle", "Preview"))
+                                                        .color(pal.accent)
+                                                        .size(12.5),
+                                                )
+                                                .frame(false),
+                                            )
+                                            .clicked();
+                                    });
+                                }
+                            });
+                            if look {
+                                preview_entry = Some(e.path.clone());
                             }
                         }
                     });
@@ -1520,6 +1574,9 @@ impl App {
             });
         if clear {
             self.selected.clear();
+        }
+        if let Some(entry) = preview_entry {
+            self.start_preview(ctx, Some(entry));
         }
         if self.password.char_count() == 0 {
             ui.label(
@@ -2854,6 +2911,7 @@ mod help;
 mod lockgate;
 mod maintenance;
 mod pages;
+mod preview_ui;
 mod restore;
 mod settings_ui;
 mod tools;

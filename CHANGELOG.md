@@ -103,6 +103,10 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Desktop app: preview a decrypted text, PNG or JPEG file without writing it to disk (in memory,
+  32 MiB limit, bounded image decoding; per entry from the contents list). New dependency
+  features: `image` with `jpeg` (adds `zune-jpeg`, `zune-core`; vet exemptions with notes);
+  fuzz target `preview_image`. `ops::preview` in lephy-core.
 - Desktop app: "More actions" on the decrypt screen: verify only (writes nothing), change the
   password (rekey) and renew the file key (re-encrypt), all in place with the password typed
   above.

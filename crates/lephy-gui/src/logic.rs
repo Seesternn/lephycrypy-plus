@@ -754,6 +754,50 @@ fn encrypt_item(
     }
 }
 
+/// Decrypts one file of `input` into memory for a preview (`entry`: archive path, `None` = the
+/// first file). The password unlocks the identity file instead when one is given.
+///
+/// # Errors
+/// Wrong password or identity, damaged file, the entry is missing or too large.
+#[cfg(any(target_os = "macos", windows))]
+pub fn run_preview(
+    input: &Path,
+    password: &SecretBytes,
+    keyfile: Option<&Path>,
+    identity: Option<&Path>,
+    entry: Option<&str>,
+) -> Result<ops::Preview> {
+    let mut nfc = password::normalize_nfc(password)?;
+    let id = match identity {
+        Some(p) => {
+            let id = lephy_core::recipient::read_identity_file(
+                p,
+                &nfc,
+                ops::UnlockOptions::default(),
+                &mut |_| {},
+            )?;
+            nfc = SecretBytes::with_capacity(1).map_err(|e| Error::Environment(e.to_string()))?;
+            Some(id)
+        }
+        None => None,
+    };
+    let kf = keyfile
+        .map(password::keyfile_digest_from_path)
+        .transpose()?;
+    ops::preview(
+        input,
+        &nfc,
+        kf.as_deref(),
+        ops::UnlockOptions {
+            identity: id.as_ref(),
+            ..ops::UnlockOptions::default()
+        },
+        entry,
+        crate::preview::MAX_BYTES,
+        &mut |_| {},
+    )
+}
+
 /// Verify, change the password or renew the file key of each input, in place.
 fn run_tool(
     tool: Tool,
@@ -2103,6 +2147,70 @@ mod tests {
         let mut t = change(ToolKind::Rekey, "fourth password 000");
         t.new_confirm = Some(secret("something else 111"));
         assert!(run(job(Mode::Decrypt, "x.lphy", "third password 789", Some(t))).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", windows))]
+    #[allow(clippy::panic)]
+    fn png_previews_from_memory() {
+        let d = std::env::temp_dir().join(format!("lphy-gui-prev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([1, 2, 3, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(d.join("photo.png"), &png).unwrap();
+        let pw = secret("preview pass 123");
+        run(Job {
+            hybrid: Vec::new(),
+            sign_identity: None,
+            sign_password: None,
+            restore_name: false,
+            tool: None,
+            list_only: false,
+            only: Vec::new(),
+            mode: Mode::Encrypt,
+            items: vec![Item {
+                input: d.join("photo.png"),
+                output: d.join("p.lphy"),
+            }],
+            password: secret("preview pass 123"),
+            confirm: Some(secret("preview pass 123")),
+            kdf_mib: 64,
+            aes: false,
+            pad: true,
+            allow_cloud: false,
+            keyfile: None,
+            secure_delete: false,
+            split: None,
+            compress: false,
+            ecc: false,
+            recover: false,
+            recipients: Vec::new(),
+            identity: None,
+        })
+        .unwrap();
+        std::fs::remove_file(d.join("photo.png")).unwrap();
+        let p = run_preview(&d.join("p.lphy"), &pw, None, None, None).unwrap();
+        assert_eq!(p.name, "photo.png");
+        match crate::preview::decode(&p.data) {
+            Ok(crate::preview::Content::Image(img)) => assert_eq!(img.size, [3, 2]),
+            _ => panic!("expected an image"),
+        }
+        assert!(
+            run_preview(
+                &d.join("p.lphy"),
+                &secret("wrong pass 999"),
+                None,
+                None,
+                None
+            )
+            .is_err()
+        );
+        // Only the encrypted file is in the folder: nothing was written.
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
         let _ = std::fs::remove_dir_all(&d);
     }
 

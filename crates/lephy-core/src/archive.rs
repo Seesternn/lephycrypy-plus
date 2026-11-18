@@ -685,6 +685,31 @@ pub struct Extractor {
     only: Option<Vec<(String, bool)>>,
     /// The current entry is written (selected by `only`).
     cur_selected: bool,
+    /// Preview: one file's content kept in memory.
+    capture: Option<Capture>,
+}
+
+/// A file's content kept in memory for a preview (nothing is written to disk).
+#[derive(Default)]
+struct Capture {
+    /// Archive path to keep; empty = the first file.
+    want: String,
+    max: usize,
+    name: String,
+    buf: zeroize::Zeroizing<Vec<u8>>,
+    active: bool,
+    found: bool,
+    too_big: bool,
+}
+
+/// What [`Extractor::take_capture`] returns.
+pub struct Captured {
+    /// Archive path of the file.
+    pub name: String,
+    /// Its content (wiped when dropped).
+    pub data: zeroize::Zeroizing<Vec<u8>>,
+    /// The file was larger than the limit (`data` is empty then).
+    pub too_big: bool,
 }
 
 impl Extractor {
@@ -726,6 +751,7 @@ impl Extractor {
             single_file: None,
             top_level: 0,
             listing: None,
+            capture: None,
             only: None,
             cur_selected: true,
         }
@@ -734,6 +760,46 @@ impl Extractor {
     /// Records every entry (path, kind, size, time); read them with [`Self::take_listing`].
     pub fn enable_listing(&mut self) {
         self.listing = Some(Vec::new());
+    }
+
+    /// Keeps the content of the file at `path` (`None`: the first file) in memory, up to `max`
+    /// bytes; read it with [`Self::take_capture`]. Nothing is written to disk.
+    pub fn capture_file(&mut self, path: Option<&str>, max: usize) {
+        self.capture = Some(Capture {
+            want: path
+                .map(|p| {
+                    unicode_normalization::UnicodeNormalization::nfc(p.trim_start_matches("./"))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            max,
+            ..Capture::default()
+        });
+    }
+
+    /// A new entry starts: capture it if it is the wanted file.
+    fn capture_begin(&mut self, ty: u8, path: &str) {
+        if let Some(c) = self.capture.as_mut() {
+            c.active = ty == T_FILE && !c.found && (c.want.is_empty() || c.want == path);
+            if c.active {
+                c.found = true;
+                path.clone_into(&mut c.name);
+            }
+        }
+    }
+
+    /// The captured file (`None` if no file matched).
+    pub fn take_capture(&mut self) -> Option<Captured> {
+        let c = self.capture.take()?;
+        c.found.then(|| Captured {
+            name: c.name,
+            data: if c.too_big {
+                zeroize::Zeroizing::new(Vec::new())
+            } else {
+                c.buf
+            },
+            too_big: c.too_big,
+        })
     }
 
     /// The entries recorded so far (empty unless [`Self::enable_listing`] was called).
@@ -900,6 +966,7 @@ impl Extractor {
         let path = self.admit_path(&raw, ty)?;
         let selected = self.select(&path, ty);
         self.cur_selected = selected;
+        self.capture_begin(ty, &path);
         if let Some(list) = self.listing.as_mut() {
             list.push(ListEntry {
                 path: path.clone(),
@@ -1057,6 +1124,15 @@ impl Extractor {
                 }
                 PState::FrameData(remaining) => {
                     let take = remaining.min(rest.len());
+                    if let Some(c) = self.capture.as_mut().filter(|c| c.active) {
+                        if c.buf.len() + take > c.max {
+                            c.too_big = true;
+                            c.active = false;
+                            zeroize::Zeroize::zeroize(&mut *c.buf);
+                        } else {
+                            c.buf.extend_from_slice(&rest[..take]);
+                        }
+                    }
                     if let Some(e) = self.listing.as_mut().and_then(|l| l.last_mut())
                         && e.kind == EntryKind::File
                     {
