@@ -1,17 +1,17 @@
-//! Sistem yazı tipleri: gömülü yazı tipi yok; çalışma anında işletim sisteminin Türkçe
-//! karakterleri kapsayan bir normal ve bir yarı kalın yüzü okunur.
+//! System fonts: no embedded font; at run time a regular and a semibold face of an operating-system
+//! font covering Turkish characters are read.
 
 use std::sync::Arc;
 
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily, FontId};
 
-/// Yarı kalın aile adı.
+/// Semibold family name.
 pub const SEMIBOLD: &str = "semibold";
 
-/// Dosya yolu + koleksiyon (`.ttc`) içindeki yüz indeksi.
+/// File path + face index inside a collection (`.ttc`).
 type Face = (&'static str, u32);
 
-/// (normal, yarı kalın) aday çiftleri; ilk okunabilen çift kullanılır.
+/// Candidate (regular, semibold) pairs; the first readable pair is used.
 #[cfg(target_os = "macos")]
 const CANDIDATES: &[(Face, Face)] = &[
     (
@@ -37,7 +37,7 @@ const CANDIDATES: &[(Face, Face)] = &[
 #[cfg(not(any(target_os = "macos", windows)))]
 const CANDIDATES: &[(Face, Face)] = &[];
 
-/// Okunmuş yazı tipi çifti.
+/// A loaded font pair.
 pub struct SystemFonts {
     regular: FontData,
     semibold: FontData,
@@ -50,7 +50,7 @@ fn load(face: Face) -> Option<FontData> {
     Some(d)
 }
 
-/// İlk bulunan sistem yazı tipi çifti.
+/// The first system font pair found.
 #[must_use]
 pub fn find_system_fonts() -> Option<SystemFonts> {
     CANDIDATES.iter().find_map(|&(r, b)| {
@@ -61,7 +61,7 @@ pub fn find_system_fonts() -> Option<SystemFonts> {
     })
 }
 
-/// Yazı tiplerini egui'ye kurar.
+/// Installs the fonts into egui.
 pub fn install(ctx: &egui::Context, fonts: SystemFonts) {
     let mut defs = FontDefinitions::empty();
     defs.font_data
@@ -79,13 +79,13 @@ pub fn install(ctx: &egui::Context, fonts: SystemFonts) {
     ctx.set_fonts(defs);
 }
 
-/// Yarı kalın yazı tipi.
+/// Semibold font.
 #[must_use]
 pub fn semibold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(SEMIBOLD.into()))
 }
 
-/// Normal yazı tipi.
+/// Regular font.
 #[must_use]
 pub fn regular(size: f32) -> FontId {
     FontId::proportional(size)
@@ -96,10 +96,7 @@ mod tests {
     #[test]
     fn system_fonts_exist_on_supported_platforms() {
         if cfg!(any(target_os = "macos", windows)) {
-            assert!(
-                super::find_system_fonts().is_some(),
-                "sistem yazı tipi bulunamadı"
-            );
+            assert!(super::find_system_fonts().is_some(), "no system font found");
         }
     }
 }

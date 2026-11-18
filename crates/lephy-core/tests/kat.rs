@@ -1,10 +1,10 @@
-//! Resmî bilinen-cevap testleri. Veri dosyaları `tests/kat/` (depo kökü).
+//! Official known-answer tests. Data files are in `tests/kat/` (repository root).
 //!
-//! - Argon2id: RFC 9106 §5.3 (m=32 KiB; biçim sınırı dışında olduğundan argon2 crate'i doğrudan)
-//! - HKDF: RFC 5869 Ek A (SHA-256; SHA-512 için Python çapraz kontrol, `vectors.rs`)
-//! - XChaCha20-Poly1305: draft-irtf-cfrg-xchacha-03 Ek A.3.1 (lephy-core `SharedCipher` üzerinden)
-//! - AES-256-GCM: NIST CAVP `gcmEncryptExtIV256.rsp` alt kümesi (`SharedCipher` üzerinden)
-//! - BLAKE3: resmî `test_vectors.json` (hash + keyed; keyed yol `kdf::header_mac` üzerinden)
+//! - Argon2id: RFC 9106 §5.3 (m=32 KiB; outside the format limits, so the argon2 crate directly)
+//! - HKDF: RFC 5869 Appendix A (SHA-256; SHA-512 by Python cross-check, `vectors.rs`)
+//! - XChaCha20-Poly1305: draft-irtf-cfrg-xchacha-03 Appendix A.3.1 (through lephy-core `SharedCipher`)
+//! - AES-256-GCM: a subset of NIST CAVP `gcmEncryptExtIV256.rsp` (through `SharedCipher`)
+//! - BLAKE3: the official `test_vectors.json` (hash + keyed; the keyed path through `kdf::header_mac`)
 
 #![allow(
     clippy::unwrap_used,
@@ -22,7 +22,7 @@ const XCHACHA: &str = include_str!("../../../tests/kat/xchacha20poly1305_draft03
 const AESGCM: &str = include_str!("../../../tests/kat/aes256gcm_cavp_subset.txt");
 const BLAKE3_JSON: &str = include_str!("../../../tests/kat/blake3_test_vectors.json");
 
-/// `[bölüm]` başlıklı, `Anahtar = hex` satırlı basit biçim.
+/// Simple format with `[section]` headers and `Key = hex` lines.
 fn sections(text: &str) -> Vec<(String, HashMap<String, String>)> {
     let mut out: Vec<(String, HashMap<String, String>)> = Vec::new();
     let mut cur: Option<(String, HashMap<String, String>)> = None;
@@ -137,13 +137,13 @@ fn aes256gcm_nist_cavp_subset() {
         assert_eq!(tag.to_vec(), h(&m["Tag"]), "{name} Tag");
         n += 1;
     }
-    assert!(n >= 40, "en az 40 CAVP vektörü bekleniyordu, {n}");
+    assert!(n >= 40, "expected at least 40 CAVP vectors, {n}");
 }
 
 #[test]
 fn blake3_official_vectors_hash_and_keyed() {
-    // Resmî JSON: {"key": "...", "context_string": "...", "cases": [{"input_len", "hash", "keyed_hash", "derive_key"}]}
-    // Girdi: i. bayt = i % 251. `hash`/`keyed_hash` 131 baytlık genişletilmiş çıktı; ilk 32 bayt karşılaştırılır.
+    // Official JSON: {"key": "...", "context_string": "...", "cases": [{"input_len", "hash", "keyed_hash", "derive_key"}]}
+    // Input: byte i = i % 251. `hash`/`keyed_hash` are 131-byte extended outputs; the first 32 bytes are compared.
     let key_str = BLAKE3_JSON
         .split("\"key\": \"")
         .nth(1)

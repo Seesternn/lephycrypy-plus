@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 [package.metadata]
 cargo-fuzz = true
 
-# Ayrı workspace: ana workspace'in `exclude` listesinde. Yalnızca nightly + cargo-fuzz ile çalışır.
+# Separate workspace: in the main workspace's `exclude` list. Runs only with nightly + cargo-fuzz.
 [workspace]
 members = ["."]
 

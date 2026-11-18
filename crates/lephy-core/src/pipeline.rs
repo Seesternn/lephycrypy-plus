@@ -1,22 +1,22 @@
-//! Paralel STREAM hattı.
+//! Parallel STREAM pipeline.
 //!
-//! okuyucu (çağıran iş parçacığı) → bounded `work` kanalı → işçi iş parçacıkları
-//! (`seal/open_chunk(index, last)`) → bounded `done` kanalı → sıralı yazıcı (`BTreeMap`) →
-//! `free` kanalı → okuyucu. Tüm tamponlar tek `LargeSecretBuf<u8>` havuzundadır:
-//! `nbuf = clamp(64 MiB / chunk_size, 2, 8)`, her tampon `chunk_size + 17` B (ileri okuma).
-//! Yerinde şifreleme; düz metin tamponları yazıcı iade etmeden önce sıfırlanır.
+//! reader (calling thread) → bounded `work` channel → worker threads
+//! (`seal/open_chunk(index, last)`) → bounded `done` channel → in-order writer (`BTreeMap`) →
+//! `free` channel → reader. All buffers live in a single `LargeSecretBuf<u8>` pool:
+//! `nbuf = clamp(64 MiB / chunk_size, 2, 8)`, each buffer `chunk_size + 17` B (read-ahead).
+//! Encryption is in place; plaintext buffers are zeroized before the writer returns them.
 //!
-//! İlerleme garantisi: tampon okuyucuya ancak havuzdan alınırsa verilir ve o anda indeksi
-//! atanır; işçiler indeksten bağımsızdır; yazıcı en düşük bekleyen indeksi yazınca tamponu iade
-//! eder; havuzdaki tüm tamponlar `nbuf`'tan küçük bir indeks penceresinde olduğundan en düşük
-//! indeks her zaman ya bir işçide ya da yazıcıdadır.
+//! Progress guarantee: a buffer reaches the reader only when taken from the pool, and its index is
+//! assigned at that moment; workers do not depend on the index; the writer returns a buffer after
+//! writing the lowest pending index; since all pool buffers are within an index window smaller
+//! than `nbuf`, the lowest index is always either at a worker or at the writer.
 //!
-//! Kesinti: her aşama her chunk'ta `lephy_sys::signal::interrupted()` yoklar; `Err(Interrupted)`
-//! kanalları kapatır, hat normal yoldan çözülür (Drop'lar çalışır).
+//! Interruption: every stage polls `lephy_sys::signal::interrupted()` for each chunk;
+//! `Err(Interrupted)` closes the channels and the pipeline unwinds normally (Drops run).
 //!
-//! `BufReader`/`BufWriter`/`Stdout` yasaktır (clippy.toml); okuyucu/yazıcı doğrudan havuz
-//! tamponunu kullanır. `std::thread::scope` kullanılır (rayon yerine): işçi iş parçacıkları
-//! başlarken sinyal maskesi kurar.
+//! `BufReader`/`BufWriter`/`Stdout` are forbidden (clippy.toml); the reader and writer use the
+//! pool buffers directly. `std::thread::scope` is used (instead of rayon): worker threads set
+//! their signal mask when they start.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -31,40 +31,40 @@ use crate::cipher::{SharedCipher, TAG_LEN};
 use crate::error::{Error, Result};
 use crate::stream::{open_chunk, seal_chunk};
 
-/// Süreç genelinde hattın sırayla yazdığı (ya da doğruladığı) akış baytı. Yalnızca ilerleme göstergesi içindir; aynı anda
-/// birden çok hat çalışırsa toplamı gösterir.
+/// Stream bytes the pipeline has written (or verified) in order, process wide. For the progress
+/// display only; shows the sum if several pipelines run at once.
 static PROGRESS: AtomicU64 = AtomicU64::new(0);
 
-/// İlerleme sayacını sıfırlar.
+/// Resets the progress counter.
 pub fn reset_progress() {
     PROGRESS.store(0, Ordering::Relaxed);
 }
 
-/// Son sıfırlamadan bu yana hattın yazdığı bayt.
+/// Bytes written by the pipeline since the last reset.
 #[must_use]
 pub fn progress() -> u64 {
     PROGRESS.load(Ordering::Relaxed)
 }
 
-/// Hat parametreleri.
+/// Pipeline parameters.
 pub struct StreamParams<'a> {
-    /// AEAD (paylaşımlı, arenada).
+    /// AEAD (shared, in the arena).
     pub cipher: &'a SharedCipher,
     /// `stream_nonce_prefix` (24 B).
     pub prefix: &'a [u8; 24],
     /// `chunk_aad`.
     pub aad: &'a [u8; 32],
-    /// Chunk boyutu.
+    /// Chunk size.
     pub chunk_size: usize,
 }
 
-/// Havuz tampon sayısı: `clamp(64 MiB / chunk_size, 2, 8)`.
+/// Number of pool buffers: `clamp(64 MiB / chunk_size, 2, 8)`.
 #[must_use]
 pub fn pool_buffers(chunk_size: usize) -> usize {
     ((64 * 1024 * 1024) / chunk_size.max(1)).clamp(2, 8)
 }
 
-/// İşçi sayısı: `available_parallelism` ≤ 8.
+/// Number of workers: `available_parallelism` ≤ 8.
 #[must_use]
 pub fn worker_count() -> usize {
     std::thread::available_parallelism()
@@ -92,9 +92,9 @@ struct Done<'p> {
 struct Shared {
     failed: AtomicBool,
     error: Mutex<Option<Error>>,
-    /// Kurtarmada doğrulanamayan chunk numaraları.
+    /// Chunk numbers that failed verification during recovery.
     bad: Mutex<Vec<u64>>,
-    /// Kurtarmada akış son chunk'tan önce bitti.
+    /// During recovery the stream ended before the last chunk.
     truncated: AtomicBool,
 }
 
@@ -112,7 +112,7 @@ impl Shared {
             self.fail(Error::Interrupted);
         }
         if self.failed.load(Ordering::SeqCst) {
-            return Err(Error::Interrupted); // gerçek hata `take_error` ile alınır
+            return Err(Error::Interrupted); // the real error is fetched with `take_error`
         }
         Ok(())
     }
@@ -124,7 +124,7 @@ impl Shared {
     }
 }
 
-/// `dest` dolana ya da EOF'a kadar okur; okunan bayt sayısı.
+/// Reads until `dest` is full or EOF; returns the number of bytes read.
 fn read_full(r: &mut dyn Read, dest: &mut [u8], shared: &Shared) -> Result<usize> {
     let mut n = 0;
     while n < dest.len() {
@@ -140,23 +140,23 @@ fn read_full(r: &mut dyn Read, dest: &mut [u8], shared: &Shared) -> Result<usize
     Ok(n)
 }
 
-/// Hat yönü.
+/// Pipeline direction.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Encrypt,
     Decrypt,
     Verify,
-    /// Eski anahtarla aç, aynı tamponda yeni anahtarla mühürle: düz metin kilitli havuzdan
-    /// hiç çıkmaz.
+    /// Open with the old key and seal with the new key in the same buffer: the plaintext never
+    /// leaves the locked pool.
     Reencrypt,
-    /// Kurtarma: doğrulanamayan chunk sıfırla doldurulur ve numarası kaydedilir; hat durmaz.
+    /// Recovery: a chunk that fails verification is zero-filled and its number recorded; the pipeline continues.
     Recover,
 }
 
-/// Düz metni şifreler; şifreli chunk'ları `output`'a yazar. Döner: düz metin bayt sayısı.
+/// Encrypts plaintext and writes the encrypted chunks to `output`. Returns the plaintext byte count.
 ///
 /// # Errors
-/// G/Ç (1), kesinti (130), AEAD/arena (1).
+/// I/O (1), interruption (130), AEAD/arena (1).
 pub fn encrypt_stream(
     p: &StreamParams<'_>,
     input: &mut (dyn Read + Send),
@@ -165,12 +165,12 @@ pub fn encrypt_stream(
     run(p, None, input, Some(output), Mode::Encrypt)
 }
 
-/// Şifreli akışı (`old`) çözüp aynı chunk sınırlarıyla `new` ile yeniden şifreler. Düz metin
-/// yalnızca kilitli havuz tamponlarında bulunur. İki parametre kümesinin chunk boyutu aynı
-/// olmalıdır. Döner: düz metin bayt sayısı.
+/// Decrypts an encrypted stream (`old`) and re-encrypts it with `new` on the same chunk
+/// boundaries. The plaintext exists only in locked pool buffers. Both parameter sets must have
+/// the same chunk size. Returns the plaintext byte count.
 ///
 /// # Errors
-/// Kod 4 (eski akış bozuk), 1, 130.
+/// Code 4 (old stream damaged), 1, 130.
 pub fn reencrypt_stream(
     old: &StreamParams<'_>,
     new: &StreamParams<'_>,
@@ -179,16 +179,16 @@ pub fn reencrypt_stream(
 ) -> Result<u64> {
     if old.chunk_size != new.chunk_size {
         return Err(Error::Environment(
-            "yeniden şifrelemede chunk boyutu değişemez".into(),
+            "the chunk size cannot change when re-encrypting".into(),
         ));
     }
     run(old, Some(new), input, Some(output), Mode::Reencrypt)
 }
 
-/// Şifreli akışı çözer; düz metni `output`'a yazar. Döner: düz metin bayt sayısı.
+/// Decrypts an encrypted stream and writes the plaintext to `output`. Returns the plaintext byte count.
 ///
 /// # Errors
-/// Kod 4 (`Corrupt { at: "chunk N" }`), 1, 130.
+/// Code 4 (`Corrupt { at: "chunk N" }`), 1, 130.
 pub fn decrypt_stream(
     p: &StreamParams<'_>,
     input: &mut (dyn Read + Send),
@@ -197,22 +197,22 @@ pub fn decrypt_stream(
     run(p, None, input, Some(output), Mode::Decrypt)
 }
 
-/// Kurtarma sonucu.
+/// Recovery result.
 #[derive(Debug, Default, Clone)]
 pub struct RecoverStats {
-    /// Yazılan bayt.
+    /// Bytes written.
     pub written: u64,
-    /// Doğrulanamayıp sıfırla doldurulan chunk numaraları (artan sırada).
+    /// Chunk numbers that failed verification and were zero-filled (ascending).
     pub bad_chunks: Vec<u64>,
-    /// Akış son chunk'tan önce bitti (dosya kesilmiş).
+    /// The stream ended before the last chunk (truncated file).
     pub truncated: bool,
 }
 
-/// Kurtarma modunda çözer: doğrulanamayan chunk'lar sıfırla doldurulur. Çıktı **doğrulanmamış**
-/// veri içerebilir; yalnızca ayrı bir kurtarma çıktısına yazılmalıdır.
+/// Decrypts in recovery mode: chunks that fail verification are zero-filled. The output may
+/// contain **unverified** data; write it only to a separate recovery output.
 ///
 /// # Errors
-/// G/Ç, kesinti.
+/// I/O, interruption.
 pub fn recover_stream(
     p: &StreamParams<'_>,
     input: &mut (dyn Read + Send),
@@ -221,14 +221,14 @@ pub fn recover_stream(
     let mut st = RecoverStats::default();
     st.written = run_with(p, None, input, Some(output), Mode::Recover, Some(&mut st))?;
     st.bad_chunks.sort_unstable();
-    // Son chunk "son" bayrağıyla doğrulanamadıysa akış büyük olasılıkla kesilmiştir.
+    // If the last chunk could not be verified with the "last" flag, the stream was most likely truncated.
     Ok(st)
 }
 
-/// Şifreli akışı yazmadan doğrular. Döner: düz metin bayt sayısı.
+/// Verifies an encrypted stream without writing. Returns the plaintext byte count.
 ///
 /// # Errors
-/// Kod 4, 1, 130.
+/// Code 4, 1, 130.
 pub fn verify_stream(p: &StreamParams<'_>, input: &mut (dyn Read + Send)) -> Result<u64> {
     run(p, None, input, None, Mode::Verify)
 }
@@ -236,7 +236,7 @@ pub fn verify_stream(p: &StreamParams<'_>, input: &mut (dyn Read + Send)) -> Res
 fn chunk_err(index: u32) -> Error {
     Error::Corrupt {
         at: format!("chunk {index}"),
-        detail: Some("AEAD doğrulaması başarısız ya da chunk uzunluğu geçersiz".into()),
+        detail: Some("AEAD verification failed or invalid chunk length".into()),
     }
 }
 
@@ -263,7 +263,7 @@ fn run_with(
     let stride = chunk_size + TAG_LEN + 1;
     let nbuf = pool_buffers(chunk_size);
     let mut pool = LargeSecretBuf::<u8>::new_filled(nbuf * stride, 0)
-        .map_err(|e| Error::Environment(format!("chunk havuzu: {e}")))?;
+        .map_err(|e| Error::Environment(format!("chunk pool: {e}")))?;
     let shared = Shared {
         failed: AtomicBool::new(false),
         error: Mutex::new(None),
@@ -283,7 +283,7 @@ fn run_with(
     let mut plain_in: u64 = 0;
 
     std::thread::scope(|s| {
-        // İşçiler
+        // Workers
         for _ in 0..workers {
             let work_rx = work_rx.clone();
             let done_tx = done_tx.clone();
@@ -311,7 +311,7 @@ fn run_with(
                             match open_chunk(p.cipher, p.prefix, p.aad, index, last, buf.data, len)
                             {
                                 Ok(None) => {
-                                    // Doğrulanamadı: içerik güvenilmez, sıfırla değiştirilir.
+                                    // Not verified: the content is untrusted and replaced with zeros.
                                     let n = len.saturating_sub(TAG_LEN);
                                     buf.data[..n].zeroize();
                                     shared_ref
@@ -328,7 +328,7 @@ fn run_with(
                             match open_chunk(p.cipher, p.prefix, p.aad, index, last, buf.data, len)
                             {
                                 Ok(Some(plain)) => next_params.map_or_else(
-                                    || Err(Error::Environment("yeni anahtar yok".into())),
+                                    || Err(Error::Environment("no new key".into())),
                                     |q| {
                                         seal_chunk(
                                             q.cipher, q.prefix, q.aad, index, last, buf.data, plain,
@@ -368,7 +368,7 @@ fn run_with(
         drop(work_rx);
         drop(done_tx);
 
-        // Yazıcı
+        // Writer
         s.spawn(move || {
             let _ = lephy_sys::signal::mask_signals_on_this_thread();
             let mut out = output;
@@ -390,11 +390,11 @@ fn run_with(
                     }
                     written += out_len as u64;
                     PROGRESS.fetch_add(out_len as u64, Ordering::Relaxed);
-                    // panik hook testi: 4. chunk'ta bilinçli panik (yalnızca test derlemesi).
+                    // panic-hook test: a deliberate panic at chunk 4 (test builds only).
                     #[cfg(feature = "fault-injection")]
                     assert!(
                         next != 3,
-                        "LPHY-FAULT-INJECTION: pipeline ortası panik (yalnızca test derlemesi)"
+                        "LPHY-FAULT-INJECTION: panic in the middle of the pipeline (test builds only)"
                     );
                     buf.data.zeroize();
                     next = next.wrapping_add(1);
@@ -408,7 +408,7 @@ fn run_with(
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = written;
         });
 
-        // Okuyucu (bu iş parçacığı)
+        // Reader (this thread)
         let r = read_loop(input, &free_rx, &work_tx, chunk_size, mode, shared_ref);
         drop(work_tx);
         match r {
@@ -448,7 +448,7 @@ fn write_all_retry(o: &mut (dyn Write + Send), mut data: &[u8], shared: &Shared)
             Ok(0) => {
                 return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::WriteZero,
-                    "0 bayt",
+                    "0 bytes",
                 )));
             }
             Ok(n) => data = &data[n..],
@@ -467,8 +467,8 @@ fn read_loop<'p>(
     mode: Mode,
     shared: &Shared,
 ) -> Result<u64> {
-    // Şifrelemede chunk_size+1, çözmede chunk_size+16+1 bayt okunur; fazla bayt sonraki
-    // tampona taşınır (carry) ve son chunk tespiti böyle yapılır.
+    // Encryption reads chunk_size+1 bytes, decryption chunk_size+16+1; the extra byte is carried
+    // into the next buffer, which is how the last chunk is detected.
     let unit = match mode {
         Mode::Encrypt => chunk_size,
         Mode::Decrypt | Mode::Verify | Mode::Reencrypt | Mode::Recover => chunk_size + TAG_LEN,
@@ -479,7 +479,7 @@ fn read_loop<'p>(
     loop {
         shared.check()?;
         let Ok(buf) = free_rx.recv() else {
-            return Ok(total_in); // yazıcı çıktı (hata zaten kaydedildi)
+            return Ok(total_in); // the writer stopped (the error is already recorded)
         };
         let mut n = 0;
         if let Some(c) = carry.take() {
@@ -495,19 +495,19 @@ fn read_loop<'p>(
             unit
         };
         let idx = u32::try_from(index).map_err(|_| match mode {
-            Mode::Encrypt => Error::Environment("girdi 2^32 chunk'ı aşıyor".into()),
+            Mode::Encrypt => Error::Environment("the input exceeds 2^32 chunks".into()),
             Mode::Decrypt | Mode::Verify | Mode::Reencrypt | Mode::Recover => Error::Corrupt {
                 at: "chunk 4294967296".into(),
-                detail: Some("chunk sayısı 2^32'yi aşıyor".into()),
+                detail: Some("the number of chunks exceeds 2^32".into()),
             },
         })?;
         if mode == Mode::Recover && len < TAG_LEN {
-            // Kurtarma: akış kesilmiş; elde olanla bitir.
+            // Recovery: the stream is truncated; finish with what we have.
             shared.truncated.store(true, Ordering::Relaxed);
             return Ok(total_in);
         }
         if mode != Mode::Encrypt && len < TAG_LEN {
-            // Son chunk tag'den kısa → biçim ihlali (son chunk'tan sonra artık bayt dahil).
+            // Last chunk shorter than a tag → format violation (including bytes after the last chunk).
             return Err(chunk_err(idx));
         }
         if work_tx
@@ -526,11 +526,11 @@ fn read_loop<'p>(
         if last {
             return Ok(total_in);
         }
-        // Şifrelemede: taşınan bayt varsa akış devam eder; `len == unit` ve EOF tam katta ise bir
-        // sonraki okuma 0 bayt + carry 1 bayt → 1 baytlık son chunk (kanonik değil!). Bunu
-        // önlemek için carry'yi okuyup EOF görünce bir sonraki tur `n = 1` olur; bu yalnızca
-        // taşınan bayt gerçekten varsa olur, yani içerik tam kat DEĞİLDİR. Tam katta
-        // `read_full` tam `unit` bayt döndürür ve `n == unit` → `last` olur, ek chunk yazılmaz.
+        // Encryption: if a byte was carried the stream continues; with `len == unit` and EOF at an
+        // exact multiple, the next read would give 0 bytes + 1 carried byte → a 1-byte last chunk
+        // (not canonical!). To avoid this, the carried byte is read and on EOF the next round has
+        // `n = 1`; that only happens if a byte was really carried, i.e. the content is NOT an exact
+        // multiple. At an exact multiple `read_full` returns exactly `unit` bytes, `n == unit` → `last`, no extra chunk.
     }
 }
 
@@ -551,7 +551,7 @@ mod tests {
 
     fn roundtrip(alg: AlgId, chunk: usize, data: &[u8]) -> Vec<u8> {
         let c = SharedCipher::new(alg, &[9u8; 32]).unwrap();
-        // chunk_size test için 64 KiB'ten küçük olabilir; biçimde 64 KiB..16 MiB.
+        // chunk_size may be smaller than 64 KiB in tests; the format uses 64 KiB..16 MiB.
         let p = params(&c, chunk);
         let mut ct = Vec::new();
         let mut inp: &[u8] = data;
@@ -570,18 +570,18 @@ mod tests {
     #[test]
     fn canonical_last_chunk_rules() {
         let chunk = 1024;
-        // 0 bayt → tek boş son chunk (16 B)
+        // 0 bytes → a single empty last chunk (16 B)
         let ct = roundtrip(AlgId::XChaCha20Poly1305, chunk, b"");
         assert_eq!(ct.len(), 16);
-        // tam kat → ek boş chunk yok
+        // exact multiple → no extra empty chunk
         let data = vec![1u8; chunk * 3];
         let ct = roundtrip(AlgId::XChaCha20Poly1305, chunk, &data);
         assert_eq!(ct.len(), 3 * (chunk + 16));
-        // tam kat + 1
+        // exact multiple + 1
         let data = vec![2u8; chunk * 3 + 1];
         let ct = roundtrip(AlgId::Aes256Gcm, chunk, &data);
         assert_eq!(ct.len(), 3 * (chunk + 16) + 1 + 16);
-        // tek kısa chunk
+        // a single short chunk
         roundtrip(AlgId::Aes256Gcm, chunk, b"hello");
     }
 
@@ -593,7 +593,7 @@ mod tests {
         let mut ct = Vec::new();
         let mut inp: &[u8] = &data;
         encrypt_stream(&p, &mut inp, &mut ct).unwrap();
-        // son chunk'tan sonra 1 fazla bayt → 4
+        // 1 extra byte after the last chunk → 4
         let mut bad = ct.clone();
         bad.push(0);
         let mut inp: &[u8] = &bad;
@@ -601,13 +601,13 @@ mod tests {
             Err(Error::Corrupt { at, .. }) => assert!(at.starts_with("chunk")),
             other => panic!("{other:?}"),
         }
-        // kesilmiş → 4 (son chunk doğrulanamaz)
+        // truncated → 4 (the last chunk cannot be verified)
         let mut inp: &[u8] = &ct[..ct.len() - 1];
         assert!(matches!(
             verify_stream(&p, &mut inp),
             Err(Error::Corrupt { .. })
         ));
-        // bozuk bayt → 4
+        // damaged byte → 4
         let mut bad = ct.clone();
         bad[10] ^= 1;
         let mut inp: &[u8] = &bad;
@@ -615,7 +615,7 @@ mod tests {
             Err(Error::Corrupt { at, .. }) => assert_eq!(at, "chunk 0"),
             other => panic!("{other:?}"),
         }
-        // boş ciphertext → 4
+        // empty ciphertext → 4
         let mut inp: &[u8] = &[];
         assert!(matches!(
             verify_stream(&p, &mut inp),
@@ -625,7 +625,7 @@ mod tests {
 
     #[test]
     fn many_chunks_with_small_pool_complete() {
-        // E3: nbuf=8 (chunk küçük), 10k chunk tamamlanır.
+        // nbuf=8 (small chunks), 10k chunks complete.
         let data: Vec<u8> = (0..10_000u32 * 64).map(|i| (i % 251) as u8).collect();
         roundtrip(AlgId::XChaCha20Poly1305, 64, &data);
     }

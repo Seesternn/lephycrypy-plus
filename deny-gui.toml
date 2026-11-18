@@ -1,10 +1,10 @@
-# cargo-deny yapılandırması — GUI kademesi (1.2): tüm workspace + lephy-gui (egui/eframe).
-# Çalıştırma: `cargo deny --all-features --config deny-gui.toml check`
+# cargo-deny configuration — GUI tier: the whole workspace + lephy-gui (egui/eframe).
+# Run: `cargo deny --all-features --config deny-gui.toml check`
 #
-# Neden ayrı: egui/eframe/winit zinciri onlarca üçüncü taraf FFI crate'i (objc2, windows-sys,
-# libc …) ve kaçınılmaz çift sürümler getirir; çekirdeğin FFI wrapper izin listesi (deny.toml)
-# burada pratik değildir. Lisans, güvenlik uyarısı, kaynak ve sert yasaklar aynen uygulanır;
-# çift sürüm yalnızca uyarıdır. Çekirdeğin sıkı kuralları deny.toml'da (`--exclude lephy-gui`).
+# Why separate: the egui/eframe/winit tree brings dozens of third-party FFI crates (objc2, windows-sys,
+# libc …) and unavoidable duplicate versions; the core's FFI wrapper allow list (deny.toml) is not
+# practical here. Licences, advisories, sources and hard bans apply unchanged; duplicate versions
+# are only warnings. The core's strict rules are in deny.toml (`--exclude lephy-gui`).
 
 [graph]
 targets = [
@@ -14,9 +14,9 @@ targets = [
     "x86_64-unknown-linux-gnu",
 ]
 all-features = false
-# accesskit_unix (zbus, async-process, signal-hook-registry …) yalnızca Linux/BSD kenarıdır;
-# lephy-gui Linux'ta eframe'e bağlanmaz. cargo-deny hedef birleşimi bu kenarı
-# yine de ekler (yanlış pozitif); bu yüzden grafikten çıkarılır.
+# accesskit_unix (zbus, async-process, signal-hook-registry …) is only a Linux/BSD edge;
+# lephy-gui does not link eframe on Linux. cargo-deny's target union adds this edge
+# anyway (a false positive), so it is removed from the graph.
 exclude = ["accesskit_unix"]
 
 [licenses]
@@ -54,19 +54,19 @@ deny = [
     { crate = "memsec", reason = "lephy-sys/mem.rs" },
     { crate = "sysinfo", reason = "lephy-sys" },
     { crate = "secrecy", reason = "single secret type: SecretBytes/SecretBox" },
-    { crate = "openssl", reason = "ağ/TLS yok" },
-    { crate = "openssl-sys", reason = "ağ/TLS yok" },
-    { crate = "ring", reason = "ağ/TLS yok" },
-    { crate = "native-tls", reason = "ağ/TLS yok" },
+    { crate = "openssl", reason = "no network/TLS" },
+    { crate = "openssl-sys", reason = "no network/TLS" },
+    { crate = "ring", reason = "no network/TLS" },
+    { crate = "native-tls", reason = "no network/TLS" },
     { crate = "hkdf:<0.13", reason = "old version without zeroize support" },
     { crate = "hmac:<0.13", reason = "old version without zeroize support" },
     { crate = "sha2:<0.11", reason = "old version without zeroize support" },
     { crate = "plist", reason = "lephy-usb/plist_lite" },
-    { crate = "rand_chacha", reason = "chacha20 anahtar akışı" },
-    { crate = "ctrlc", reason = "SA_RESTART koyar; lephy-sys/signal.rs" },
-    # GUI'nin varsayılan özellikleri bilinçli olarak kapalı: wgpu (büyük grafik yığını),
-    # pano (clipboard: parola sızıntısı riski), kalıcılık (ron/serde).
-    { crate = "wgpu", reason = "glow arka ucu seçildi" },
-    { crate = "arboard", reason = "pano kapalı" },
-    { crate = "ron", reason = "persistence kapalı" },
+    { crate = "rand_chacha", reason = "chacha20 key stream" },
+    { crate = "ctrlc", reason = "sets SA_RESTART; lephy-sys/signal.rs" },
+    # The GUI's default features are off on purpose: wgpu (large graphics stack),
+    # clipboard (risk of password leaks), persistence (ron/serde).
+    { crate = "wgpu", reason = "the glow back end was chosen" },
+    { crate = "arboard", reason = "clipboard off" },
+    { crate = "ron", reason = "persistence off" },
 ]

@@ -1,16 +1,15 @@
-//! Parola gücü için kaba bir tahmin (zxcvbn yerine küçük, bağımlılıksız bir kestirici).
+//! A rough password-strength estimate (a small, dependency-free estimator instead of zxcvbn).
 //!
-//! - Yalnızca EFF listesindeki kelimelerden ve tek tip ayraçtan oluşan öbekler için entropi
-//!   tam olarak `kelime × 12,925` bittir.
-//! - Diğer parolalar için karakter havuzundan bir üst sınır hesaplanır, sonra yaygın zayıflıklar
-//!   (tekrar, ardışık dizi, klavye sırası, sık kullanılan parola, yıl) için düşülür.
+//! - For passphrases made only of EFF-list words and a single separator, the entropy is exactly
+//!   `words × 12.925` bits.
+//! - For other passwords an upper bound is computed from the character pool, then reduced for
+//!   common weaknesses (repetition, sequences, keyboard rows, common passwords, years).
 //!
-//! Bu bir saldırı modeli değil, kullanıcıya yön gösteren bir göstergedir; arayüzde "tahmini"
-//! diye sunulur.
+//! This is a guide for the user, not an attack model; the app presents it as an "estimate".
 
 use crate::passphrase;
 
-/// Güç düzeyi.
+/// Strength level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
     /// < 28 bit.
@@ -25,14 +24,14 @@ pub enum Level {
     VeryStrong,
 }
 
-/// Tahmin sonucu.
+/// Estimate result.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Estimate {
-    /// Tahmini entropi (bit).
+    /// Estimated entropy (bits).
     pub bits: f64,
-    /// Düzey.
+    /// Level.
     pub level: Level,
-    /// EFF kelime öbeği olarak tanındı mı.
+    /// Whether it was recognised as an EFF passphrase.
     pub passphrase: bool,
 }
 
@@ -89,7 +88,7 @@ fn level_of(bits: f64) -> Level {
     }
 }
 
-/// EFF kelime öbeği mi: kelime sayısını döner.
+/// Whether it is an EFF passphrase: returns the number of words.
 fn as_passphrase(s: &str) -> Option<usize> {
     let sep = s.chars().find(|c| !c.is_ascii_lowercase())?;
     if sep.is_alphanumeric() {
@@ -100,7 +99,7 @@ fn as_passphrase(s: &str) -> Option<usize> {
     (parts.len() >= 2 && parts.iter().all(|p| list.binary_search(p).is_ok())).then_some(parts.len())
 }
 
-/// Tahmin eder. Geçersiz UTF-8 girdi de kabul edilir (bayt bazında).
+/// Estimates. Invalid UTF-8 input is accepted too (byte based).
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
 pub fn estimate(pwd: &[u8]) -> Estimate {
@@ -146,7 +145,7 @@ pub fn estimate(pwd: &[u8]) -> Estimate {
         + u32::from(other) * 40;
     let per_char = f64::from(pool.max(1)).log2();
 
-    // Etkin uzunluk: tekrarlar, ardışık diziler ve klavye sıraları ucuz sayılır.
+    // Effective length: repetitions, sequences and keyboard rows count as cheap.
     let lower_s: Vec<char> = s.to_lowercase().chars().collect();
     let mut effective = 0.0;
     for i in 0..lower_s.len() {
@@ -169,7 +168,7 @@ pub fn estimate(pwd: &[u8]) -> Estimate {
     if COMMON.iter().any(|w| folded.contains(w)) {
         bits = bits.min(20.0);
     }
-    // Yıl (1900–2099) içeriyorsa ~7 bit düşülür.
+    // A year (1900–2099) costs ~7 bits.
     let has_year = folded.as_bytes().windows(4).any(|w| {
         w.iter().all(u8::is_ascii_digit) && (w.starts_with(b"19") || w.starts_with(b"20"))
     });

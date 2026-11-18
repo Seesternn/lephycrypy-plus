@@ -7,9 +7,9 @@ members = [
     "crates/lephy-usb",
     "crates/lephy-gui",
 ]
-# fuzz/ kendi workspace'idir (cargo-fuzz, nightly); ana grafiğe ve cargo-deny'ye girmez.
+# fuzz/ is its own workspace (cargo-fuzz, nightly); it is not part of the main graph or cargo-deny.
 exclude = ["fuzz"]
-# 1.1: crates/lephy-usb — 1.2: crates/lephy-gui
+# crates/lephy-usb and crates/lephy-gui are members too.
 
 [workspace.package]
 version = "0.0.1"
@@ -27,7 +27,7 @@ zeroize = { version = "1", default-features = false, features = ["alloc"] }
 thiserror = "2"
 subtle = { version = "2", default-features = false }
 clap = { version = "4", features = ["derive"] }
-# Kripto (zeroize destekli sürümler). Tümü RustCrypto 0.11/0.6 kuşağı.
+# Cryptography (versions with zeroize support). All from the RustCrypto 0.11/0.6 generation.
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["zeroize"] }
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "zeroize"] }
 aead = { version = "0.6", default-features = false }
@@ -36,19 +36,19 @@ hkdf = { version = "0.13", default-features = false }
 hmac = { version = "0.13", default-features = false, features = ["zeroize"] }
 sha2 = { version = "0.11", default-features = false, features = ["zeroize"] }
 digest = { version = "0.11", default-features = false, features = ["zeroize"] }
-# `pure`: C/asm arka ucu yok (cc crate'i ve C derleyici bagimliligi kalkar; yalnizca kucuk girdiler hash'lenir).
+# `pure`: no C/asm back end (drops the cc crate and the C compiler dependency; only small inputs are hashed).
 blake3 = { version = "1.8", default-features = false, features = ["zeroize", "pure"] }
 getrandom = { version = "0.4", default-features = false }
 unicode-normalization = { version = "0.1", default-features = false }
 crossbeam-channel = { version = "0.5", default-features = false, features = ["std"] }
 cap-std = "4"
-# Ham DEFLATE (sıkıştırma, biçim v2). Saf Rust, forbid(unsafe_code); GUI ağacında zaten var.
+# Raw DEFLATE (compression, format v2). Pure Rust, forbid(unsafe_code); already in the GUI tree.
 miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
 # X25519 for recipient (public-key) encryption. Pure Rust, no digest/rand features.
 curve25519-dalek = { version = "5.0.0", default-features = false, features = ["zeroize"] }
 
-# unsafe yalnızca lephy-sys'te. lephy-sys kendi [lints] tablosunu kullanır,
-# `workspace = true` yazmaz; diğer tüm crate'ler bu tabloyu devralır.
+# unsafe only in lephy-sys. lephy-sys uses its own [lints] table and does not write
+# `workspace = true`; every other crate inherits this table.
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
@@ -70,4 +70,4 @@ panic = "abort"
 strip = true
 opt-level = 3
 
-# Testler unwind ister; panic=abort yalnızca release ikililerinde (hook'u orada kurulur).
+# Tests need unwinding; panic=abort only for release binaries (where the hook is installed).

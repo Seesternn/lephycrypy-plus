@@ -1,10 +1,10 @@
-//! USB işlem motoru.
+//! USB operation engine.
 //!
-//! Akış: [`prepare`] (taze tanım → uygunluk → kuru çalıştırma) → kullanıcı onayı (etiket **ve**
-//! GiB) → [`execute`]: her adımdan önce fiziksel/birim kimliği yeniden okunur; fark → kod 5 ve
-//! sonraki adım çalışmaz. Adımlar: silme ya da `--format` → isteğe bağlı `--fill-free-space` →
-//! `.lphy` yazma (atomik) → geri okuma (yeniden bağlama sonrası, değilse "önbellekten
-//! doğrulandı").
+//! Flow: [`prepare`] (fresh description → eligibility → dry run) → user confirmation (label **and**
+//! GiB) → [`execute`]: the physical/volume identity is re-read before every step; a difference →
+//! code 5 and the next step does not run. Steps: wipe or `--format` → optional `--fill-free-space` →
+//! write the `.lphy` (atomically) → read back (after remounting; otherwise "verified from
+//! cache").
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -18,34 +18,34 @@ use lephy_core::names::escape_display;
 use crate::device::Device;
 use crate::platform::Platform;
 
-/// Kökteki sistem klasörleri: klasörün kendisi korunur, içeriği (çöp kutusu, Spotlight dizini,
-/// olay günlüğü — eski kullanıcı verisi ya da ondan türetilmiş metin) silinir.
+/// System folders at the root: the folder itself is kept, its content (trash, Spotlight index,
+/// event log — old user data or text derived from it) is deleted.
 pub const SYSTEM_DIRS: [&str; 4] = [
     "System Volume Information",
     ".Spotlight-V100",
     ".fseventsd",
     ".Trashes",
 ];
-/// Doldurma tamponu üst sınırı.
+/// Upper limit of the fill buffer.
 pub const MAX_FILL_BUFFER: usize = 8 * 1024 * 1024;
-/// FAT32 dosya boyutu sınırı.
+/// FAT32 file-size limit.
 pub const FAT32_MAX_FILE: u64 = 4 * 1024 * 1024 * 1024 - 1;
-/// Dosya başına anahtar akışı üst sınırı: `ChaCha20` (96 bit nonce) 32 bit blok sayacıyla 256 GiB
-/// üretir; her dosya ayrı nonce ve ≤ 64 GiB.
+/// Upper limit of the key stream per file: `ChaCha20` (96-bit nonce) with a 32-bit block counter
+/// produces 256 GiB; each file gets its own nonce and ≤ 64 GiB.
 pub const MAX_KEYSTREAM_FILE: u64 = 64 * 1024 * 1024 * 1024;
-/// Doldurma dosyası öneki.
+/// Fill file prefix.
 pub const FILL_PREFIX: &str = ".lphy-fill-";
 
-/// Kuru çalıştırma sonucu.
+/// Dry-run result.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DryRun {
-    /// Silinecek dosya (ve symlink) sayısı.
+    /// Number of files (and symlinks) to delete.
     pub files: u64,
-    /// Silinecek dizin sayısı.
+    /// Number of directories to delete.
     pub dirs: u64,
-    /// Toplam bayt.
+    /// Total bytes.
     pub bytes: u64,
-    /// İlk 20 yol (kaçışlanmış).
+    /// First 20 paths (escaped).
     pub first: Vec<String>,
 }
 
@@ -53,10 +53,10 @@ fn is_system(name: &str) -> bool {
     SYSTEM_DIRS.contains(&name)
 }
 
-/// Kuru çalıştırma: silinecek her şeyi sayar; symlink takip edilmez.
+/// Dry run: counts everything that will be deleted; symlinks are not followed.
 ///
 /// # Errors
-/// G/Ç.
+/// I/O.
 pub fn dry_run(root: &Path) -> Result<DryRun> {
     let mut out = DryRun::default();
     let mut stack: Vec<(PathBuf, String)> = Vec::new();
@@ -64,7 +64,7 @@ pub fn dry_run(root: &Path) -> Result<DryRun> {
         let e = e?;
         let name = e.file_name().to_string_lossy().into_owned();
         if is_system(&name) {
-            // Klasör kalır; içindekiler sayılır (erişilemiyorsa atlanır).
+            // The folder stays; its content is counted (skipped if inaccessible).
             if let Ok(rd) = std::fs::read_dir(e.path()) {
                 for k in rd.filter_map(std::result::Result::ok) {
                     let n = k.file_name().to_string_lossy().into_owned();
@@ -102,21 +102,21 @@ pub fn dry_run(root: &Path) -> Result<DryRun> {
     Ok(out)
 }
 
-/// Kullanıcı dosyalarını siler (kök handle üzerinden; symlink takip edilmez; sistem
-/// klasörlerinin yalnızca içi boşaltılır). Silinen giriş sayısı.
+/// Deletes user files (through the root handle; symlinks not followed; system folders are only
+/// emptied). Returns the number of entries deleted.
 ///
 /// # Errors
-/// G/Ç.
+/// I/O.
 pub fn wipe(root: &Path, expect_dev: Option<u64>) -> Result<u64> {
     let dir = cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())?;
-    // Kimlik açılmış tutamaçtan denetlenir: kontrol sonrası bağlama noktasına başka bir aygıt
-    // gelse bile silme yalnızca doğrulanan tutamaç üzerinden yapılır.
+    // The identity is checked on the opened handle: even if another device appears at the mount
+    // point after the check, deletion only goes through the verified handle.
     #[cfg(unix)]
     if let Some(want) = expect_dev {
         use cap_std::fs::MetadataExt;
         if dir.dir_metadata()?.dev() != want {
             return Err(Error::Cancelled(
-                "hedef aygıt kimliği değişti; hiçbir şey silinmedi".into(),
+                "the target device identity changed; nothing was deleted".into(),
             ));
         }
     }
@@ -135,7 +135,7 @@ pub fn wipe(root: &Path, expect_dev: Option<u64>) -> Result<u64> {
         if ft.is_dir() && !ft.is_symlink() {
             dir.remove_dir_all(&name)?;
         } else if dir.remove_file(&name).is_err() {
-            // Windows dizin symlink'i: remove_dir ile kaldırılır (hedefe dokunmaz).
+            // Windows directory symlink: removed with remove_dir (the target is not touched).
             dir.remove_dir(&name)?;
         }
         n += 1;
@@ -147,8 +147,8 @@ pub fn wipe(root: &Path, expect_dev: Option<u64>) -> Result<u64> {
     Ok(n)
 }
 
-/// Sistem klasörünün içini en iyi çabayla boşaltır (klasör kalır; symlink takip edilmez).
-/// Erişilemeyen öğeler (ör. Windows'ta ACL korumalı `System Volume Information`) atlanır.
+/// Empties a system folder on a best-effort basis (the folder stays; symlinks not followed).
+/// Inaccessible items (e.g. the ACL-protected `System Volume Information` on Windows) are skipped.
 fn clear_contents(root: &cap_std::fs::Dir, name: &std::ffi::OsStr) -> u64 {
     let Ok(sub) = root.open_dir(name) else {
         return 0;
@@ -169,19 +169,19 @@ fn clear_contents(root: &cap_std::fs::Dir, name: &std::ffi::OsStr) -> u64 {
     n
 }
 
-/// Boş alan doldurma seçenekleri.
+/// Free-space fill options.
 #[derive(Debug, Clone, Copy)]
 pub struct FillOptions {
-    /// Dosya başına üst sınır (FAT32: 4 GiB − 1).
+    /// Upper limit per file (FAT32: 4 GiB − 1).
     pub max_file: u64,
-    /// Yazma tamponu (≤ 8 MiB).
+    /// Write buffer (≤ 8 MiB).
     pub buffer: usize,
-    /// Yalnızca test: bu kadar bayttan sonra "disk dolu" say.
+    /// Test only: treat the disk as full after this many bytes.
     pub limit: Option<u64>,
 }
 
 impl FillOptions {
-    /// Dosya sistemine göre varsayılan.
+    /// Default for the file system.
     #[must_use]
     pub fn for_fs(fs_type: &str) -> Self {
         let fat = matches!(fs_type, "msdos" | "fat" | "fat32" | "fat16" | "vfat");
@@ -199,12 +199,12 @@ fn is_disk_full(e: &std::io::Error) -> bool {
         || (cfg!(windows) && matches!(e.raw_os_error(), Some(39 | 112))) // HANDLE_DISK_FULL, DISK_FULL
 }
 
-/// Boş alanı `ChaCha20` anahtar akışıyla (dosya başına ayrı nonce) doldurur, fsync eder ve dosyaları siler. Yazılan bayt.
-/// FAT/exFAT eski dizin girişleri, NTFS resident dosyalar ve wear-leveling nedeniyle fiziksel
-/// silme garantisi **yoktur** (THREAT-MODEL › USB).
+/// Fills free space with a `ChaCha20` key stream (a separate nonce per file), fsyncs and deletes the files. Returns bytes written.
+/// Because of old FAT/exFAT directory entries, NTFS resident files and wear levelling there is
+/// **no** guarantee of physical erasure (THREAT-MODEL › USB).
 ///
 /// # Errors
-/// G/Ç (disk dolu hariç), kesinti.
+/// I/O (except disk full), interruption.
 pub fn fill_free_space(root: &Path, opts: FillOptions) -> Result<u64> {
     let buf_len = opts.buffer.clamp(4096, MAX_FILL_BUFFER);
     let mut key = [0u8; 32];
@@ -270,92 +270,93 @@ pub fn fill_free_space(root: &Path, opts: FillOptions) -> Result<u64> {
     result.map(|()| total)
 }
 
-/// Kullanıcı onayı: etiket aynen **ve** GiB tam sayı.
+/// User confirmation: the exact label **and** the whole number of GiB.
 #[derive(Debug, Clone)]
 pub struct Confirm {
-    /// Yazılan etiket.
+    /// Label typed.
     pub label: String,
-    /// Yazılan boyut (GiB).
+    /// Size typed (GiB).
     pub size_gib: u64,
 }
 
-/// Geri okuma türü.
+/// Kind of read-back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verification {
-    /// Ayır + yeniden bağla sonrası okundu.
+    /// Read after eject + remount.
     AfterRemount,
-    /// Yeniden bağlanamadı; önbellekten doğrulandı (`F_NOCACHE` mevcut sayfaları boşaltmaz).
+    /// Could not remount; verified from cache (`F_NOCACHE` does not drop existing pages).
     FromCache,
 }
 
 impl std::fmt::Display for Verification {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Verification::AfterRemount => "yeniden bağlama sonrası doğrulandı",
-            Verification::FromCache => "önbellekten doğrulandı",
+            Verification::AfterRemount => "verified after remounting",
+            Verification::FromCache => "verified from cache",
         })
     }
 }
 
-/// İstek.
+/// Request.
 #[derive(Debug, Clone)]
 pub struct WriteRequest {
-    /// Yazılacak `.lphy` dosyası.
+    /// The `.lphy` file to write.
     pub source: PathBuf,
-    /// Onay.
+    /// Confirmation.
     pub confirm: Confirm,
-    /// Silme yerine exFAT biçimlendirme.
+    /// exFAT format instead of wiping.
     pub format: bool,
-    /// Silme/biçimlendirme sonrası boş alanı doldur.
+    /// Fill free space after wiping/formatting.
     pub fill: bool,
-    /// Doldurma seçenekleri (`None` = dosya sistemine göre).
+    /// Fill options (`None` = by file system).
     pub fill_opts: Option<FillOptions>,
 }
 
-/// Rapor.
+/// Report.
 #[derive(Debug, Clone)]
 pub struct WriteReport {
-    /// Kuru çalıştırma.
+    /// Dry run.
     pub dry_run: DryRun,
-    /// Silinen üst düzey giriş.
+    /// Top-level entries deleted.
     pub wiped: u64,
-    /// Doldurulan bayt.
+    /// Bytes filled.
     pub filled: u64,
-    /// Yazılan dosya.
+    /// File written.
     pub written: PathBuf,
-    /// Yazılan bayt.
+    /// Bytes written.
     pub bytes: u64,
     /// BLAKE3 (hex).
     pub blake3: String,
-    /// Geri okuma türü.
+    /// Kind of read-back.
     pub verification: Verification,
-    /// Çalışan adımlar (sırayla).
+    /// Steps run (in order).
     pub steps: Vec<&'static str>,
 }
 
-/// Kaynağın geçerli bir `.lphy` olduğunu doğrular (yalnızca şifreli dosyalar yazılır). Boyut.
+/// Checks that the source is a valid `.lphy` (only encrypted files are written). Returns the size.
 ///
 /// # Errors
-/// Kod 1 (geçersiz/okunamıyor).
+/// Code 1 (invalid/unreadable).
 pub fn check_source(source: &Path) -> Result<u64> {
     let mut f = std::fs::File::open(source)?;
     let mut h = [0u8; HEADER_LEN];
-    f.read_exact(&mut h)
-        .map_err(|_| Error::Environment("kaynak .lphy değil (başlık kısa)".into()))?;
+    f.read_exact(&mut h).map_err(|_| {
+        Error::Environment("the source is not a .lphy file (header too short)".into())
+    })?;
     Header::parse(&h).map_err(|_| {
-        Error::Environment("yalnızca geçerli .lphy (şifreli) dosyaları USB'ye yazılır".into())
+        Error::Environment("only valid .lphy (encrypted) files are written to USB".into())
     })?;
     Ok(f.metadata()?.len())
 }
 
-/// Taze tanım + uygunluk + kuru çalıştırma (onaydan önce gösterilir).
+/// Fresh description + eligibility + dry run (shown before confirmation).
 ///
 /// # Errors
-/// Kod 1: uygun değil (bypass yok).
+/// Code 1: not eligible (no bypass).
 pub fn prepare(platform: &dyn Platform, target: &Path) -> Result<(Device, DryRun)> {
     let dev = platform.describe(target)?;
     dev.eligibility(platform.require_serial())
-        .map_err(|why| Error::Environment(format!("hedef USB ortamı değil: {why}")))?;
+        .map_err(|why| Error::Environment(format!("the target is not USB media: {why}")))?;
     let dr = dry_run(&dev.mount)?;
     Ok((dev, dr))
 }
@@ -363,18 +364,20 @@ pub fn prepare(platform: &dyn Platform, target: &Path) -> Result<(Device, DryRun
 fn recheck(platform: &dyn Platform, snap: &Device, physical_only: bool) -> Result<Device> {
     let now = platform
         .describe(&snap.mount)
-        .map_err(|e| Error::Cancelled(format!("hedef aygıt yeniden okunamadı: {e}")))?;
+        .map_err(|e| Error::Cancelled(format!("the target device could not be read again: {e}")))?;
     let a = &now.identity;
     let b = &snap.identity;
     let same_physical = a.disk == b.disk && a.size_bytes == b.size_bytes;
     let same_volume = a.volume == b.volume && a.dev_id == b.dev_id;
     if !same_physical || (!physical_only && !same_volume) {
         return Err(Error::Cancelled(
-            "hedef aygıt kimliği değişti; işlem durduruldu".into(),
+            "the target device identity changed; the operation was stopped".into(),
         ));
     }
     if let Err(why) = now.eligibility(platform.require_serial()) {
-        return Err(Error::Cancelled(format!("hedef artık uygun değil: {why}")));
+        return Err(Error::Cancelled(format!(
+            "the target is no longer eligible: {why}"
+        )));
     }
     Ok(now)
 }
@@ -414,10 +417,10 @@ fn hash_file(f: &mut std::fs::File) -> Result<String> {
     Ok(h.finalize().to_hex().to_string())
 }
 
-/// Onaylı işlemi yürütür. `snap`: [`prepare`]'in döndürdüğü tanım.
+/// Runs the confirmed operation. `snap`: the description returned by [`prepare`].
 ///
 /// # Errors
-/// 5 (onay uyuşmazlığı, kimlik değişti), 1, 7, 8, 130.
+/// 5 (confirmation mismatch, identity changed), 1, 7, 8, 130.
 pub fn execute(
     platform: &dyn Platform,
     snap: &Device,
@@ -425,10 +428,10 @@ pub fn execute(
     req: &WriteRequest,
     log: &mut dyn FnMut(&str),
 ) -> Result<WriteReport> {
-    // 0b: onay — etiket aynen, GiB tam sayı.
+    // 0b: confirmation — exact label, whole GiB.
     if req.confirm.label != snap.label || req.confirm.size_gib != snap.size_gib() {
         return Err(Error::Cancelled(format!(
-            "onay uyuşmuyor: etiket {:?} / {} GiB bekleniyordu",
+            "confirmation does not match: expected label {:?} / {} GiB",
             snap.label,
             snap.size_gib()
         )));
@@ -437,48 +440,48 @@ pub fn execute(
     let name = req
         .source
         .file_name()
-        .ok_or_else(|| Error::Environment("kaynak dosya adı yok".into()))?
+        .ok_or_else(|| Error::Environment("the source has no file name".into()))?
         .to_owned();
     let mut steps = Vec::new();
     let mut cur = snap.clone();
 
-    // 1) silme ya da biçimlendirme
+    // 1) wipe or format
     cur = recheck(platform, &cur, false)?;
     let wiped = if req.format {
         steps.push("format");
-        log("biçimlendiriliyor (exFAT)…");
+        log("formatting (exFAT)…");
         platform.format(&cur, &cur.label)?;
-        // Biçimlendirme birim kimliğini değiştirir: fiziksel kimlik karşılaştırılır, yeni
-        // birim kimliği anlık görüntü olur.
+        // Formatting changes the volume identity: the physical identity is compared and the new
+        // volume identity becomes the snapshot.
         cur = recheck(platform, &cur, true)?;
         0
     } else {
         steps.push("wipe");
-        log("kullanıcı dosyaları siliniyor…");
+        log("deleting user files…");
         wipe(&cur.mount, Some(cur.identity.dev_id))?
     };
 
-    // 2) boş alan doldurma
+    // 2) fill free space
     let mut filled = 0;
     if req.fill {
         cur = recheck(platform, &cur, false)?;
         steps.push("fill");
-        log("boş alan dolduruluyor…");
+        log("filling free space…");
         let opts = req
             .fill_opts
             .unwrap_or_else(|| FillOptions::for_fs(&cur.fs_type));
         filled = fill_free_space(&cur.mount, opts)?;
     }
 
-    // 3) yazma
+    // 3) write
     cur = recheck(platform, &cur, false)?;
     lephy_core::io::precheck_space(&cur.mount, size)?;
     steps.push("write");
-    log("şifreli dosya yazılıyor…");
+    log("writing the encrypted file…");
     let target = cur.mount.join(&name);
     let (bytes, digest) = copy_and_hash(&req.source, &target)?;
 
-    // 4) geri okuma
+    // 4) read back
     cur = recheck(platform, &cur, false)?;
     steps.push("verify");
     let (verification, read_path) = match platform.remount(&cur)? {
@@ -494,8 +497,8 @@ pub fn execute(
     let back = hash_file(&mut f)?;
     if back != digest {
         return Err(Error::Corrupt {
-            at: "USB geri okuma".into(),
-            detail: Some("yazılan dosyanın BLAKE3'ü kaynakla uyuşmuyor".into()),
+            at: "USB read-back".into(),
+            detail: Some("the BLAKE3 of the written file does not match the source".into()),
         });
     }
     Ok(WriteReport {
@@ -517,7 +520,7 @@ mod tests {
     use crate::device::{Bus, sample};
     use std::cell::{Cell, RefCell};
 
-    /// Sahte platform: hacim = geçici dizin; `describe` çağrı sayacı ve kimlik değişimi enjekte.
+    /// Fake platform: volume = temp directory; `describe` call counter and identity change injection.
     struct Fake {
         dev: RefCell<Device>,
         describes: Cell<usize>,
@@ -529,7 +532,7 @@ mod tests {
     impl Fake {
         fn new(root: &Path) -> Self {
             let mut d = sample(root.to_path_buf());
-            // Silme açılan tutamacın aygıt kimliğini denetler: test birimi gerçek klasördür.
+            // Deletion checks the device identity of the opened handle: the test volume is a real folder.
             d.identity.dev_id = lephy_sys::vol::device_id(root).unwrap_or(42);
             Self {
                 dev: RefCell::new(d),
@@ -586,7 +589,7 @@ mod tests {
     }
 
     fn lphy_source(dir: &Path) -> PathBuf {
-        // Geçerli bir başlıklı (biçimce) sahte .lphy: ops ile küçük KDF'li gerçek şifreleme.
+        // A fake .lphy with a valid header: real encryption through ops with a small KDF.
         let src = dir.join("in.txt");
         std::fs::write(&src, b"usb test icerigi").unwrap();
         let out = dir.join("yedek.lphy");
@@ -645,7 +648,7 @@ mod tests {
         }
         let dr = dry_run(&vol).unwrap();
         assert!(dr.first.iter().any(|p| p == "belgeler/alt/b.bin"));
-        // Sistem klasörlerinin içeriği (eski çöp kutusu, Spotlight dizini) silinecekler arasında.
+        // The content of system folders (old trash, Spotlight index) is among what gets deleted.
         assert!(
             dr.first.iter().any(|p| p == ".Trashes/keep"),
             "{:?}",
@@ -659,21 +662,21 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         for s in SYSTEM_DIRS {
-            assert!(left.contains(&s.to_string()), "{s} klasörü kalmalı");
+            assert!(left.contains(&s.to_string()), "the {s} folder must stay");
             assert!(
                 !vol.join(s).join("keep").exists(),
-                "{s} içeriği silinmeli (eski kullanıcı verisi)"
+                "the content of {s} must be deleted (old user data)"
             );
         }
         assert_eq!(
             left.len(),
             SYSTEM_DIRS.len(),
-            "yalnızca sistem klasörleri kalmalı: {left:?}"
+            "only the system folders may remain: {left:?}"
         );
         assert_eq!(
             std::fs::read(&outside).unwrap(),
             b"dokunma",
-            "symlink hedefi silinmemeli"
+            "a symlink target must not be deleted"
         );
         assert!(base.join("vol").exists());
         let _ = std::fs::remove_dir_all(&base);
@@ -689,7 +692,7 @@ mod tests {
         assert_eq!(e.exit_code(), lephy_core::error::ExitCode::Cancelled);
         assert!(
             base.join("a").exists(),
-            "farklı aygıtta hiçbir şey silinmemeli"
+            "nothing may be deleted on a different device"
         );
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -705,7 +708,7 @@ mod tests {
         let n = fill_free_space(&vol, opts).unwrap();
         assert_eq!(n, 1_000_000);
         let left: Vec<_> = std::fs::read_dir(&vol).unwrap().collect();
-        assert!(left.is_empty(), "doldurma dosyaları silinmeli");
+        assert!(left.is_empty(), "fill files must be deleted");
         assert_eq!(FillOptions::for_fs("msdos").max_file, FAT32_MAX_FILE);
         assert_eq!(FillOptions::for_fs("exfat").buffer, MAX_FILL_BUFFER);
         assert!(FillOptions::for_fs("apfs").max_file > FAT32_MAX_FILE);
@@ -750,7 +753,7 @@ mod tests {
                 }
             );
             assert_eq!(
-                rep.verification.to_string().contains("önbellekten"),
+                rep.verification.to_string().contains("from cache"),
                 !remount
             );
             assert!(!vol.join("belgeler").exists());
@@ -790,7 +793,7 @@ mod tests {
             assert_eq!(e.exit_code(), lephy_core::error::ExitCode::Cancelled);
             assert!(
                 vol.join("belgeler/a.txt").exists(),
-                "hiçbir dosya silinmemeli"
+                "no file may be deleted"
             );
         }
         let _ = std::fs::remove_dir_all(&base);
@@ -803,7 +806,7 @@ mod tests {
         std::fs::create_dir(&vol).unwrap();
         populate(&vol);
         let src = lphy_source(&base);
-        // describe #1: prepare, #2: silme öncesi (aynı), #3: doldurma öncesi → değişti.
+        // describe #1: prepare, #2: before wiping (same), #3: before filling → changed.
         let mut fake = Fake::new(&vol);
         fake.change_identity_at = Some(3);
         let (dev, dr) = prepare(&fake, &vol).unwrap();
@@ -820,9 +823,12 @@ mod tests {
         };
         let e = execute(&fake, &dev, dr, &req, &mut |_| {}).unwrap_err();
         assert_eq!(e.exit_code(), lephy_core::error::ExitCode::Cancelled);
-        assert!(!vol.join("yedek.lphy").exists(), "yazma adımı çalışmamalı");
+        assert!(
+            !vol.join("yedek.lphy").exists(),
+            "the write step must not run"
+        );
         assert_eq!(fake.describes.get(), 3);
-        // Silme öncesinde değişirse hiçbir şey silinmez.
+        // If it changes before wiping, nothing is deleted.
         populate(&vol);
         let mut fake = Fake::new(&vol);
         fake.change_identity_at = Some(2);
@@ -848,7 +854,10 @@ mod tests {
         assert_eq!(e.exit_code(), lephy_core::error::ExitCode::Io);
         fake.dev.borrow_mut().bus = Bus::Usb;
         fake.dev.borrow_mut().serial = Some(String::new());
-        assert!(prepare(&fake, &vol).is_err(), "boş seri reddedilmeli");
+        assert!(
+            prepare(&fake, &vol).is_err(),
+            "an empty serial must be refused"
+        );
         let _ = std::fs::remove_dir_all(&vol);
     }
 

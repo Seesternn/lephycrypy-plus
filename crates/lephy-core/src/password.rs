@@ -1,12 +1,12 @@
-//! Parola ve keyfile okuma, politika.
+//! Reading passwords and key files; policy.
 //!
-//! - Ham parola ≤ [`MAX_RAW_LEN`] B, kilitli `SecretBytes` (kapasite sabit, büyütme yok).
-//! - Kaynaklar: terminal (`/dev/tty` / `CONIN$`, yankısız, kırpma yok), stdin, fd (yalnızca Unix),
-//!   dosya/isimli pipe. Terminal dışı kaynaklarda sondaki tek `\n` ya da `\r\n` kırpılır.
-//! - NFC: önceden ayrılmış `SecretBytes` (4 × ham); `unicode-normalization` yineleyicisinin iç
-//!   tamponu arena dışındadır (THREAT-MODEL).
-//! - Şifreleme politikası: NFC sonrası < 8 Unicode scalar → red (bayrakla aşılamaz).
-//! - Keyfile: 32 B..=1 MiB, içerik BLAKE3 ile özetlenir; yol/ad türetmeye girmez.
+//! - Raw password ≤ [`MAX_RAW_LEN`] B in locked `SecretBytes` (fixed capacity, never grown).
+//! - Sources: terminal (`/dev/tty` / `CONIN$`, no echo, no trimming), stdin, fd (Unix only),
+//!   file/named pipe. For non-terminal sources one trailing `\n` or `\r\n` is removed.
+//! - NFC: into pre-allocated `SecretBytes` (4 × raw); the internal buffer of the
+//!   `unicode-normalization` iterator is outside the arena (THREAT-MODEL).
+//! - Encryption policy: < 8 Unicode scalar values after NFC → refused (no flag overrides it).
+//! - Key file: 32 B..=1 MiB, the content is hashed with BLAKE3; the path/name is not used.
 
 use std::io::Read;
 use std::path::Path;
@@ -16,37 +16,37 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::error::{Error, Result};
 
-/// Ham parola üst sınırı (bayt).
+/// Upper limit for a raw password (bytes).
 pub const MAX_RAW_LEN: usize = 1024;
-/// Şifrelemede en az Unicode scalar sayısı (NFC sonrası).
+/// Minimum number of Unicode scalar values when encrypting (after NFC).
 pub const MIN_SCALARS: usize = 8;
-/// Keyfile alt sınırı.
+/// Key-file lower limit.
 pub const KEYFILE_MIN: u64 = 32;
-/// Keyfile üst sınırı.
+/// Key-file upper limit.
 pub const KEYFILE_MAX: u64 = 1024 * 1024;
 
-/// Parola kaynağı.
+/// Password source.
 #[derive(Debug, Clone)]
 pub enum Source {
-    /// Etkileşimli terminal (yankısız).
+    /// Interactive terminal (no echo).
     Tty,
-    /// Standart girdi (EOF'a kadar; TTY ise hata).
+    /// Standard input (until EOF; an error if it is a TTY).
     Stdin,
-    /// Dosya tanıtıcısı (yalnızca Unix).
+    /// File descriptor (Unix only).
     #[cfg(unix)]
     Fd(i32),
-    /// Dosya ya da isimli pipe.
+    /// File or named pipe.
     File(std::path::PathBuf),
 }
 
 fn arena_err(e: impl std::fmt::Display) -> Error {
-    Error::Environment(format!("kilitli bellek: {e}"))
+    Error::Environment(format!("locked memory: {e}"))
 }
 
-/// Terminalden yankısız bir satır okur; `prompt` tty'ye yazılır.
+/// Reads one line from the terminal without echo; `prompt` is written to the tty.
 ///
 /// # Errors
-/// Terminal açılamadı, kesinti (`Interrupted`), çok uzun, EOF.
+/// Terminal could not be opened, interruption (`Interrupted`), too long, EOF.
 pub fn read_tty(prompt: &str) -> Result<SecretBytes> {
     let tty = open_tty()?;
     lephy_sys::term::write_all_raw(&tty, prompt.as_bytes())?;
@@ -60,11 +60,11 @@ pub fn read_tty(prompt: &str) -> Result<SecretBytes> {
         Err(lephy_sys::term::ReadError::Interrupted) => return Err(Error::Interrupted),
         Err(lephy_sys::term::ReadError::TooLong) => {
             return Err(Error::Environment(format!(
-                "parola {MAX_RAW_LEN} baytı aşıyor"
+                "the password exceeds {MAX_RAW_LEN} bytes"
             )));
         }
         Err(lephy_sys::term::ReadError::Eof) => {
-            return Err(Error::Environment("parola girilmedi (EOF)".into()));
+            return Err(Error::Environment("no password entered (EOF)".into()));
         }
         Err(lephy_sys::term::ReadError::Io(e)) => return Err(Error::Io(e)),
     };
@@ -78,7 +78,7 @@ fn open_tty() -> Result<std::fs::File> {
         .read(true)
         .write(true)
         .open("/dev/tty")
-        .map_err(|e| Error::Environment(format!("terminal açılamadı (/dev/tty): {e}")))
+        .map_err(|e| Error::Environment(format!("could not open the terminal (/dev/tty): {e}")))
 }
 
 #[cfg(windows)]
@@ -87,10 +87,10 @@ fn open_tty() -> Result<std::fs::File> {
         .read(true)
         .write(true)
         .open("CONIN$")
-        .map_err(|e| Error::Environment(format!("konsol açılamadı (CONIN$): {e}")))
+        .map_err(|e| Error::Environment(format!("could not open the console (CONIN$): {e}")))
 }
 
-/// Bir `Read` kaynağından ≤ 1024 B okur (büyütme yok), sondaki tek `\n`/`\r\n` kırpılır.
+/// Reads ≤ 1024 B from a `Read` source (never grown) and removes one trailing `\n`/`\r\n`.
 fn read_bounded(mut r: impl Read) -> Result<SecretBytes> {
     let mut raw = SecretBytes::with_capacity(MAX_RAW_LEN + 1).map_err(arena_err)?;
     let mut total = 0usize;
@@ -110,7 +110,7 @@ fn read_bounded(mut r: impl Read) -> Result<SecretBytes> {
     }
     if total > MAX_RAW_LEN {
         return Err(Error::Environment(format!(
-            "parola {MAX_RAW_LEN} baytı aşıyor"
+            "the password exceeds {MAX_RAW_LEN} bytes"
         )));
     }
     let b = raw.expose();
@@ -125,24 +125,24 @@ fn read_bounded(mut r: impl Read) -> Result<SecretBytes> {
     Ok(raw)
 }
 
-/// Kaynaktan ham parolayı okur. `input_is_stdin`: giriş verisi de stdin'den geliyorsa
-/// `Source::Stdin` kod 1 ile reddedilir.
+/// Reads the raw password from a source. `input_is_stdin`: if the input data also comes from
+/// stdin, `Source::Stdin` is refused with code 1.
 ///
 /// # Errors
-/// Kaynağa göre kod 1 (TTY/çifte kullanım/G/Ç) ya da 130.
+/// Code 1 (TTY / used twice / I/O) or 130, depending on the source.
 pub fn read_raw(source: &Source, prompt: &str, input_is_stdin: bool) -> Result<SecretBytes> {
     match source {
         Source::Tty => read_tty(prompt),
         Source::Stdin => {
             if input_is_stdin {
                 return Err(Error::Environment(
-                    "stdin hem giriş hem parola kaynağı olamaz".into(),
+                    "stdin cannot be both the input and the password source".into(),
                 ));
             }
             let stdin = std::io::stdin();
             if lephy_sys::term::is_tty(&stdin) {
                 return Err(Error::Environment(
-                    "--password-stdin ile stdin bir terminal olamaz".into(),
+                    "with --password-stdin, stdin cannot be a terminal".into(),
                 ));
             }
             read_bounded(stdin.lock())
@@ -150,11 +150,13 @@ pub fn read_raw(source: &Source, prompt: &str, input_is_stdin: bool) -> Result<S
         #[cfg(unix)]
         Source::Fd(fd) => {
             if *fd < 3 {
-                return Err(Error::Environment("--password-fd 0, 1, 2 olamaz".into()));
+                return Err(Error::Environment(
+                    "--password-fd cannot be 0, 1 or 2".into(),
+                ));
             }
-            // lephy-core unsafe içeremez; lephy-sys fd'yi doğrular ve bir kopyasını verir.
+            // lephy-core cannot contain unsafe; lephy-sys validates the fd and returns a duplicate.
             let f = lephy_sys::fdio::dup_inherited_fd(*fd)
-                .ok_or_else(|| Error::Environment(format!("--password-fd {fd} geçersiz")))?;
+                .ok_or_else(|| Error::Environment(format!("--password-fd {fd} is invalid")))?;
             read_bounded(f)
         }
         Source::File(path) => {
@@ -165,7 +167,7 @@ pub fn read_raw(source: &Source, prompt: &str, input_is_stdin: bool) -> Result<S
     }
 }
 
-/// `--password-file` uyarıları: Unix'te geniş izinler; disk kalıntısı (README).
+/// `--password-file` warnings: broad permissions on Unix; residue on disk (README).
 fn check_file_source(path: &Path) {
     #[cfg(unix)]
     {
@@ -173,13 +175,13 @@ fn check_file_source(path: &Path) {
         if let Ok(md) = std::fs::metadata(path) {
             if md.file_type().is_file() && md.permissions().mode() & 0o077 != 0 {
                 eprintln!(
-                    "uyarı: parola dosyası başkaları tarafından okunabilir (mode {:o})",
+                    "warning: the password file is readable by others (mode {:o})",
                     md.permissions().mode() & 0o777
                 );
             }
             if md.file_type().is_file() {
                 eprintln!(
-                    "uyarı: parola dosyası diskte düz metin kalır; tmpfs/RAM disk ya da pipe tercih edin"
+                    "warning: the password file stays on disk as plaintext; prefer tmpfs, a RAM disk or a pipe"
                 );
             }
         }
@@ -189,20 +191,20 @@ fn check_file_source(path: &Path) {
         if let Some(s) = path.to_str() {
             let lower = s.to_ascii_lowercase();
             if lower.starts_with(r"\\") && !lower.starts_with(r"\\.\pipe\") {
-                eprintln!(
-                    "uyarı: uzak pipe/paylaşım yolu; yalnızca yerel \\\\.\\pipe\\ kabul edilir"
-                );
+                eprintln!("warning: remote pipe/share path; only local \\\\.\\pipe\\ is accepted");
             } else if !lower.starts_with(r"\\.\pipe\") {
-                eprintln!("uyarı: parola dosyası diskte düz metin kalır; isimli pipe tercih edin");
+                eprintln!(
+                    "warning: the password file stays on disk as plaintext; prefer a named pipe"
+                );
             }
         }
     }
 }
 
-/// Windows'ta uzak pipe reddi. Unix'te her yol kabul.
+/// Refuses remote pipes on Windows. Every path is accepted on Unix.
 ///
 /// # Errors
-/// `\\<host>\pipe\…` → kod 1.
+/// `\\<host>\pipe\…` → code 1.
 pub fn reject_remote_pipe(path: &Path) -> Result<()> {
     #[cfg(windows)]
     {
@@ -213,7 +215,7 @@ pub fn reject_remote_pipe(path: &Path) -> Result<()> {
                 && !lower.starts_with(r"\\?\")
             {
                 return Err(Error::Environment(
-                    "uzak pipe/UNC parola yolu reddedildi".into(),
+                    "remote pipe/UNC password path refused".into(),
                 ));
             }
         }
@@ -222,13 +224,13 @@ pub fn reject_remote_pipe(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// UTF-8 ham parolayı NFC'ye çevirir; çıktı kapasitesi 4 × ham (realloc yok).
+/// Converts the UTF-8 raw password to NFC; output capacity 4 × raw (no reallocation).
 ///
 /// # Errors
-/// Geçersiz UTF-8 → kod 1.
+/// Invalid UTF-8 → code 1.
 pub fn normalize_nfc(raw: &SecretBytes) -> Result<SecretBytes> {
     let s = std::str::from_utf8(raw.expose())
-        .map_err(|_| Error::Environment("parola geçerli UTF-8 değil".into()))?;
+        .map_err(|_| Error::Environment("the password is not valid UTF-8".into()))?;
     let mut out = SecretBytes::with_capacity(raw.len().max(1) * 4).map_err(arena_err)?;
     let mut tmp = [0u8; 4];
     for ch in s.nfc() {
@@ -239,43 +241,45 @@ pub fn normalize_nfc(raw: &SecretBytes) -> Result<SecretBytes> {
     Ok(out)
 }
 
-/// NFC parolada Unicode scalar sayısı.
+/// Number of Unicode scalar values in an NFC password.
 #[must_use]
 pub fn scalar_count(nfc: &SecretBytes) -> usize {
     std::str::from_utf8(nfc.expose()).map_or(0, |s| s.chars().count())
 }
 
-/// Şifreleme politikası: < 8 scalar → red (bayrakla aşılamaz).
+/// Encryption policy: < 8 scalar values → refused (no flag overrides it).
 ///
 /// # Errors
-/// Kod 1.
+/// Code 1.
 pub fn check_encrypt_policy(nfc: &SecretBytes) -> Result<()> {
     if scalar_count(nfc) < MIN_SCALARS {
         return Err(Error::Environment(format!(
-            "parola en az {MIN_SCALARS} karakter olmalı (NFC sonrası Unicode scalar)"
+            "the password must be at least {MIN_SCALARS} characters (Unicode scalar values after NFC)"
         )));
     }
     Ok(())
 }
 
-/// Keyfile içeriğini okur ve BLAKE3 özetini döner; boyut 32 B..=1 MiB.
+/// Reads the key file and returns its BLAKE3 digest; size 32 B..=1 MiB.
 ///
 /// # Errors
-/// Boyut sınırı ya da G/Ç → kod 1.
+/// Size limit or I/O → code 1.
 pub fn keyfile_digest_from_path(path: &Path) -> Result<zeroize::Zeroizing<[u8; 32]>> {
     let md = std::fs::metadata(path)?;
     if !md.is_file() {
         return Err(Error::Environment(
-            "anahtar dosyası normal dosya olmalı".into(),
+            "the key file must be a regular file".into(),
         ));
     }
     if md.len() < KEYFILE_MIN {
         return Err(Error::Environment(format!(
-            "anahtar dosyası en az {KEYFILE_MIN} bayt olmalı"
+            "the key file must be at least {KEYFILE_MIN} bytes"
         )));
     }
     if md.len() > KEYFILE_MAX {
-        return Err(Error::Environment("anahtar dosyası 1 MiB'ı aşamaz".into()));
+        return Err(Error::Environment(
+            "the key file cannot exceed 1 MiB".into(),
+        ));
     }
     let mut f = std::fs::File::open(path)?;
     let mut h = blake3::Hasher::new();
@@ -288,13 +292,15 @@ pub fn keyfile_digest_from_path(path: &Path) -> Result<zeroize::Zeroizing<[u8; 3
         }
         total += n as u64;
         if total > KEYFILE_MAX {
-            return Err(Error::Environment("anahtar dosyası 1 MiB'ı aşamaz".into()));
+            return Err(Error::Environment(
+                "the key file cannot exceed 1 MiB".into(),
+            ));
         }
         h.update(&buf[..n]);
     }
     if total < KEYFILE_MIN {
         return Err(Error::Environment(format!(
-            "anahtar dosyası en az {KEYFILE_MIN} bayt olmalı"
+            "the key file must be at least {KEYFILE_MIN} bytes"
         )));
     }
     let out = zeroize::Zeroizing::new(*h.finalize().as_bytes());
@@ -302,16 +308,16 @@ pub fn keyfile_digest_from_path(path: &Path) -> Result<zeroize::Zeroizing<[u8; 3
     Ok(out)
 }
 
-/// Yeni bir anahtar dosyası oluşturur: `len` rastgele bayt, yalnızca sahibi okuyabilir (0600),
-/// var olan dosyanın üzerine yazmaz. `KEYFILE_MIN..=KEYFILE_MAX` aralığında olmalıdır.
+/// Creates a new key file: `len` random bytes, readable only by the owner (0600), never
+/// overwrites an existing file. Must be in `KEYFILE_MIN..=KEYFILE_MAX`.
 ///
 /// # Errors
-/// Dosya zaten var (kod 7), uzunluk aralık dışı, G/Ç ya da RNG hatası.
+/// File already exists (code 7), length out of range, I/O or RNG error.
 pub fn generate_keyfile(path: &Path, len: usize) -> Result<()> {
     let len64 = len as u64;
     if !(KEYFILE_MIN..=KEYFILE_MAX).contains(&len64) {
         return Err(Error::Environment(format!(
-            "anahtar dosyası {KEYFILE_MIN}..={KEYFILE_MAX} bayt olmalı"
+            "the key file must be {KEYFILE_MIN}..={KEYFILE_MAX} bytes"
         )));
     }
     let mut buf = zeroize::Zeroizing::new(vec![0u8; len]);

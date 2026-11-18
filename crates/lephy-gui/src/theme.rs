@@ -1,36 +1,36 @@
-//! Görsel dil: soğuk nötr zemin, beyaz yüzeyler, tek vurgu (koyu deniz yeşili), animasyon yok.
-//! Açık/koyu tema sistem tercihini izler.
+//! Visual language: cool neutral background, white surfaces, one accent (dark sea green), no animation.
+//! Light/dark theme follows the system preference.
 
 use eframe::egui::{self, Color32, CornerRadius, Stroke, TextStyle, Theme};
 
 use crate::fonts;
 
-/// Bir temanın renkleri.
+/// Colours of one theme.
 #[derive(Clone, Copy)]
 pub struct Palette {
-    /// Pencere zemini.
+    /// Window background.
     pub bg: Color32,
-    /// Kart ve giriş alanı yüzeyi.
+    /// Card and input surface.
     pub surface: Color32,
-    /// Ana metin.
+    /// Main text.
     pub ink: Color32,
-    /// İkincil metin.
+    /// Secondary text.
     pub muted: Color32,
-    /// Çizgi.
+    /// Line.
     pub line: Color32,
-    /// Vurgu.
+    /// Accent.
     pub accent: Color32,
-    /// Vurgu üstünde metin.
+    /// Text on the accent.
     pub on_accent: Color32,
-    /// Vurgunun hafif tonu (sürükleme, seçim).
+    /// Light tint of the accent (dragging, selection).
     pub accent_soft: Color32,
-    /// Hata.
+    /// Error.
     pub danger: Color32,
-    /// Onay.
+    /// Success.
     pub ok: Color32,
 }
 
-/// Açık tema.
+/// Light theme.
 pub const LIGHT: Palette = Palette {
     bg: Color32::from_rgb(0xF5, 0xF6, 0xF7),
     surface: Color32::from_rgb(0xFF, 0xFF, 0xFF),
@@ -44,7 +44,7 @@ pub const LIGHT: Palette = Palette {
     ok: Color32::from_rgb(0x1F, 0x6F, 0x6A),
 };
 
-/// Koyu tema.
+/// Dark theme.
 pub const DARK: Palette = Palette {
     bg: Color32::from_rgb(0x1B, 0x1E, 0x21),
     surface: Color32::from_rgb(0x25, 0x29, 0x2D),
@@ -58,7 +58,7 @@ pub const DARK: Palette = Palette {
     ok: Color32::from_rgb(0x5F, 0xB3, 0xAA),
 };
 
-/// Etkin temanın paleti.
+/// Palette of the active theme.
 #[must_use]
 pub fn palette(ctx: &egui::Context) -> Palette {
     match ctx.theme() {
@@ -67,13 +67,13 @@ pub fn palette(ctx: &egui::Context) -> Palette {
     }
 }
 
-/// Köşe yarıçapları: giriş/düğme 8, kart 12, bırakma alanı 14.
+/// Corner radii: input/button 8, card 12, drop zone 14.
 pub const R_INPUT: u8 = 8;
-/// Kart köşesi.
+/// Card corner.
 pub const R_CARD: u8 = 12;
-/// Bırakma alanı köşesi.
+/// Drop-zone corner.
 pub const R_ZONE: u8 = 14;
-/// Giriş ve düğme yüksekliği.
+/// Input and button height.
 pub const CONTROL_H: f32 = 40.0;
 
 fn visuals(p: Palette, dark: bool) -> egui::Visuals {
@@ -121,7 +121,7 @@ fn visuals(p: Palette, dark: bool) -> egui::Visuals {
     v
 }
 
-/// Temayı kurar (iki tema da; hangisinin etkin olduğunu sistem belirler).
+/// Installs the theme (both themes; the system decides which is active).
 pub fn apply(ctx: &egui::Context) {
     ctx.set_visuals_of(Theme::Light, visuals(LIGHT, false));
     ctx.set_visuals_of(Theme::Dark, visuals(DARK, true));

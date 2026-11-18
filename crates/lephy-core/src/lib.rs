@@ -1,4 +1,4 @@
-//! lephycrypy+ çekirdeği. Hiçbir `unsafe` içermez; tüm FFI `lephy-sys`'tedir.
+//! lephycrypy+ core. Contains no `unsafe`; all FFI lives in `lephy-sys`.
 
 #![forbid(unsafe_code)]
 
@@ -24,12 +24,11 @@ pub mod stream;
 pub mod strength;
 pub mod testvec;
 
-/// `test-vectors` feature'ının açık olup olmadığı. İkililer
-/// `const _: () = assert!(!lephy_core::TEST_VECTORS_ENABLED);` ile bu feature'ı derleme zamanında
-/// reddeder.
+/// Whether the `test-vectors` feature is enabled. Binaries reject this feature at compile time
+/// with `const _: () = assert!(!lephy_core::TEST_VECTORS_ENABLED);`.
 pub const TEST_VECTORS_ENABLED: bool = cfg!(feature = "test-vectors");
 
-/// `fault-injection` feature'ı açık mı (panik hook testi). Release'te asla açık değildir.
+/// Whether the `fault-injection` feature is enabled (panic-hook test). Never enabled in releases.
 pub const FAULT_INJECTION_ENABLED: bool = cfg!(feature = "fault-injection");
 
 pub use header::{HEADER_LEN, VERSION as FORMAT_VERSION};

@@ -1,6 +1,6 @@
-//! FORMAT.md test vektörleri: Rust çıktısı, yalnızca FORMAT.md'den yazılmış Python referansının
-//! (`tests/ref/lephy_ref.py`) ürettiği `tests/kat/vectors/*.lphy` ile bayt bayt eşit olmalıdır
-//!. `cargo test -p lephy-core --features test-vectors`.
+//! FORMAT.md test vectors: the Rust output must equal, byte for byte, the `tests/kat/vectors/*.lphy`
+//! produced by the Python reference written only from FORMAT.md (`tests/ref/lephy_ref.py`).
+//! `cargo test -p lephy-core --features test-vectors`.
 
 #![allow(
     clippy::unwrap_used,
@@ -24,9 +24,9 @@ const V4: &[u8] = include_bytes!("../../../tests/kat/vectors/v4.lphy");
 const V5: &[u8] = include_bytes!("../../../tests/kat/vectors/v5.lphy");
 const V6: &[u8] = include_bytes!("../../../tests/kat/vectors/v6.lphy");
 const V9: &[u8] = include_bytes!("../../../tests/kat/vectors/v9.lphy");
-/// v2 (sıkıştırma) vektörleri: Python referansı "stored" DEFLATE blokları üretir. DEFLATE çıktısı
-/// uygulamalar arasında belirlenimli olmadığından bu vektörler yalnızca **çözme** yönünde
-/// karşılaştırılır.
+/// v2 (compression) vectors: the Python reference produces "stored" DEFLATE blocks. DEFLATE output
+/// is not deterministic across implementations, so these vectors are compared in the
+/// **decrypt** direction only.
 const V12: &[u8] = include_bytes!("../../../tests/kat/vectors/v12.lphy");
 const V13: &[u8] = include_bytes!("../../../tests/kat/vectors/v13.lphy");
 /// v2 recipient vector (X25519, two stanzas): byte-identical in both directions.
@@ -78,7 +78,7 @@ fn tmp(num: u32) -> PathBuf {
     dir
 }
 
-/// Ham akış vektörü: şifrele (sabit entropi), Python çıktısıyla karşılaştır, çöz.
+/// Raw-stream vector: encrypt (fixed entropy), compare with the Python output, decrypt.
 fn run_raw(num: u32, alg: AlgId, plain: &[u8], keyfile: Option<&[u8]>, pad: bool, expected: &[u8]) {
     let dir = tmp(num);
     let src = dir.join("in");
@@ -99,9 +99,9 @@ fn run_raw(num: u32, alg: AlgId, plain: &[u8], keyfile: Option<&[u8]>, pad: bool
     )
     .unwrap();
     let got = std::fs::read(&out).unwrap();
-    assert_eq!(got.len(), expected.len(), "v{num} uzunluk");
-    assert_eq!(&got[..256], &expected[..256], "v{num} başlık");
-    assert_eq!(got, expected, "v{num} gövde");
+    assert_eq!(got.len(), expected.len(), "v{num} length");
+    assert_eq!(&got[..256], &expected[..256], "v{num} header");
+    assert_eq!(got, expected, "v{num} body");
     let dec = dir.join("dec");
     let r = ops::decrypt(
         &out,
@@ -141,7 +141,7 @@ fn v4_aes_hello() {
 
 #[test]
 fn v5_archive_single_file_padded() {
-    // a.txt="hi", mode 0644, mtime 0: kaynak dosyanın mode/mtime'ı ayarlanır (Unix).
+    // a.txt="hi", mode 0644, mtime 0: the source file's mode/mtime are set (Unix).
     let dir = tmp(5);
     let src = dir.join("a.txt");
     std::fs::write(&src, b"hi").unwrap();
@@ -173,11 +173,11 @@ fn v5_archive_single_file_padded() {
     assert_eq!(rep.content_type, ContentType::Archive);
     let got = std::fs::read(&out).unwrap();
     if cfg!(unix) {
-        assert_eq!(got, V5, "v5 (arşiv + PADMÉ) Python ile eşleşmeli");
+        assert_eq!(got, V5, "v5 (archive + PADMÉ) must match Python");
     } else {
         assert_eq!(got.len(), V5.len());
     }
-    // Python çıktısı Rust ile çözülür ve düzleştirilir.
+    // The Python output is decrypted and flattened by Rust.
     let py = dir.join("py.lphy");
     std::fs::write(&py, V5).unwrap();
     let dec = dir.join("dec.txt");
@@ -238,7 +238,7 @@ fn v7_nfd_password_kek_matches_python() {
 fn marker_present_in_test_vectors_build() {
     assert_eq!(lephy_core::testvec::MARKER, "LPHY-TEST-VECTORS-BUILD");
     const { assert!(lephy_core::TEST_VECTORS_ENABLED) };
-    // Entropi sırası sözleşmesi: salt, prefix, wrap_nonce, FK (build_header).
+    // Entropy-order contract: salt, prefix, wrap_nonce, FK (build_header).
     let mut e = FixedEntropy::format_defaults(AlgId::Aes256Gcm);
     let p = pwd("test");
     let params = NewHeaderParams {

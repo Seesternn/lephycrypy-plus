@@ -1,5 +1,5 @@
-# Tekrarlanabilir derleme imza ÖNCESİ iki bağımsız runner'da; fark varsa sürüm durur.
-# İmza (macOS Developer ID + notarization; Windows Authenticode) henüz eklenmedi.
+# Reproducible build on two independent runners BEFORE signing; the release stops on any difference.
+# Signing (macOS Developer ID + notarization; Windows Authenticode) is not added yet.
 name: release
 
 on:
@@ -104,7 +104,7 @@ jobs:
           name: sbom
           path: "**/*.cdx.json"
 
-  # sign-macos / sign-windows: imza bakımcı makinesinde atılır.
+  # sign-macos / sign-windows: signing happens on the maintainer's machine.
 
   publish:
     needs: [compare, sbom]
@@ -122,5 +122,5 @@ jobs:
             artifacts/dist-unsigned/*
             artifacts/sbom/**/*.cdx.json
           body: |
-            Taslak sürüm. SHA256SUMS-unsigned.txt tekrarlanabilir imzasız ikililerindir; imzalı
-            ikililer ve SHA256SUMS.txt + .minisig bakımcı tarafından elle eklenir.
+            Draft release. SHA256SUMS-unsigned.txt covers the reproducible unsigned binaries; the signed
+            binaries and SHA256SUMS.txt + .minisig are added by the maintainer by hand.

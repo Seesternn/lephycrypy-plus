@@ -47,6 +47,8 @@ Fixes from the November 2026 internal review (not an independent audit):
   whose time range is narrower; the time is simply not applied.
 
 ### Changed
+- The command line, error messages, code comments, build and CI configuration are now in English
+  (the desktop app stays bilingual). Confirmation prompts ask for `yes` (`evet` is still accepted).
 - The "Copy" link next to a new public key now really copies it (through the system tool); the
   app's own clipboard access stays disabled.
 - New dependency for recipient encryption: `curve25519-dalek` 5.0 (pure Rust, BSD-3-Clause), with

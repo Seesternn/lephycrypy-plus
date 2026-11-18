@@ -1,21 +1,21 @@
-//! Arayüz dili (Türkçe / İngilizce). Her metin `tr("…", "…")` ile iki dilde yazılır; iki
-//! argüman da zorunlu olduğundan eksik çeviri derlenmez. Dil sistemden algılanır, arayüzden
-//! değiştirilebilir (kalıcı değildir: uygulama ayar saklamaz).
+//! UI language (Turkish / English). Every text is written in both languages with `tr("…", "…")`;
+//! both arguments are required, so a missing translation does not compile. The language is detected
+//! from the system and can be changed in the UI (not persisted: the app stores no settings).
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-/// Arayüz dili.
+/// UI language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
-    /// Türkçe.
+    /// Turkish.
     Tr,
-    /// İngilizce.
+    /// English.
     En,
 }
 
 static LANG: AtomicU8 = AtomicU8::new(0);
 
-/// Etkin dil.
+/// Active language.
 #[must_use]
 pub fn lang() -> Lang {
     if LANG.load(Ordering::Relaxed) == 1 {
@@ -25,12 +25,12 @@ pub fn lang() -> Lang {
     }
 }
 
-/// Dili değiştirir.
+/// Changes the language.
 pub fn set_lang(l: Lang) {
     LANG.store(u8::from(l == Lang::En), Ordering::Relaxed);
 }
 
-/// Sistem dilinden: Türkçe ya da bilinmiyorsa Türkçe, diğer her dilde İngilizce.
+/// From the system language: Turkish if Turkish or unknown, English for every other language.
 #[must_use]
 pub fn detect() -> Lang {
     match lephy_sys::locale::preferred_language().as_deref() {
@@ -39,7 +39,7 @@ pub fn detect() -> Lang {
     }
 }
 
-/// Verilen dile göre metin.
+/// Text for the given language.
 #[must_use]
 pub const fn pick(l: Lang, tr: &'static str, en: &'static str) -> &'static str {
     match l {
@@ -48,7 +48,7 @@ pub const fn pick(l: Lang, tr: &'static str, en: &'static str) -> &'static str {
     }
 }
 
-/// Etkin dile göre metin.
+/// Text for the active language.
 #[must_use]
 pub fn tr(tr: &'static str, en: &'static str) -> &'static str {
     pick(lang(), tr, en)
@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn picks_by_language() {
-        // Global dil değiştirilmez: paralel testler Türkçe metin bekler.
+        // The global language is not changed: parallel tests expect Turkish text.
         assert_eq!(pick(Lang::En, "Şifrele", "Encrypt"), "Encrypt");
         assert_eq!(pick(Lang::Tr, "Şifrele", "Encrypt"), "Şifrele");
     }

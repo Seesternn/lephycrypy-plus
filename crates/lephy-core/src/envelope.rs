@@ -1,19 +1,19 @@
-//! Hata düzeltme zarfı: şifreli `.lphy` dosyasının **dışına** sarılan Reed–Solomon katmanı.
+//! Error-correction envelope: a Reed–Solomon layer wrapped **around** an encrypted `.lphy` file.
 //!
-//! Zarf şifrelemeden bağımsızdır: içteki `.lphy` bayt bayt aynı kalır, yalnızca disk/USB
-//! bozulmalarına karşı korunur. Bütünlük yine STREAM'in kimlik doğrulamasından gelir; zarf
-//! yalnızca küçük hasarları **onarır**.
+//! The envelope is independent of encryption: the inner `.lphy` stays byte for byte the same and
+//! is only protected against disk/USB damage. Integrity still comes from STREAM authentication;
+//! the envelope only **repairs** small damage.
 //!
-//! Düzen:
+//! Layout:
 //! ```text
-//! [başlık 64 B] × 3            (her kopya kendi BLAKE3 sağlamasıyla)
-//! [blok]…                      blok = D kod sözcüğü × N bayt, serpiştirilmiş
+//! [header 64 B] × 3            (each copy with its own BLAKE3 checksum)
+//! [block]…                     block = D codewords × N bytes, interleaved
 //! ```
-//! Başlık: `magic "LPHYRS1\0"` ‖ `version u16 = 1` ‖ `k u16` ‖ `nsym u16` ‖ `d u16` ‖
-//! `payload_len u64` ‖ 8 B sıfır ‖ `BLAKE3(ilk 32 B)`. Her blok `D × k` veri baytını taşır (son
-//! blok sıfırla tamamlanır); veri baytı `j`, kod sözcüğü `j mod D`'nin `j / D`. sembolüdür;
-//! diskte de bayt `t`, kod sözcüğü `t mod D`'nin `t / D`. sembolüdür. Böylece `B` baytlık ardışık
-//! bir bozulma her kod sözcüğünde yalnızca ~`B / D` sembolü etkiler.
+//! Header: `magic "LPHYRS1\0"` ‖ `version u16 = 1` ‖ `k u16` ‖ `nsym u16` ‖ `d u16` ‖
+//! `payload_len u64` ‖ 8 zero bytes ‖ `BLAKE3(first 32 B)`. Each block carries `D × k` data bytes
+//! (the last block is zero-padded); data byte `j` is symbol `j / D` of codeword `j mod D`; on
+//! disk, byte `t` is symbol `t / D` of codeword `t mod D`. A burst of `B` consecutive bytes thus
+//! affects only ~`B / D` symbols of each codeword.
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
@@ -24,25 +24,25 @@ use crate::rs;
 
 /// Magic.
 pub const MAGIC: [u8; 8] = *b"LPHYRS1\0";
-/// Kod sözcüğü başına veri baytı.
+/// Data bytes per codeword.
 pub const K: usize = 239;
-/// Kod sözcüğü başına parite baytı (8 bayta kadar hata düzeltir).
+/// Parity bytes per codeword (corrects up to 8 byte errors).
 pub const NSYM: usize = 16;
-/// Kod sözcüğü uzunluğu.
+/// Codeword length.
 pub const N: usize = K + NSYM;
-/// Serpiştirme derinliği (blok başına kod sözcüğü).
+/// Interleaving depth (codewords per block).
 pub const D: usize = 128;
-/// Tek başlık kopyası.
+/// One header copy.
 pub const HEADER_COPY: usize = 64;
-/// Başlık alanı (üç kopya).
+/// Header area (three copies).
 pub const HEADER_AREA: usize = 3 * HEADER_COPY;
 const BLOCK_DATA: usize = D * K;
-/// Birlikte okunup paralel çözülen blok sayısı.
+/// Number of blocks read together and decoded in parallel.
 const BATCH: usize = 16;
 const BLOCK_DISK: usize = D * N;
 
 fn violation(d: &str) -> io::Error {
-    FormatViolation::io_at("hata düzeltme", d)
+    FormatViolation::io_at("error correction", d)
 }
 
 fn header_copy(payload_len: u64) -> [u8; HEADER_COPY] {
@@ -58,7 +58,7 @@ fn header_copy(payload_len: u64) -> [u8; HEADER_COPY] {
     h
 }
 
-/// Geçerli bir başlık kopyasından `payload_len`.
+/// `payload_len` from a valid header copy.
 fn parse_copy(h: &[u8]) -> Option<u64> {
     if h[0..8] != MAGIC || blake3::hash(&h[..32]).as_bytes() != &h[32..64] {
         return None;
@@ -71,7 +71,7 @@ fn parse_copy(h: &[u8]) -> Option<u64> {
     ok.then(|| u64::from_le_bytes(h[16..24].try_into().unwrap_or([0; 8])))
 }
 
-/// Üç kopyadan payload uzunluğu: önce sağlaması tutan ilk kopya, olmazsa bayt bayt çoğunluk.
+/// Payload length from the three copies: the first copy whose checksum matches, else a byte-wise majority.
 fn parse_area(area: &[u8; HEADER_AREA]) -> Option<u64> {
     let copies = [
         &area[..HEADER_COPY],
@@ -89,7 +89,7 @@ fn parse_area(area: &[u8; HEADER_AREA]) -> Option<u64> {
     parse_copy(&vote)
 }
 
-/// Bayt dizisi bir zarf başlık alanıyla mı başlıyor (en az bir kopyanın magic'i).
+/// Whether the bytes start with an envelope header area (the magic of at least one copy).
 #[must_use]
 pub fn looks_like_envelope(prefix: &[u8]) -> bool {
     prefix.len() >= 8 && prefix[..8] == MAGIC
@@ -108,7 +108,7 @@ fn encode_block(data: &[u8], out: &mut [u8]) {
     }
 }
 
-/// Yazılanları zarfa sarar. Başlık en sonda (`finish`) yazılır; bu yüzden `Seek` gerekir.
+/// Wraps what is written into the envelope. The header is written last (`finish`), hence `Seek`.
 pub struct EncodeWriter<W: Write + Seek> {
     inner: W,
     buf: Vec<u8>,
@@ -117,10 +117,10 @@ pub struct EncodeWriter<W: Write + Seek> {
 }
 
 impl<W: Write + Seek> EncodeWriter<W> {
-    /// Başlık alanı için yer ayırır.
+    /// Reserves space for the header area.
     ///
     /// # Errors
-    /// G/Ç.
+    /// I/O.
     pub fn new(mut inner: W) -> io::Result<Self> {
         inner.write_all(&[0u8; HEADER_AREA])?;
         Ok(Self {
@@ -131,7 +131,7 @@ impl<W: Write + Seek> EncodeWriter<W> {
         })
     }
 
-    /// Tamponu blok sınırına sıfırla tamamlar ve blokları paralel kodlar.
+    /// Zero-pads the buffer to a block boundary and encodes the blocks in parallel.
     fn flush_block(&mut self) -> io::Result<()> {
         let blocks = self.buf.len().div_ceil(BLOCK_DATA).max(1);
         self.buf.resize(blocks * BLOCK_DATA, 0);
@@ -146,10 +146,10 @@ impl<W: Write + Seek> EncodeWriter<W> {
         Ok(())
     }
 
-    /// Son bloğu ve başlığı yazar.
+    /// Writes the last block and the header.
     ///
     /// # Errors
-    /// G/Ç.
+    /// I/O.
     pub fn finish(mut self) -> io::Result<W> {
         if !self.buf.is_empty() || self.total == 0 {
             self.flush_block()?;
@@ -186,16 +186,16 @@ impl<W: Write + Seek> Write for EncodeWriter<W> {
     }
 }
 
-/// Onarım istatistikleri (paylaşımlı; okuyucu düştükten sonra da okunabilir).
+/// Repair statistics (shared; readable after the reader is dropped).
 #[derive(Debug, Default)]
 pub struct Stats {
-    /// Düzeltilen bayt sayısı.
+    /// Number of corrected bytes.
     pub corrected: AtomicU64,
-    /// Onarılamayan kod sözcüğü sayısı.
+    /// Number of codewords that could not be repaired.
     pub failed: AtomicU64,
 }
 
-/// Zarfı açıp içteki `.lphy` baytlarını verir; okurken onarır.
+/// Opens the envelope and yields the inner `.lphy` bytes, repairing while reading.
 pub struct DecodeReader<R: Read> {
     inner: R,
     remaining: u64,
@@ -208,18 +208,18 @@ pub struct DecodeReader<R: Read> {
 }
 
 impl<R: Read> DecodeReader<R> {
-    /// Başlık alanı zaten okunmuşsa (`area`) gövdeden devam eder. `lenient`: onarılamayan kod
-    /// sözcüğünde hata vermek yerine veriyi olduğu gibi aktar (kurtarma modu).
+    /// Continues from the body when the header area (`area`) has already been read. `lenient`: pass
+    /// an unrepairable codeword through unchanged instead of failing (recovery mode).
     ///
     /// # Errors
-    /// Üç başlık kopyası da okunamazsa biçim ihlali (kod 4).
+    /// Format violation (code 4) if none of the three header copies can be read.
     pub fn with_header(
         area: &[u8; HEADER_AREA],
         inner: R,
         lenient: bool,
         stats: Arc<Stats>,
     ) -> io::Result<Self> {
-        let remaining = parse_area(area).ok_or_else(|| violation("zarf başlığı okunamadı"))?;
+        let remaining = parse_area(area).ok_or_else(|| violation("envelope header unreadable"))?;
         Ok(Self {
             inner,
             remaining,
@@ -233,7 +233,7 @@ impl<R: Read> DecodeReader<R> {
     }
 
     fn next_block(&mut self) -> io::Result<()> {
-        // Toplu oku: en fazla BATCH blok; bloklar paralel çözülür.
+        // Batched read: at most BATCH blocks; blocks are decoded in parallel.
         let mut n = 0;
         while n < self.disk.len() {
             match self.inner.read(&mut self.disk[n..]) {
@@ -249,7 +249,7 @@ impl<R: Read> DecodeReader<R> {
         let full = need * BLOCK_DISK;
         if n < full {
             if !self.lenient {
-                return Err(violation("zarf gövdesi kesilmiş"));
+                return Err(violation("envelope body truncated"));
             }
             self.disk[n..full].fill(0);
         }
@@ -265,7 +265,7 @@ impl<R: Read> DecodeReader<R> {
                 .into_iter()
                 .map(|h| {
                     h.join()
-                        .unwrap_or_else(|_| Err(io::Error::other("çözücü panikledi")))
+                        .unwrap_or_else(|_| Err(io::Error::other("decoder panicked")))
                 })
                 .collect()
         });
@@ -294,7 +294,7 @@ fn decode_block(disk: &[u8], data: &mut [u8], lenient: bool, stats: &Stats) -> i
                 stats.failed.fetch_add(1, Ordering::Relaxed);
                 if !lenient {
                     return Err(violation(
-                        "bozulma hata düzeltme kapasitesini aşıyor (kurtarma modunu deneyin)",
+                        "damage exceeds the error-correction capacity (try recovery mode)",
                     ));
                 }
             }
@@ -321,7 +321,7 @@ impl<R: Read> Read for DecodeReader<R> {
     }
 }
 
-/// Zarflı dosyanın diskteki boyutu (`payload` bayt için).
+/// On-disk size of an enveloped file (for `payload` bytes).
 #[must_use]
 pub fn disk_size(payload: u64) -> u64 {
     let blocks = payload.div_ceil(BLOCK_DATA as u64).max(1);
@@ -379,10 +379,10 @@ mod tests {
             .map(|i| (i * 7 % 256) as u8)
             .collect();
         let mut disk = wrap(&data);
-        // İki başlık kopyası bozuk: üçüncüsü yeter.
+        // Two header copies damaged: the third is enough.
         disk[3] ^= 0xff;
         disk[HEADER_COPY + 20] ^= 0xff;
-        // Her blokta 1 KiB ardışık bozulma (D × nsym/2 = 1024 sembol).
+        // A 1 KiB burst in every block (D × nsym/2 = 1024 symbols).
         for b in 0..3 {
             let start = HEADER_AREA + b * BLOCK_DISK + 5000;
             for x in &mut disk[start..start + 1024] {
@@ -406,7 +406,7 @@ mod tests {
         let (out, st) = unwrap_env(&disk, true);
         assert_eq!(out.unwrap().len(), data.len());
         assert!(st.failed.load(Ordering::Relaxed) > 0);
-        // Kesilmiş gövde.
+        // Truncated body.
         let short = &disk[..disk.len() - 10];
         assert!(unwrap_env(short, false).0.is_err());
     }

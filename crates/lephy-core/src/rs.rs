@@ -1,12 +1,12 @@
-//! Reed–Solomon hata düzeltme: GF(2^8), ilkel polinom 0x11d, üreteç α = 2, ilk ardışık kök
-//! α^0, sistematik kod. Kod sözcüğü `n = k + nsym ≤ 255` bayt; `nsym / 2` bayta kadar hata
-//! (konumu bilinmeyen) düzeltilir. Algoritma: sendromlar → Berlekamp–Massey → Chien araması →
-//! Forney. Düzeltme sonrası sendromlar yeniden denetlenir; kapasiteyi aşan bozulma hata döner
-//! (yanlış "düzeltme" olasılığı ayrıca şifrelemenin kimlik doğrulamasıyla yakalanır).
+//! Reed–Solomon error correction: GF(2^8), primitive polynomial 0x11d, generator α = 2, first
+//! consecutive root α^0, systematic code. Codeword `n = k + nsym ≤ 255` bytes; up to `nsym / 2`
+//! byte errors (unknown positions) are corrected. Algorithm: syndromes → Berlekamp–Massey → Chien
+//! search → Forney. Syndromes are checked again after correcting; damage beyond the capacity is an
+//! error (a wrong "correction" is in any case caught by the encryption's authentication).
 
 use std::sync::OnceLock;
 
-/// GF(2^8) tabloları.
+/// GF(2^8) tables.
 struct Gf {
     exp: [u8; 512],
     log: [u8; 256],
@@ -49,7 +49,7 @@ fn div(a: u8, b: u8) -> u8 {
     t.exp[(usize::from(t.log[usize::from(a)]) + 255 - usize::from(t.log[usize::from(b)])) % 255]
 }
 
-/// `x^p` (p negatif olabilir).
+/// `x^p` (p may be negative).
 fn pow(x: u8, p: i32) -> u8 {
     if x == 0 {
         return 0;
@@ -90,7 +90,7 @@ fn poly_mul(p: &[u8], q: &[u8]) -> Vec<u8> {
     r
 }
 
-/// Horner (en yüksek derece başta).
+/// Horner (highest degree first).
 fn poly_eval(p: &[u8], x: u8) -> u8 {
     let mut y = p[0];
     for &c in &p[1..] {
@@ -99,7 +99,7 @@ fn poly_eval(p: &[u8], x: u8) -> u8 {
     y
 }
 
-/// Üreteç polinomu (önbellekli).
+/// Generator polynomial (cached).
 fn generator(nsym: usize) -> &'static [u8] {
     static G: OnceLock<Vec<Vec<u8>>> = OnceLock::new();
     let all = G.get_or_init(|| {
@@ -116,7 +116,7 @@ fn generator(nsym: usize) -> &'static [u8] {
     &all[nsym.min(64)]
 }
 
-/// `msg` için `nsym` parite baytı üretir (`msg.len() + nsym ≤ 255`, `nsym ≤ 64`).
+/// Computes `nsym` parity bytes for `msg` (`msg.len() + nsym ≤ 255`, `nsym ≤ 64`).
 #[must_use]
 pub fn encode(msg: &[u8], nsym: usize) -> Vec<u8> {
     let gpoly = generator(nsym);
@@ -133,8 +133,8 @@ pub fn encode(msg: &[u8], nsym: usize) -> Vec<u8> {
     out[msg.len()..].to_vec()
 }
 
-/// Sendromlar; başa bir sıfır eklenir (aşağıdaki algoritmaların kaydırma kuralı).
-/// `x = α^i` olduğundan `log x = i`: Horner adımı tek tablo okumasına iner (sıcak yol).
+/// Syndromes, with a leading zero (the shift convention of the algorithms below).
+/// Since `x = α^i`, `log x = i`: each Horner step is a single table lookup (hot path).
 fn syndromes(cw: &[u8], nsym: usize) -> Vec<u8> {
     let t = gf();
     let mut s = vec![0u8; nsym + 1];
@@ -152,7 +152,7 @@ fn syndromes(cw: &[u8], nsym: usize) -> Vec<u8> {
     s
 }
 
-/// Kod sözcüğü geçerli mi (tüm sendromlar sıfır) — hızlı denetim.
+/// Whether the codeword is valid (all syndromes zero) — a fast check.
 #[must_use]
 pub fn is_valid(cw: &[u8], nsym: usize) -> bool {
     syndromes(cw, nsym).iter().all(|&x| x == 0)
@@ -237,8 +237,8 @@ fn correct_errata(cw: &mut [u8], synd: &[u8], err_pos: &[usize]) {
     }
 }
 
-/// Kod sözcüğünü (`veri ‖ parite`) yerinde düzeltir. Döner: düzeltilen bayt sayısı; düzeltme
-/// kapasitesi aşıldıysa `None` (kod sözcüğü değiştirilmez).
+/// Corrects a codeword (`data ‖ parity`) in place. Returns the number of corrected bytes, or
+/// `None` if the correction capacity was exceeded (the codeword is left unchanged).
 #[must_use]
 pub fn decode(cw: &mut [u8], nsym: usize) -> Option<usize> {
     let synd = syndromes(cw, nsym);
@@ -263,7 +263,7 @@ pub fn decode(cw: &mut [u8], nsym: usize) -> Option<usize> {
 mod tests {
     use super::*;
 
-    /// Belirlenimli küçük üreteç (testler için).
+    /// Small deterministic generator (for tests).
     struct Lcg(u64);
     impl Lcg {
         fn next(&mut self) -> u64 {
@@ -287,13 +287,13 @@ mod tests {
             assert_eq!(mul(a, inverse(a)), 1, "{a}");
             assert_eq!(div(mul(a, 7), 7), a);
         }
-        // Bilinen değer: 0x11d alanında 2^8 = 0x1d.
+        // Known value: 2^8 = 0x1d in the 0x11d field.
         assert_eq!(pow(2, 8), 0x1d);
     }
 
     #[test]
     fn known_vector_for_generator() {
-        // nsym = 4 için üreteç: (x+1)(x+2)(x+4)(x+8) = x^4 + 15x^3 + 54x^2 + 120x + 64.
+        // Generator for nsym = 4: (x+1)(x+2)(x+4)(x+8) = x^4 + 15x^3 + 54x^2 + 120x + 64.
         assert_eq!(generator(4), &[1, 15, 54, 120, 64]);
     }
 
@@ -318,13 +318,13 @@ mod tests {
                 assert_eq!(
                     decode(&mut cw, nsym),
                     Some(errs),
-                    "nsym {nsym}, {errs} hata"
+                    "nsym {nsym}, {errs} errors"
                 );
                 assert_eq!(cw, clean);
             }
-            // Kapasiteyi aşan bozulma: ya reddedilir ya da (nadiren) başka bir geçerli kod
-            // sözcüğüne düzeltilir; asla sessizce yanlış bırakılmaz değil — bu durum AEAD ile
-            // yakalanır. Burada yalnızca paniklemediği ve sonucun tutarlı olduğu denetlenir.
+            // Damage beyond the capacity is either rejected or (rarely) corrected to another valid
+            // codeword; that case is caught by the AEAD. Here we only check that it does not panic
+            // and that the result is consistent.
             let k = 255 - nsym;
             let msg: Vec<u8> = (0..k).map(|_| r.byte()).collect();
             let mut cw = msg.clone();
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn short_codewords_work() {
-        let msg = b"kisa";
+        let msg = b"tiny";
         let mut cw = msg.to_vec();
         cw.extend(encode(msg, 8));
         cw[1] ^= 0xff;

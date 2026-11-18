@@ -1,8 +1,8 @@
-//! Kelime öbeği (passphrase) üretimi: EFF büyük kelime listesi (7776 kelime, CC BY 3.0; NOTICE).
+//! Passphrase generation: the EFF large wordlist (7776 words, CC BY 3.0; see NOTICE).
 //!
-//! Her kelime 12,925 bit entropi taşır (log2 7776). Kelime seçimi işletim sistemi RNG'sinden
-//! reddetme örneklemesiyle yapılır (`u16 < 62 208 = 8 × 7776`), böylece her kelime eşit
-//! olasılıklıdır. Sonuç doğrudan kilitli `SecretBytes`'a yazılır.
+//! Each word carries 12.925 bits of entropy (log2 7776). Words are chosen from the operating-system
+//! RNG with rejection sampling (`u16 < 62 208 = 8 × 7776`), so every word is equally likely. The
+//! result is written directly into locked `SecretBytes`.
 
 use std::sync::OnceLock;
 
@@ -13,16 +13,16 @@ use crate::error::{Error, Result};
 
 const RAW: &str = include_str!("../data/eff_large_wordlist.txt");
 
-/// Listedeki kelime sayısı.
+/// Number of words in the list.
 pub const WORD_COUNT: usize = 7776;
-/// Kelime başına entropi (bit).
+/// Entropy per word (bits).
 pub const BITS_PER_WORD: f64 = 12.925_074_6;
-/// Önerilen kelime sayısı (≈ 77,5 bit).
+/// Recommended number of words (≈ 77.5 bits).
 pub const DEFAULT_WORDS: usize = 6;
-/// İzin verilen kelime sayısı aralığı.
+/// Allowed range for the number of words.
 pub const WORD_RANGE: std::ops::RangeInclusive<usize> = 4..=16;
 
-/// Kelime listesi (ilk çağrıda bir kez ayrıştırılır).
+/// The word list (parsed once, on first use).
 #[must_use]
 pub fn words() -> &'static [&'static str] {
     static LIST: OnceLock<Vec<&'static str>> = OnceLock::new();
@@ -35,9 +35,9 @@ pub fn words() -> &'static [&'static str] {
     })
 }
 
-/// Tek bir eşit olasılıklı kelime dizini.
+/// One uniformly distributed word index.
 fn index(entropy: &mut dyn Entropy) -> Result<usize> {
-    const LIMIT: u16 = 62_208; // 8 × 7776: 65 536'nın altındaki en büyük kat
+    const LIMIT: u16 = 62_208; // 8 × 7776: the largest multiple below 65 536
     loop {
         let mut b = [0u8; 2];
         entropy.fill(&mut b)?;
@@ -48,14 +48,14 @@ fn index(entropy: &mut dyn Entropy) -> Result<usize> {
     }
 }
 
-/// `n` kelimelik öbek üretir; kelimeler `sep` ile ayrılır.
+/// Generates an `n`-word passphrase; words are separated by `sep`.
 ///
 /// # Errors
-/// Kelime sayısı aralık dışı, RNG ya da kilitli bellek hatası.
+/// Word count out of range, RNG or locked-memory error.
 pub fn generate(entropy: &mut dyn Entropy, n: usize, sep: char) -> Result<SecretBytes> {
     if !WORD_RANGE.contains(&n) {
         return Err(Error::Environment(format!(
-            "kelime sayısı {}–{} olmalı",
+            "the number of words must be {}–{}",
             WORD_RANGE.start(),
             WORD_RANGE.end()
         )));
@@ -76,7 +76,7 @@ pub fn generate(entropy: &mut dyn Entropy, n: usize, sep: char) -> Result<Secret
     Ok(out)
 }
 
-/// `n` kelimelik öbeğin entropisi (bit).
+/// Entropy of an `n`-word passphrase (bits).
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
 pub fn bits(n: usize) -> f64 {
@@ -112,8 +112,8 @@ mod tests {
 
     #[test]
     fn index_distribution_is_roughly_uniform() {
-        // 7776 kutuya 7776×20 çekiliş; ki-kare ≈ 7775 ± ~125. Gevşek sınır yalnızca kaba
-        // önyargıyı (ör. modulo hatası) yakalar.
+        // 7776×20 draws into 7776 bins; chi-square ≈ 7775 ± ~125. The loose bound only catches
+        // gross bias (e.g. a modulo bug).
         let mut counts = vec![0u32; WORD_COUNT];
         let draws = WORD_COUNT * 20;
         let mut e = OsEntropy;
@@ -125,6 +125,6 @@ mod tests {
             .iter()
             .map(|&c| (f64::from(c) - expected).powi(2) / expected)
             .sum();
-        assert!(chi > 7000.0 && chi < 8600.0, "ki-kare {chi}");
+        assert!(chi > 7000.0 && chi < 8600.0, "chi-square {chi}");
     }
 }

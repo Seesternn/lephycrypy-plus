@@ -1,16 +1,16 @@
-//! İsteğe bağlı sıkıştırma (biçim v2, `feature_flags.bit0`): ham DEFLATE (RFC 1951),
-//! şifrelemeden **önce**.
+//! Optional compression (format v2, `feature_flags.bit0`): raw DEFLATE (RFC 1951), **before**
+//! encryption.
 //!
-//! Sıra: kaynak (arşiv ya da ham akış) → DEFLATE → [PADMÉ sıfır dolgusu] → STREAM AEAD.
-//! Dolgu açıksa sıkıştırılmış akışın uzunluğu `L` ise ardından `padme(L) − L` sıfır bayt gelir;
-//! DEFLATE akışı kendi sonunu işaretlediği için uzunluk öneki gerekmez.
+//! Order: source (archive or raw stream) → DEFLATE → [PADMÉ zero padding] → STREAM AEAD.
+//! With padding, a compressed stream of length `L` is followed by `padme(L) − L` zero bytes; no
+//! length prefix is needed because DEFLATE marks its own end.
 //!
-//! Yan kanal uyarısı: sıkıştırılmış boyut içerik hakkında bilgi verir (bir saldırgan girdinin bir
-//! kısmını seçebiliyorsa CRIME/BREACH türü saldırılar). PADMÉ bunu azaltır ama ortadan
-//! kaldırmaz. Sıkıştırma bu yüzden varsayılan olarak kapalıdır.
+//! Side-channel warning: the compressed size reveals information about the content (CRIME/BREACH
+//! style attacks if an attacker can choose part of the input). PADMÉ reduces this but does not
+//! remove it. Compression is therefore off by default.
 //!
-//! Açma tarafında çıktı boyutu sınırlanmaz (DEFLATE en fazla ~1032:1 genişler); arşiv çıkarmanın
-//! kendi sınırları ve disk alanı denetimi geçerlidir.
+//! The inflated size is not limited (DEFLATE expands at most ~1032:1); archive extraction has its
+//! own limits and the disk-space check applies.
 
 use std::io::{self, Read, Write};
 
@@ -22,18 +22,18 @@ use zeroize::Zeroizing;
 use crate::error::FormatViolation;
 
 const BUF: usize = 64 * 1024;
-/// Sıkıştırma düzeyi (zlib ölçeği; 6 = varsayılan denge).
+/// Compression level (zlib scale; 6 = default balance).
 const LEVEL: i32 = 6;
 
 fn violation(d: &str) -> io::Error {
-    FormatViolation::io_at("sıkıştırma", d)
+    FormatViolation::io_at("compression", d)
 }
 
 fn padme(len: u64) -> io::Result<u64> {
-    crate::pad::padme_checked(len).ok_or_else(|| violation("dolgu uzunluğu taşıyor"))
+    crate::pad::padme_checked(len).ok_or_else(|| violation("padding length overflows"))
 }
 
-/// Kaynağı okurken sıkıştırır; istenirse PADMÉ sıfır dolgusu ekler.
+/// Compresses while reading the source; optionally adds PADMÉ zero padding.
 pub struct DeflateReader<R: Read> {
     inner: R,
     comp: Box<CompressorOxide>,
@@ -48,9 +48,9 @@ pub struct DeflateReader<R: Read> {
 }
 
 impl<R: Read> DeflateReader<R> {
-    /// Yeni sıkıştırıcı.
+    /// New compressor.
     pub fn new(inner: R, pad: bool) -> Self {
-        let flags = create_comp_flags_from_zip_params(LEVEL, -15, 0); // ham DEFLATE
+        let flags = create_comp_flags_from_zip_params(LEVEL, -15, 0); // raw DEFLATE
         Self {
             inner,
             comp: Box::new(CompressorOxide::new(flags)),
@@ -65,7 +65,7 @@ impl<R: Read> DeflateReader<R> {
         }
     }
 
-    /// İç okuyucuyu döndürür (ör. arşiv raporu için).
+    /// Returns the inner reader (e.g. for the archive report).
     pub fn into_inner(self) -> R {
         self.inner
     }
@@ -117,16 +117,16 @@ impl<R: Read> Read for DeflateReader<R> {
                         return Ok(r.bytes_written);
                     }
                     if r.bytes_consumed == 0 && flush == MZFlush::Finish {
-                        return Err(io::Error::other("sıkıştırma ilerlemiyor"));
+                        return Err(io::Error::other("compression makes no progress"));
                     }
                 }
-                Err(e) => return Err(io::Error::other(format!("sıkıştırma: {e:?}"))),
+                Err(e) => return Err(io::Error::other(format!("compression: {e:?}"))),
             }
         }
     }
 }
 
-/// Çözülmüş (sıkıştırılmış) akışı açıp `inner`'a yazar. Akışın sonunu ve dolguyu denetler.
+/// Inflates the decrypted (compressed) stream into `inner`. Checks the end of the stream and the padding.
 pub struct InflateWriter<W: Write> {
     inner: W,
     state: Box<InflateState>,
@@ -139,7 +139,7 @@ pub struct InflateWriter<W: Write> {
 }
 
 impl<W: Write> InflateWriter<W> {
-    /// Yeni açıcı. `padded`: başlıktaki dolgu bayrağı.
+    /// New inflater. `padded`: the padding flag from the header.
     pub fn new(inner: W, padded: bool) -> Self {
         Self {
             inner,
@@ -153,14 +153,14 @@ impl<W: Write> InflateWriter<W> {
         }
     }
 
-    /// Akış bitti: sıkıştırılmış akış tam olmalı, dolgu (varsa) tam PADMÉ uzunluğunda olmalı.
-    /// Döner: iç yazıcı ve açılmış bayt sayısı.
+    /// End of the stream: the compressed stream must be complete and the padding (if any) exactly
+    /// the PADMÉ length. Returns the inner writer and the number of inflated bytes.
     ///
     /// # Errors
-    /// Biçim ihlali (kod 4).
+    /// Format violation (code 4).
     pub fn finish(mut self) -> io::Result<(W, u64)> {
         if !self.done {
-            return Err(violation("sıkıştırılmış akış eksik"));
+            return Err(violation("compressed stream incomplete"));
         }
         let total = self.consumed + self.trailing;
         let expect = if self.padded {
@@ -169,23 +169,23 @@ impl<W: Write> InflateWriter<W> {
             self.consumed
         };
         if total != expect {
-            return Err(violation("dolgu uzunluğu uyuşmuyor"));
+            return Err(violation("padding length mismatch"));
         }
         self.inner.flush()?;
         Ok((self.inner, self.produced))
     }
 
-    /// İç yazıcıyı denetimsiz döndürür (kurtarma: akış yarıda kalmış olabilir).
+    /// Returns the inner writer without checks (recovery: the stream may be cut short).
     pub fn into_inner(self) -> W {
         self.inner
     }
 
     fn trailer(&mut self, rest: &[u8]) -> io::Result<()> {
         if !self.padded && !rest.is_empty() {
-            return Err(violation("sıkıştırılmış akıştan sonra veri"));
+            return Err(violation("data after the compressed stream"));
         }
         if rest.iter().any(|&b| b != 0) {
-            return Err(violation("dolgu sıfır değil"));
+            return Err(violation("padding is not zero"));
         }
         self.trailing += rest.len() as u64;
         Ok(())
@@ -222,10 +222,10 @@ impl<W: Write> Write for InflateWriter<W> {
                         return Ok(buf.len());
                     }
                     if r.bytes_consumed == 0 && r.bytes_written == 0 {
-                        return Err(violation("bozuk sıkıştırılmış veri"));
+                        return Err(violation("corrupt compressed data"));
                     }
                 }
-                Err(_) => return Err(violation("bozuk sıkıştırılmış veri")),
+                Err(_) => return Err(violation("corrupt compressed data")),
             }
         }
     }
@@ -250,7 +250,7 @@ mod tests {
             assert_eq!(
                 crate::pad::padme_checked(n).unwrap(),
                 n,
-                "dolgulu uzunluk PADMÉ olmalı"
+                "padded length must be PADMÉ"
             );
         }
         let mut w = InflateWriter::new(Vec::new(), pad);
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn roundtrips_and_compresses() {
-        let text: Vec<u8> = b"lephycrypy sikistirma testi "
+        let text: Vec<u8> = b"lephycrypy compression test "
             .iter()
             .copied()
             .cycle()
@@ -279,7 +279,10 @@ mod tests {
         DeflateReader::new(&text[..], false)
             .read_to_end(&mut comp)
             .unwrap();
-        assert!(comp.len() < text.len() / 20, "tekrarlı metin sıkışmalı");
+        assert!(
+            comp.len() < text.len() / 20,
+            "repetitive text must compress"
+        );
         assert_eq!(roundtrip(b"", false, 3), b"");
         assert_eq!(roundtrip(b"", true, 3), b"");
     }
@@ -291,11 +294,11 @@ mod tests {
         DeflateReader::new(&data[..], true)
             .read_to_end(&mut comp)
             .unwrap();
-        // Kesilmiş akış.
+        // Truncated stream.
         let mut w = InflateWriter::new(Vec::new(), true);
         w.write_all(&comp[..comp.len() / 2]).unwrap_or(());
         assert!(w.finish().is_err());
-        // Sıfır olmayan dolgu.
+        // Non-zero padding.
         let mut bad = comp.clone();
         let last = bad.len() - 1;
         if bad.len() > 12 {
@@ -303,7 +306,7 @@ mod tests {
             let mut w = InflateWriter::new(Vec::new(), true);
             assert!(w.write_all(&bad).is_err() || w.finish().is_err());
         }
-        // Dolgusuz akışın sonuna ek veri.
+        // Extra data after an unpadded stream.
         let mut plain = Vec::new();
         DeflateReader::new(&data[..], false)
             .read_to_end(&mut plain)
@@ -311,7 +314,7 @@ mod tests {
         plain.push(0);
         let mut w = InflateWriter::new(Vec::new(), false);
         assert!(w.write_all(&plain).is_err());
-        // Rastgele bayt.
+        // Random bytes.
         let mut w = InflateWriter::new(Vec::new(), false);
         let junk: Vec<u8> = (0..5000u32)
             .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)

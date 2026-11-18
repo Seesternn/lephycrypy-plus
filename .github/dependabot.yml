@@ -1,5 +1,5 @@
-# Dependabot yalnızca PR açar; auto-merge workflow'u yoktur. Cargo.lock commit edilir;
-# `cargo update` yalnızca Dependabot PR'ı ile.
+# Dependabot only opens pull requests; there is no auto-merge workflow. Cargo.lock is committed;
+# `cargo update` happens only through Dependabot pull requests.
 version: 2
 updates:
   - package-ecosystem: "cargo"

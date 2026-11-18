@@ -1,6 +1,6 @@
-//! Fuzz hedeflerinin mantığı. Hem `fuzz_targets/*.rs` (libFuzzer) hem de
-//! `crates/lephy-core/tests/regress.rs` (her `cargo test`te `tests/regress/<hedef>/*` girdilerini
-//! yeniden oynatır) bu dosyayı `#[path]` ile içerir.
+//! Logic of the fuzz targets. Both `fuzz_targets/*.rs` (libFuzzer) and
+//! `crates/lephy-core/tests/regress.rs` (which replays the `tests/regress/<target>/*` inputs on every
+//! `cargo test`) include this file with `#[path]`.
 
 use std::io::Write;
 
@@ -35,7 +35,7 @@ impl Scratch {
         Self { base, root }
     }
 
-    /// Kök dışına hiçbir şey yazılmadığını doğrular (zip-slip/symlink kaçışı).
+    /// Checks that nothing was written outside the root (zip-slip/symlink escape).
     pub fn assert_contained(&self) {
         let outside: Vec<_> = std::fs::read_dir(&self.base)
             .expect("read base")
@@ -43,7 +43,10 @@ impl Scratch {
             .map(|e| e.file_name())
             .filter(|n| n != "root")
             .collect();
-        assert!(outside.is_empty(), "çıkarma kök dışına yazdı: {outside:?}");
+        assert!(
+            outside.is_empty(),
+            "extraction wrote outside the root: {outside:?}"
+        );
     }
 }
 
@@ -53,7 +56,7 @@ impl Drop for Scratch {
     }
 }
 
-/// `decrypt_known_key` için küçük chunk: çok chunk'lı yolları ucuzca dener.
+/// Small chunks for `decrypt_known_key`: exercises multi-chunk paths cheaply.
 const CHUNK: usize = 256;
 
 pub fn header(data: &[u8]) {
@@ -61,7 +64,7 @@ pub fn header(data: &[u8]) {
     let n = data.len().min(HEADER_LEN);
     b[..n].copy_from_slice(&data[..n]);
     if let Ok(h) = Header::parse(&b) {
-        assert_eq!(h.to_bytes(), b, "kabul edilen başlık kanonik olmalı");
+        assert_eq!(h.to_bytes(), b, "an accepted header must be canonical");
         let _ = chunk_aad(&b);
         assert!(h.chunk_size() >= 64 * 1024);
     }
@@ -85,7 +88,7 @@ pub fn archive_entry(data: &[u8]) {
     let Ok(mut ex) = Extractor::new(&s.root, opts) else {
         return;
     };
-    // Parçalı yazım: çerçeve sınırlarının bölünmesini de dener.
+    // Fragmented writes: also exercises split frame boundaries.
     let step = usize::from(flags >> 5) * 7 + 1;
     let mut ok = true;
     for part in body.chunks(step) {
@@ -162,7 +165,7 @@ pub fn decrypt_known_key(data: &[u8]) {
                     let _ = ex.finish();
                 }
                 Err(Error::Corrupt { .. } | Error::Io(_) | Error::Environment(_)) => {}
-                Err(e) => panic!("beklenmeyen hata: {e:?}"),
+                Err(e) => panic!("unexpected error: {e:?}"),
             }
             s.assert_contained();
         }
@@ -170,7 +173,7 @@ pub fn decrypt_known_key(data: &[u8]) {
             let mut inp: &[u8] = body;
             match verify_stream(&p, &mut inp) {
                 Ok(_) | Err(Error::Corrupt { .. }) => {}
-                Err(e) => panic!("beklenmeyen hata: {e:?}"),
+                Err(e) => panic!("unexpected error: {e:?}"),
             }
         }
         _ => {

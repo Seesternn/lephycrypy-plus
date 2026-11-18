@@ -1,10 +1,10 @@
-//! Platform arka uçları: aygıt listeleme/tanımlama, yeniden bağlama, biçimlendirme.
+//! Platform back ends: listing/describing devices, remounting, formatting.
 //!
-//! Harici araçlar yalnızca **mutlak yol** ve **argüman dizisi** ile çağrılır; kabuk,
-//! PATH ve ortam genişletmesi kullanılmaz. macOS: `/usr/sbin/diskutil`. Windows:
-//! `<GetSystemDirectoryW>\WindowsPowerShell\v1.0\powershell.exe`; değişken değerler komut dizgisine
-//! değil, alt sürecin ortamına konur (enjeksiyon yok). `WinVerifyTrust` ile araç imza denetimi
-//! DOĞRULANMADI / yapılmıyor.
+//! External tools are called only with an **absolute path** and an **argument array**; no shell,
+//! PATH or environment expansion is used. macOS: `/usr/sbin/diskutil`. Windows:
+//! `<GetSystemDirectoryW>\WindowsPowerShell\v1.0\powershell.exe`; variable values go into the
+//! child process's environment, not into the command string (no injection). The tool signature is
+//! not checked with `WinVerifyTrust` (UNVERIFIED / not done).
 
 use std::path::{Path, PathBuf};
 
@@ -12,47 +12,47 @@ use lephy_core::error::{Error, Result};
 
 use crate::device::Device;
 
-/// Platform soyutlaması (testlerde sahte uygulama).
+/// Platform abstraction (a fake implementation in tests).
 pub trait Platform {
-    /// Aday birimler (sistem birimleri listelenmez).
+    /// Candidate volumes (system volumes are not listed).
     ///
     /// # Errors
-    /// Araç/OS hatası; desteklenmeyen platform.
+    /// Tool/OS error; unsupported platform.
     fn list(&self) -> Result<Vec<Device>>;
 
-    /// Bağlama noktasındaki birimin **taze** tanımı (her adım öncesi kimlik için).
+    /// A **fresh** description of the volume at the mount point (for the identity before each step).
     ///
     /// # Errors
-    /// Araç/OS hatası.
+    /// Tool/OS error.
     fn describe(&self, mount: &Path) -> Result<Device>;
 
-    /// Ayır ve yeniden bağla; yeni bağlama noktasını döner. Desteklenmiyorsa `Ok(None)`
-    /// (geri okuma "önbellekten doğrulandı" etiketi alır).
+    /// Eject and remount; returns the new mount point. `Ok(None)` if not supported
+    /// (the read-back is labelled "verified from cache").
     ///
     /// # Errors
-    /// Araç hatası.
+    /// Tool error.
     fn remount(&self, dev: &Device) -> Result<Option<PathBuf>>;
 
-    /// exFAT olarak biçimlendir (etiket korunur).
+    /// Format as exFAT (the label is kept).
     ///
     /// # Errors
-    /// Araç hatası, yetki yok.
+    /// Tool error, no permission.
     fn format(&self, dev: &Device, label: &str) -> Result<()>;
 
-    /// Seri numarası zorunlu mu (Windows: evet; macOS: `diskutil` seri vermez).
+    /// Whether a serial number is required (Windows: yes; macOS: `diskutil` gives no serial).
     fn require_serial(&self) -> bool;
 }
 
 #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn tool_err(what: &str, out: &std::process::Output) -> Error {
     Error::Environment(format!(
-        "{what} başarısız (kod {:?}): {}",
+        "{what} failed (code {:?}): {}",
         out.status.code(),
         String::from_utf8_lossy(&out.stderr).trim()
     ))
 }
 
-/// exFAT etiketi: 1..=11 karakter, ASCII harf/rakam, boşluk, `-`, `_`.
+/// exFAT label: 1..=11 characters, ASCII letters/digits, space, `-`, `_`.
 #[must_use]
 pub fn valid_exfat_label(label: &str) -> bool {
     !label.is_empty()
@@ -62,7 +62,7 @@ pub fn valid_exfat_label(label: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '_')
 }
 
-/// Etkin platform.
+/// Active platform.
 #[must_use]
 pub fn native() -> Box<dyn Platform> {
     #[cfg(target_os = "macos")]
@@ -79,11 +79,11 @@ pub fn native() -> Box<dyn Platform> {
     }
 }
 
-/// Desteklenmeyen platform (Linux best-effort: `usb` desteklenmez).
+/// Unsupported platform (Linux is best effort: `usb` is not supported).
 pub struct Unsupported;
 
 fn unsupported() -> Error {
-    Error::Environment("USB komutları yalnızca macOS ve Windows'ta desteklenir".into())
+    Error::Environment("USB commands are supported only on macOS and Windows".into())
 }
 
 impl Platform for Unsupported {
@@ -104,17 +104,17 @@ impl Platform for Unsupported {
     }
 }
 
-/// macOS: `diskutil -plist` ayrıştırma (saf fonksiyonlar her platformda derlenir ve test edilir).
+/// macOS: parsing `diskutil -plist` (the pure functions compile and are tested on every platform).
 pub mod diskutil {
     use std::path::{Path, PathBuf};
 
     use crate::device::{Bus, Device, Identity};
     use crate::plist_lite::{self, Value};
 
-    /// Ayrıştırılmış plist sözlüğü.
+    /// Parsed plist dictionary.
     pub type Dictionary = Value;
 
-    /// Plist baytlarını sözlüğe çevirir.
+    /// Turns plist bytes into a dictionary.
     #[must_use]
     pub fn parse(bytes: &[u8]) -> Option<Dictionary> {
         plist_lite::parse(bytes).filter(Value::is_dict)
@@ -130,7 +130,7 @@ pub mod diskutil {
         d.get(k).and_then(Value::as_u64).unwrap_or(0)
     }
 
-    /// `diskutil list -plist external physical` → bağlı birimlerin `DeviceIdentifier`'ları.
+    /// `diskutil list -plist external physical` → `DeviceIdentifier`s of mounted volumes.
     #[must_use]
     pub fn mounted_identifiers(list: &Dictionary) -> Vec<String> {
         let mut out = Vec::new();
@@ -154,9 +154,9 @@ pub mod diskutil {
         out
     }
 
-    /// `diskutil info -plist <birim>` (+ isteğe bağlı bütün disk bilgisi) → [`Device`].
-    /// Anahtar adları bu makinedeki dahili disk çıktısından doğrulandı; bir USB bellekte
-    /// aldıkları değerler DOĞRULANMADI (gerçek donanım yok).
+    /// `diskutil info -plist <volume>` (+ optional whole-disk info) → [`Device`].
+    /// Key names were verified from this machine's internal-disk output; their values on a USB
+    /// stick are UNVERIFIED (no real hardware).
     #[must_use]
     pub fn to_device(vol: &Dictionary, whole: Option<&Dictionary>, dev_id: u64) -> Device {
         let mount = PathBuf::from(s(vol, "MountPoint"));
@@ -229,7 +229,7 @@ mod mac {
                 .args(args)
                 .env_clear()
                 .output()
-                .map_err(|e| Error::Environment(format!("{DISKUTIL} çalıştırılamadı: {e}")))?;
+                .map_err(|e| Error::Environment(format!("{DISKUTIL} could not be run: {e}")))?;
             if !out.status.success() {
                 return Err(tool_err(
                     &format!("diskutil {}", args.first().unwrap_or(&"")),
@@ -241,8 +241,9 @@ mod mac {
 
         fn info(target: &str) -> Result<diskutil::Dictionary> {
             let bytes = Self::run(&["info", "-plist", target])?;
-            diskutil::parse(&bytes)
-                .ok_or_else(|| Error::Environment("diskutil info çıktısı ayrıştırılamadı".into()))
+            diskutil::parse(&bytes).ok_or_else(|| {
+                Error::Environment("diskutil info output could not be parsed".into())
+            })
         }
 
         fn device_for(target: &str) -> Result<Device> {
@@ -271,7 +272,7 @@ mod mac {
         }
     }
 
-    /// `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` (onaltılık) biçiminde mi.
+    /// Whether it has the form `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` (hexadecimal).
     pub(crate) fn is_uuid(s: &str) -> bool {
         let b = s.as_bytes();
         b.len() == 36
@@ -288,7 +289,7 @@ mod mac {
         fn list(&self) -> Result<Vec<Device>> {
             let bytes = Self::run(&["list", "-plist", "external", "physical"])?;
             let list = diskutil::parse(&bytes).ok_or_else(|| {
-                Error::Environment("diskutil list çıktısı ayrıştırılamadı".into())
+                Error::Environment("diskutil list output could not be parsed".into())
             })?;
             let mut out = Vec::new();
             for id in diskutil::mounted_identifiers(&list) {
@@ -303,7 +304,7 @@ mod mac {
         fn describe(&self, mount: &Path) -> Result<Device> {
             let m = mount
                 .to_str()
-                .ok_or_else(|| Error::Environment("bağlama noktası UTF-8 değil".into()))?;
+                .ok_or_else(|| Error::Environment("mount point is not UTF-8".into()))?;
             Self::device_for(m)
         }
 
@@ -314,9 +315,7 @@ mod mac {
             Self::run(&["mount", &dev.tool_ref])?;
             let d = Self::device_for(&dev.tool_ref)?;
             if d.mount.as_os_str().is_empty() {
-                return Err(Error::Environment(
-                    "yeniden bağlama sonrası bağlama noktası yok".into(),
-                ));
+                return Err(Error::Environment("no mount point after remounting".into()));
             }
             Ok(Some(d.mount))
         }
@@ -324,19 +323,19 @@ mod mac {
         fn format(&self, dev: &Device, label: &str) -> Result<()> {
             if !valid_exfat_label(label) {
                 return Err(Error::Environment(format!(
-                    "exFAT etiketi geçersiz (1–11 ASCII harf/rakam, boşluk, -, _): {label:?}"
+                    "invalid exFAT label (1–11 ASCII letters/digits, space, -, _): {label:?}"
                 )));
             }
-            // Bütün disk değil, yalnızca bu birim (diskXsY) — whole-disk reddi.
+            // Only this volume (diskXsY), never the whole disk — whole disks are refused.
             let r = &dev.tool_ref;
             let ok = r.starts_with("disk") && r[4..].contains('s');
             if !ok {
                 return Err(Error::Environment(format!(
-                    "bütün disk biçimlendirilmez: {r}"
+                    "a whole disk is never formatted: {r}"
                 )));
             }
-            // Birim UUID ile hedeflenir: `diskXsY` adı aygıt değişince yeniden atanabilir, UUID
-            // atanmaz. UUID yoksa (bazı MBR birimleri) aygıt adına düşülür.
+            // Targeted by volume UUID: the `diskXsY` name can be reassigned when devices change, the
+            // UUID cannot. Without a UUID (some MBR volumes) the device name is used.
             let target = if is_uuid(&dev.identity.volume) {
                 dev.identity.volume.as_str()
             } else {
@@ -417,8 +416,8 @@ mod win {
             })
     }
 
-    /// Yalnızca `X:`, `X:\\` ya da `X:/` kabul edilir (X harf). Göreli yollar ilk harflerinden
-    /// sürücüye çevrilmez.
+    /// Only `X:`, `X:\\` or `X:/` are accepted (X a letter). Relative paths are not turned into
+    /// a drive from their first letter.
     fn drive_root(s: &str) -> Option<PathBuf> {
         let b = s.as_bytes();
         let ok = matches!(b.len(), 2 | 3)
@@ -459,7 +458,7 @@ mod win {
         fn describe(&self, mount: &Path) -> Result<Device> {
             let root = drive_root(&mount.to_string_lossy()).ok_or_else(|| {
                 Error::Environment(
-                    "hedef bir sürücü kökü olmalı (ör. E:\\); göreli ya da alt klasör yolu kabul edilmez"
+                    "the target must be a drive root (e.g. E:\\); relative or subfolder paths are not accepted"
                         .into(),
                 )
             })?;
@@ -468,31 +467,31 @@ mod win {
         }
 
         fn remount(&self, _dev: &Device) -> Result<Option<PathBuf>> {
-            // FSCTL_LOCK/DISMOUNT_VOLUME uygulanmadı: geri okuma "önbellekten doğrulandı".
+            // FSCTL_LOCK/DISMOUNT_VOLUME not implemented: the read-back is "verified from cache".
             Ok(None)
         }
 
         fn format(&self, dev: &Device, label: &str) -> Result<()> {
             if !lephy_sys::vol::is_elevated() {
                 return Err(Error::Environment(
-                    "--format yönetici (yükseltilmiş) oturum gerektirir: \
-                     PowerShell'i \"Yönetici olarak çalıştır\" ile açıp komutu yeniden deneyin"
+                    "--format needs an administrator (elevated) session: \
+                     open PowerShell with \"Run as administrator\" and try again"
                         .into(),
                 ));
             }
             if !valid_exfat_label(label) {
                 return Err(Error::Environment(format!(
-                    "exFAT etiketi geçersiz: {label:?}"
+                    "invalid exFAT label: {label:?}"
                 )));
             }
             if !valid_guid_path(&dev.tool_ref) {
                 return Err(Error::Environment(format!(
-                    "birim GUID yolu geçersiz: {}",
+                    "invalid volume GUID path: {}",
                     dev.tool_ref
                 )));
             }
             let ps = wv::system_directory()?.join("WindowsPowerShell\\v1.0\\powershell.exe");
-            // Değerler komut dizgisine gömülmez; ortamdan okunur (enjeksiyon yok).
+            // Values are not embedded in the command string; they are read from the environment (no injection).
             let script = "Format-Volume -Path $env:LPHY_VOL -FileSystem exFAT \
                           -NewFileSystemLabel $env:LPHY_LABEL -Confirm:$false -Force | Out-Null";
             let out = Command::new(&ps)
@@ -514,7 +513,7 @@ mod win {
                         .unwrap_or(Path::new("C:\\Windows")),
                 )
                 .output()
-                .map_err(|e| Error::Environment(format!("powershell çalıştırılamadı: {e}")))?;
+                .map_err(|e| Error::Environment(format!("powershell could not be run: {e}")))?;
             if !out.status.success() {
                 return Err(tool_err("Format-Volume", &out));
             }
@@ -602,14 +601,14 @@ mod tests {
         assert_eq!(d.identity.volume, "BBBB-2222");
         assert!(d.identity.disk.contains("AAAA-1111") && d.identity.disk.contains("disk4"));
         assert!(d.eligibility(false).is_ok());
-        // Fixed USB SSD: RemovableMedia false → red
+        // Fixed USB SSD: RemovableMedia false → refused
         let fixed = VOL.replace(
             "<key>RemovableMedia</key><true/>",
             "<key>RemovableMedia</key><false/>",
         );
         let d = diskutil::to_device(&diskutil::parse(fixed.as_bytes()).unwrap(), None, 7);
         assert!(d.eligibility(false).is_err());
-        // Thunderbolt → red
+        // Thunderbolt → refused
         let tb = VOL.replace(">USB<", ">Thunderbolt<");
         let d = diskutil::to_device(&diskutil::parse(tb.as_bytes()).unwrap(), None, 7);
         assert!(d.eligibility(false).is_err());

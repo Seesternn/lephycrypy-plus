@@ -1,17 +1,17 @@
-//! Çerçeveli arşiv konteyneri (FORMAT.md › Arşiv).
+//! Framed archive container (FORMAT.md › Archive).
 //!
-//! Giriş: `[u8 tür 0/1/2/255][u16 LE yol_len][yol NFC, '/'][u32 LE mode][i64 LE mtime]`;
-//! dosya/symlink verisi `[u32 LE len][bytes]…[u32 0]` (symlink: tek çerçeve). END: tür 255,
-//! `yol_len` 0, mode 0, mtime 0. Padded ise END sonrası sıfır dolgu (`pad::padme`).
+//! Entry: `[u8 kind 0/1/2/255][u16 LE path_len][path NFC, '/'][u32 LE mode][i64 LE mtime]`;
+//! file/symlink data `[u32 LE len][bytes]…[u32 0]` (symlink: a single frame). END: kind 255,
+//! `path_len` 0, mode 0, mtime 0. When padded, zero padding follows END (`pad::padme`).
 //!
-//! - [`ArchiveWriter`]: `Read` adaptörü; kaynak ağacı özyinelemesiz (açık yığın) ve sıralı
-//!   (bayt sırası) dolaşır; symlink takip edilmez, hedefi ham saklanır; FIFO/soket/aygıt
-//!   atlanır ve raporlanır (`--strict` → 4). Çerçeve verisi ≤ 1 MiB'lık sıfırlanan ara
-//!   tampondan akar (küçük sapma).
-//! - [`Extractor`]: `Write` adaptörü; cap-std kök handle'ı (`Dir`) ile tüm yol çözümlemesi
-//!   handle'a göre, symlink takip edilmez; dosyalar `create_new` 0600, dizinler `create_dir`;
-//!   yinelenen (NFC + katlama) → 4 (`--rename-conflicts` ile `_2`); Windows ad kuralları;
-//!   symlink'ler END'den sonra politikaya göre; mode/mtime en sonda derinden yüzeye.
+//! - [`ArchiveWriter`]: a `Read` adapter; walks the source tree without recursion (explicit stack)
+//!   and in order (byte order); symlinks are not followed, their target is stored raw;
+//!   FIFOs/sockets/devices are skipped and reported (`--strict` → 4). Frame data flows through
+//!   a zeroized intermediate buffer of at most 1 MiB.
+//! - [`Extractor`]: a `Write` adapter; every path is resolved relative to a cap-std root handle
+//!   (`Dir`), symlinks are not followed; files `create_new` 0600, directories `create_dir`;
+//!   duplicates (NFC + folding) → 4 (`_2` with `--rename-conflicts`); Windows name rules;
+//!   symlinks after END according to the policy; mode/mtime last, deepest first.
 
 use std::collections::HashSet;
 use std::fs::File;
@@ -26,50 +26,50 @@ use crate::names::{
 };
 use crate::pad::padme;
 
-/// Giriş türleri.
+/// Entry kinds.
 pub const T_FILE: u8 = 0;
-/// Dizin.
+/// Directory.
 pub const T_DIR: u8 = 1;
 /// Symlink.
 pub const T_SYMLINK: u8 = 2;
 /// END.
 pub const T_END: u8 = 255;
-/// Yazıcı çerçeve boyutu.
+/// Writer frame size.
 const WRITE_FRAME: usize = 1024 * 1024;
-/// Sabit giriş başlığı: tür (1) + `yol_len` (2) + mode (4) + mtime (8), yol hariç.
+/// Fixed entry header: kind (1) + `path_len` (2) + mode (4) + mtime (8), without the path.
 const FIXED_HEADER: usize = 15;
 
-/// Atlanan/değiştirilen girişler raporu.
+/// Report of skipped/changed entries.
 #[derive(Debug, Default, Clone)]
 pub struct Report {
-    /// Atlanan girişler: (yol, neden).
+    /// Skipped entries: (path, reason).
     pub skipped: Vec<(String, String)>,
-    /// Yeniden adlandırılanlar: (eski, yeni).
+    /// Renamed entries: (old, new).
     pub renamed: Vec<(String, String)>,
-    /// Uyarılar.
+    /// Warnings.
     pub warnings: Vec<String>,
-    /// Kurulan symlink sayısı.
+    /// Number of symlinks created.
     pub symlinks_created: usize,
-    /// Giriş sayısı (END hariç).
+    /// Number of entries (without END).
     pub entries: usize,
-    /// Arşive gerçekten alınan kaynak öğeler (yalnızca yazıcı doldurur). `--delete-original`
-    /// yalnızca bunları siler.
+    /// Source items actually archived (filled by the writer only). `--delete-original` deletes
+    /// only these.
     pub archived: Vec<Archived>,
 }
 
-/// Arşive alınmış bir kaynak öğe.
+/// A source item that was archived.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Archived {
-    /// Kaynaktaki mutlak yol.
+    /// Absolute path in the source.
     pub path: PathBuf,
-    /// Dizin mi.
+    /// Whether it is a directory.
     pub is_dir: bool,
-    /// Okunduğu andaki (aygıt, inode); Unix dışında `None`.
+    /// (device, inode) at the time it was read; `None` outside Unix.
     pub id: Option<(u64, u64)>,
 }
 
 #[cfg(unix)]
-#[allow(clippy::unnecessary_wraps)] // Unix dışında None döner; imza ortak.
+#[allow(clippy::unnecessary_wraps)] // returns None outside Unix; shared signature.
 fn id_of(md: &std::fs::Metadata) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
     Some((md.dev(), md.ino()))
@@ -86,7 +86,7 @@ impl Report {
         if strict {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                StrictViolation(format!("{} atlandı ({why})", names::escape_display(path))),
+                StrictViolation(format!("{} skipped ({why})", names::escape_display(path))),
             ));
         }
         Ok(())
@@ -124,7 +124,7 @@ fn mode_of(md: &std::fs::Metadata) -> u32 {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Yazıcı
+// Writer
 // ---------------------------------------------------------------------------------------------
 
 enum Kind {
@@ -136,7 +136,7 @@ enum Kind {
 struct Work {
     rel: String,
     abs: PathBuf,
-    /// Kaynak dizin köküne göre yol (kök dosyaysa boş).
+    /// Path relative to the source root (empty if the root is a file).
     sub: PathBuf,
     kind: Kind,
 }
@@ -147,10 +147,10 @@ enum WState {
     Done,
 }
 
-/// Arşiv yazıcı (`Read`): `root` bir dizinse içeriği (kök adı hariç), dosyaysa tek giriş.
+/// Archive writer (`Read`): if `root` is a directory, its content (without the root name); if a file, a single entry.
 pub struct ArchiveWriter {
-    /// Kaynak bir dizinse kök tutamacı: tüm açma/listeleme köke göre yapılır; kaynak okunurken
-    /// bir öğe symlink ile değiştirilse bile kökün dışına çıkılamaz (cap-std).
+    /// Root handle when the source is a directory: every open/list is relative to it; even if an
+    /// item is replaced by a symlink while reading, nothing outside the root is reached (cap-std).
     root: Option<cap_std::fs::Dir>,
     stack: Vec<Work>,
     state: WState,
@@ -160,15 +160,15 @@ pub struct ArchiveWriter {
     entries: usize,
     total_path_bytes: u64,
     dedup: HashSet<[u8; 16]>,
-    /// Rapor (atlananlar, katlama çakışma uyarıları).
+    /// Report (skipped entries, folding-collision warnings).
     pub report: Report,
 }
 
 impl ArchiveWriter {
-    /// Kurar; `root` dosya ya da dizin (symlink kök takip edilmez: kök symlink ise hata).
+    /// Builds it; `root` is a file or directory (a symlink root is not followed: an error).
     ///
     /// # Errors
-    /// Kod 1.
+    /// Code 1.
     pub fn new(root: &Path, strict: bool) -> Result<Self> {
         let md = root.symlink_metadata()?;
         let mut stack = Vec::new();
@@ -182,7 +182,7 @@ impl ArchiveWriter {
         } else if md.is_file() {
             let name = root
                 .file_name()
-                .ok_or_else(|| Error::Environment("kaynak adı yok".into()))?;
+                .ok_or_else(|| Error::Environment("source has no name".into()))?;
             let rel = names::to_archive_path(Path::new(name))?;
             stack.push(Work {
                 rel,
@@ -192,13 +192,13 @@ impl ArchiveWriter {
             });
         } else {
             return Err(Error::Environment(format!(
-                "{} normal dosya ya da dizin değil",
+                "{} is not a regular file or directory",
                 root.display()
             )));
         }
         let mut report = Report::default();
         if let Some(m) = root_md {
-            // Kök dizin listede ilk: dizinler tersten silindiği için en son silinir.
+            // The root directory is first in the list: directories are deleted in reverse, so it goes last.
             report.archived.push(Archived {
                 path: root.to_path_buf(),
                 is_dir: true,
@@ -219,12 +219,12 @@ impl ArchiveWriter {
         })
     }
 
-    /// Dizin girişini kaydeder ve çocuklarını yığına ekler; `Ok(false)` = atlandı.
+    /// Records a directory entry and pushes its children; `Ok(false)` = skipped.
     fn dir_entry(&mut self, root: &cap_std::fs::Dir, w: &Work) -> io::Result<bool> {
-        // Meta veri açılmış tutamaçtan: okuma ile kayıt arasında değişemez.
+        // Metadata from the opened handle: it cannot change between reading and recording.
         let md = root.open_dir(&w.sub)?.into_std_file().metadata()?;
         if !md.is_dir() {
-            self.report.skip(&w.rel, "dizin değişti", self.strict)?;
+            self.report.skip(&w.rel, "directory changed", self.strict)?;
             return Ok(false);
         }
         self.account(&w.rel, 0)?;
@@ -239,7 +239,7 @@ impl ArchiveWriter {
         Ok(true)
     }
 
-    /// Dosyayı açar: dizin kaynağında köke göre (cap-std), tek dosya kaynağında yolla.
+    /// Opens a file: relative to the root for a directory source (cap-std), by path for a single file.
     fn open_file(&self, w: &Work) -> io::Result<File> {
         match &self.root {
             Some(d) => d.open(&w.sub).map(cap_std::fs::File::into_std),
@@ -250,15 +250,21 @@ impl ArchiveWriter {
     fn account(&mut self, rel: &str, extra: usize) -> io::Result<()> {
         self.entries += 1;
         if self.entries > MAX_ENTRIES {
-            return Err(FormatViolation::io_at("arşiv", "giriş sayısı > 1 000 000"));
+            return Err(FormatViolation::io_at(
+                "archive",
+                "more than 1 000 000 entries",
+            ));
         }
         self.total_path_bytes += rel.len() as u64 + extra as u64;
         if self.total_path_bytes > MAX_TOTAL_PATH_BYTES {
-            return Err(FormatViolation::io_at("arşiv", "toplam yol baytı > 64 MiB"));
+            return Err(FormatViolation::io_at(
+                "archive",
+                "total path bytes > 64 MiB",
+            ));
         }
         if !self.dedup.insert(names::fold_key(rel)) {
             self.report.warnings.push(format!(
-                "harf/NFC katlamasında çakışan ad: {} (büyük/küçük harf duyarsız dosya sisteminde çıkarma başarısız olur)",
+                "names collide under case/NFC folding: {} (extraction fails on a case-insensitive file system)",
                 names::escape_display(rel)
             ));
         }
@@ -275,7 +281,7 @@ impl ArchiveWriter {
         p.extend_from_slice(&mtime.to_le_bytes());
     }
 
-    /// `pending`'i bir sonraki üretimle doldurur; `Ok(false)` = bitti.
+    /// Fills `pending` with the next output; `Ok(false)` = done.
     #[allow(clippy::too_many_lines)]
     fn refill(&mut self) -> io::Result<bool> {
         self.pending.clear();
@@ -304,7 +310,7 @@ impl ArchiveWriter {
                     let len = u32::try_from(n).unwrap_or(0);
                     self.pending[..4].copy_from_slice(&len.to_le_bytes());
                     if n == 0 {
-                        self.pending.truncate(4); // [u32 0] sonlandırıcı
+                        self.pending.truncate(4); // [u32 0] terminator
                         self.state = WState::Next;
                     } else {
                         self.pending.truncate(4 + n);
@@ -322,7 +328,7 @@ impl ArchiveWriter {
                     match w.kind {
                         Kind::Dir => {
                             let Some(root) = self.root.take() else {
-                                return Err(io::Error::other("dizin girişi kök olmadan"));
+                                return Err(io::Error::other("directory entry without a root"));
                             };
                             let r = self.dir_entry(&root, &w);
                             self.root = Some(root);
@@ -337,7 +343,7 @@ impl ArchiveWriter {
                             };
                             if !pre {
                                 self.report
-                                    .skip(&w.rel, "normal dosya değil", self.strict)?;
+                                    .skip(&w.rel, "not a regular file", self.strict)?;
                                 continue;
                             }
                             let f = match self.open_file(&w) {
@@ -345,18 +351,18 @@ impl ArchiveWriter {
                                 Err(e) => {
                                     self.report.skip(
                                         &w.rel,
-                                        &format!("açılamadı: {e}"),
+                                        &format!("could not be opened: {e}"),
                                         self.strict,
                                     )?;
                                     continue;
                                 }
                             };
-                            // Açılan nesne denetlenir (fstat): kontrol ile açma arasında
-                            // değiştirilen öğe arşive girmez.
+                            // The opened object is checked (fstat): an item replaced between
+                            // the check and the open does not get into the archive.
                             let md = f.metadata()?;
                             if !md.is_file() {
                                 self.report
-                                    .skip(&w.rel, "normal dosya değil", self.strict)?;
+                                    .skip(&w.rel, "not a regular file", self.strict)?;
                                 continue;
                             }
                             self.account(&w.rel, 0)?;
@@ -371,15 +377,15 @@ impl ArchiveWriter {
                         }
                         Kind::Symlink => {
                             let target = match &self.root {
-                                // Ham hedef (mutlak hedefler de kaydedilir; çıkarma politikası
-                                // ayrıca karar verir).
+                                // Raw target (absolute targets are stored too; the extraction
+                                // policy decides separately).
                                 Some(d) => link_bytes(&d.read_link_contents(&w.sub)?),
                                 None => read_link_bytes(&w.abs)?,
                             };
                             if names::validate_symlink_target(&target).is_err() {
                                 self.report.skip(
                                     &w.rel,
-                                    "symlink hedefi 1..=4096 B / NUL",
+                                    "symlink target 1..=4096 B / NUL",
                                     self.strict,
                                 )?;
                                 continue;
@@ -404,14 +410,14 @@ impl ArchiveWriter {
         }
     }
 
-    /// Giriş sayısı (END hariç).
+    /// Number of entries (without END).
     #[must_use]
     pub const fn entries(&self) -> usize {
         self.entries
     }
 }
 
-/// Symlink'in kendisinin (aygıt, inode) kimliği; Unix dışında `None`.
+/// Identity (device, inode) of the symlink itself; `None` outside Unix.
 fn link_id(root: &cap_std::fs::Dir, sub: &Path) -> Option<(u64, u64)> {
     let m = root.symlink_metadata(sub).ok()?;
     #[cfg(unix)]
@@ -442,8 +448,8 @@ fn link_bytes(t: &Path) -> Vec<u8> {
     }
 }
 
-/// Dizin çocuklarını (bayt sırasında, tersten yığına) ekler. Listeleme ve sınıflandırma kök
-/// tutamacına göredir (`sub` köke göre yol; `abs` yalnızca rapor ve silme içindir).
+/// Pushes the children of a directory (in byte order, reversed onto the stack). Listing and
+/// classification are relative to the root handle (`sub` is relative to the root; `abs` only for reports and deletion).
 fn push_children(
     stack: &mut Vec<Work>,
     root: &cap_std::fs::Dir,
@@ -462,7 +468,7 @@ fn push_children(
         let bytes = name.to_string_lossy().into_owned().into_bytes();
         items.push((bytes, name));
     }
-    items.sort_by(|a, b| b.0.cmp(&a.0)); // tersten: pop ile artan sıra
+    items.sort_by(|a, b| b.0.cmp(&a.0)); // reversed: pop gives ascending order
     for (_, name) in items {
         let child_sub = sub.join(&name);
         let md = root.symlink_metadata(&child_sub)?;
@@ -477,7 +483,7 @@ fn push_children(
         } else if md.is_dir() {
             Kind::Dir
         } else {
-            Kind::File // FIFO/soket/aygıt: refill'de "normal dosya değil" ile atlanır
+            Kind::File // FIFO/socket/device: skipped in refill as "not a regular file"
         };
         stack.push(Work {
             rel,
@@ -508,8 +514,8 @@ impl Read for ArchiveWriter {
     }
 }
 
-/// Arşiv akışına PADMÉ dolgusu ekleyen `Read` sarmalayıcısı: END'e kadar yazılan bayt sayısına
-/// göre sıfır ekler.
+/// `Read` wrapper that adds PADMÉ padding to the archive stream: zeros according to the number of
+/// bytes written up to END.
 pub struct ArchivePadReader<R: Read> {
     inner: R,
     emitted: u64,
@@ -518,7 +524,7 @@ pub struct ArchivePadReader<R: Read> {
 }
 
 impl<R: Read> ArchivePadReader<R> {
-    /// Kurar.
+    /// Builds it.
     pub fn new(inner: R) -> Self {
         Self {
             inner,
@@ -528,7 +534,7 @@ impl<R: Read> ArchivePadReader<R> {
         }
     }
 
-    /// İç okuyucuyu geri alır (rapor için).
+    /// Returns the inner reader (for the report).
     pub fn into_inner(self) -> R {
         self.inner
     }
@@ -560,48 +566,48 @@ impl<R: Read> Read for ArchivePadReader<R> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Çıkarıcı
+// Extractor
 // ---------------------------------------------------------------------------------------------
 
-/// Symlink kurma politikası.
+/// Symlink policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SymlinkPolicy {
-    /// Hiç kurma (varsayılan).
+    /// Never create (default).
     #[default]
     None,
-    /// Yalnızca güvenli hedefler.
+    /// Safe targets only.
     Safe,
-    /// Güvensizler de (her biri için uyarı).
+    /// Unsafe ones too (with a warning each).
     Unsafe,
 }
 
-/// Çıkarma seçenekleri.
+/// Extraction options.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExtractOptions {
-    /// Atlanan/değiştirilen giriş hata (biçim/politika → 4, ortam → 1).
+    /// A skipped/changed entry is an error (format/policy → 4, environment → 1).
     pub strict: bool,
-    /// Symlink politikası.
+    /// Symlink policy.
     pub symlinks: SymlinkPolicy,
-    /// Yinelenen adlarda `_2`, `_3` …
+    /// `_2`, `_3` … on duplicate names.
     pub rename_conflicts: bool,
-    /// Başlıktaki `padded` bayrağı: END sonrası sıfır dolgu beklenir.
+    /// The header's `padded` flag: zero padding is expected after END.
     pub padded: bool,
 }
 
 enum PState {
-    /// Giriş başlığı toplanıyor.
+    /// Collecting an entry header.
     Header,
-    /// Çerçeve uzunluğu (4 B).
+    /// Frame length (4 B).
     FrameLen,
-    /// Çerçeve verisi; kalan bayt.
+    /// Frame data; remaining bytes.
     FrameData(usize),
-    /// END sonrası.
+    /// After END.
     Trailer,
 }
 
 enum Current {
     File(cap_std::fs::File),
-    /// Yalnızca doğrulama: içerik okunur ve atılır.
+    /// Verification only: the content is read and discarded.
     Discard,
     Symlink {
         target: Vec<u8>,
@@ -617,8 +623,8 @@ struct Deferred {
     depth: usize,
 }
 
-/// Arşiv çıkarıcı (`Write`). `root` tmp dizinin cap-std handle'ıdır (0700, çağıran oluşturur);
-/// `None` ise yalnızca yapı doğrulanır, diske hiçbir şey yazılmaz (`Extractor::verifier`).
+/// Archive extractor (`Write`). `root` is the cap-std handle of the temp directory (0700, created
+/// by the caller); with `None` only the structure is checked and nothing is written (`Extractor::verifier`).
 pub struct Extractor {
     root: Option<cap_std::fs::Dir>,
     opts: ExtractOptions,
@@ -636,26 +642,26 @@ pub struct Extractor {
     end_at: u64,
     end_seen: bool,
     dirs: HashSet<String>,
-    /// Rapor.
+    /// Report.
     pub report: Report,
-    /// Tek üst düzey dosya (düzleştirme için): END sonrası `Some(ad)` ise arşivde yalnızca o
-    /// dosya vardır.
+    /// Single top-level file (for flattening): `Some(name)` after END means the archive holds
+    /// only that file.
     pub single_file: Option<String>,
     top_level: usize,
 }
 
 impl Extractor {
-    /// `tmp_dir`: var olan boş tmp dizini.
+    /// `tmp_dir`: an existing empty temp directory.
     ///
     /// # Errors
-    /// Kod 1.
+    /// Code 1.
     pub fn new(tmp_dir: &Path, opts: ExtractOptions) -> Result<Self> {
         let root = cap_std::fs::Dir::open_ambient_dir(tmp_dir, cap_std::ambient_authority())?;
         Ok(Self::with_root(Some(root), opts))
     }
 
-    /// Yalnızca doğrulayan çıkarıcı: yol kuralları, yinelenenler, sınırlar, END ve dolgu
-    /// çıkarmadaki gibi denetlenir; diske yazılmaz, symlink kurulmaz.
+    /// Extractor that only verifies: path rules, duplicates, limits, END and padding are
+    /// checked as when extracting; nothing is written, no symlink is created.
     #[must_use]
     pub fn verifier(opts: ExtractOptions) -> Self {
         Self::with_root(None, opts)
@@ -686,10 +692,10 @@ impl Extractor {
     }
 
     fn violation(d: &str) -> io::Error {
-        FormatViolation::io_at("arşiv", d)
+        FormatViolation::io_at("archive", d)
     }
 
-    /// Yol doğrulama, Windows düzeltme, yinelenen denetimi; nihai yolu döner.
+    /// Path validation, Windows fix-ups, duplicate check; returns the final path.
     fn admit_path(&mut self, raw: &[u8], ty: u8) -> io::Result<String> {
         let s = names::validate_archive_path(raw).map_err(|e| Self::violation(&e.to_string()))?;
         let mut path = s.to_string();
@@ -709,7 +715,7 @@ impl Extractor {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         StrictViolation(format!(
-                            "Windows ad kuralı: {}",
+                            "Windows name rule: {}",
                             names::escape_display(&path)
                         )),
                     ));
@@ -720,16 +726,16 @@ impl Extractor {
         }
         self.entries += 1;
         if self.entries > MAX_ENTRIES {
-            return Err(Self::violation("giriş sayısı > 1 000 000"));
+            return Err(Self::violation("more than 1 000 000 entries"));
         }
         self.total_path_bytes += path.len() as u64;
         if self.total_path_bytes > MAX_TOTAL_PATH_BYTES {
-            return Err(Self::violation("toplam yol baytı > 64 MiB"));
+            return Err(Self::violation("total path bytes > 64 MiB"));
         }
         if !self.dedup.insert(names::fold_key(&path)) {
             if !self.opts.rename_conflicts {
                 return Err(Self::violation(&format!(
-                    "yinelenen yol (NFC/harf katlaması): {}",
+                    "duplicate path (NFC/case folding): {}",
                     names::escape_display(&path)
                 )));
             }
@@ -745,12 +751,12 @@ impl Extractor {
             }
             self.report.renamed.push((orig, path.clone()));
         }
-        // Üst dizin varlığı (yazıcı dizinleri önce yazar).
+        // The parent directory must exist (the writer writes directories first).
         if let Some((parent, _)) = path.rsplit_once('/')
             && !self.dirs.contains(parent)
         {
             return Err(Self::violation(&format!(
-                "üst dizin girişi eksik: {}",
+                "parent directory entry missing: {}",
                 names::escape_display(parent)
             )));
         }
@@ -786,7 +792,7 @@ impl Extractor {
         self.hdr.clear();
         if ty == T_END {
             if plen != 0 || mode != 0 || mtime != 0 {
-                return Err(Self::violation("END girişi alanları sıfır olmalı"));
+                return Err(Self::violation("END entry fields must be zero"));
             }
             self.end_seen = true;
             self.end_at = self.consumed;
@@ -794,7 +800,7 @@ impl Extractor {
             return Ok(());
         }
         if !(-MAX_MTIME_ABS..=MAX_MTIME_ABS).contains(&mtime) {
-            return Err(Self::violation("mtime aralık dışı"));
+            return Err(Self::violation("mtime out of range"));
         }
         let path = self.admit_path(&raw, ty)?;
         match ty {
@@ -803,7 +809,7 @@ impl Extractor {
                     root.create_dir(&path).map_err(|e| {
                         if e.kind() == io::ErrorKind::AlreadyExists {
                             Self::violation(&format!(
-                                "dizin zaten var: {}",
+                                "directory already exists: {}",
                                 names::escape_display(&path)
                             ))
                         } else {
@@ -827,7 +833,7 @@ impl Extractor {
                     let f = root.open_with(&path, &oo).map_err(|e| {
                         if e.kind() == io::ErrorKind::AlreadyExists {
                             Self::violation(&format!(
-                                "dosya zaten var: {}",
+                                "file already exists: {}",
                                 names::escape_display(&path)
                             ))
                         } else {
@@ -851,7 +857,7 @@ impl Extractor {
                 self.cur_path = path;
                 self.state = PState::FrameLen;
             }
-            _ => return Err(Self::violation("bilinmeyen giriş türü")),
+            _ => return Err(Self::violation("unknown entry kind")),
         }
         Ok(())
     }
@@ -865,13 +871,13 @@ impl Extractor {
             Some(Current::Discard) | None => {}
             Some(Current::Symlink { target, frames }) => {
                 if frames != 1 {
-                    return Err(Self::violation("symlink hedefi tek çerçevede olmalı"));
+                    return Err(Self::violation("symlink target must be a single frame"));
                 }
                 names::validate_symlink_target(&target)
                     .map_err(|e| Self::violation(&e.to_string()))?;
                 self.total_path_bytes += target.len() as u64;
                 if self.total_path_bytes > MAX_TOTAL_PATH_BYTES {
-                    return Err(Self::violation("toplam yol baytı > 64 MiB"));
+                    return Err(Self::violation("total path bytes > 64 MiB"));
                 }
                 let p = std::mem::take(&mut self.cur_path);
                 self.symlinks.push((p, target));
@@ -881,13 +887,13 @@ impl Extractor {
         Ok(())
     }
 
-    /// Bayt tüketir; tüketilen sayıyı döner (her zaman `buf.len()` ya da hata).
+    /// Consumes bytes; returns the number consumed (always `buf.len()` or an error).
     fn consume(&mut self, buf: &[u8]) -> io::Result<()> {
         let mut rest = buf;
         while !rest.is_empty() {
             match self.state {
                 PState::Header => {
-                    // Tür + yol_len için 3 bayt, sonra toplam 15 + yol_len.
+                    // 3 bytes for kind + path_len, then 15 + path_len in total.
                     let need = if self.hdr.len() < 3 {
                         3
                     } else {
@@ -918,14 +924,14 @@ impl Extractor {
                         if len == 0 {
                             self.end_entry()?;
                         } else if len > MAX_FRAME {
-                            return Err(Self::violation("çerçeve > 16 MiB"));
+                            return Err(Self::violation("frame > 16 MiB"));
                         } else {
-                            // Symlink hedefi tam olarak bir çerçevedir: her yeni çerçeve sayılır.
+                            // A symlink target is exactly one frame: every new frame is counted.
                             if let Some(Current::Symlink { frames, .. }) = self.cur.as_mut() {
                                 *frames += 1;
                                 if *frames > 1 {
                                     return Err(Self::violation(
-                                        "symlink hedefi tek çerçevede olmalı",
+                                        "symlink target must be a single frame",
                                     ));
                                 }
                             }
@@ -940,11 +946,11 @@ impl Extractor {
                         Some(Current::Discard) => {}
                         Some(Current::Symlink { target, .. }) => {
                             if target.len() + take > names::MAX_SYMLINK_TARGET {
-                                return Err(Self::violation("symlink hedefi > 4096 B"));
+                                return Err(Self::violation("symlink target > 4096 B"));
                             }
                             target.extend_from_slice(&rest[..take]);
                         }
-                        None => return Err(Self::violation("çerçeve verisi girişsiz")),
+                        None => return Err(Self::violation("frame data without an entry")),
                     }
                     rest = &rest[take..];
                     self.consumed += take as u64;
@@ -956,10 +962,10 @@ impl Extractor {
                 }
                 PState::Trailer => {
                     if !self.opts.padded {
-                        return Err(Self::violation("END sonrası veri"));
+                        return Err(Self::violation("data after END"));
                     }
                     if rest.iter().any(|&b| b != 0) {
-                        return Err(Self::violation("END sonrası sıfır olmayan dolgu"));
+                        return Err(Self::violation("non-zero padding after END"));
                     }
                     self.consumed += rest.len() as u64;
                     rest = &[];
@@ -969,14 +975,14 @@ impl Extractor {
         Ok(())
     }
 
-    /// Kurtarma: akış yarıda kaldı (bozulma). END ve dolgu denetlenmez, symlink kurulmaz;
-    /// o ana kadar tam yazılan girişler kalır, izinler uygulanır. Yarım kalan son dosya varsa
-    /// uyarı eklenir.
+    /// Recovery: the stream stopped early (damage). END and padding are not checked, no symlink
+    /// is created; entries completely written so far stay and permissions are applied. A warning
+    /// is added if the last file is incomplete.
     #[must_use]
     pub fn salvage(mut self) -> Report {
         if matches!(self.cur, Some(Current::File(_))) {
             self.report.warnings.push(format!(
-                "yarım kalan dosya: {}",
+                "incomplete file: {}",
                 names::escape_display(&self.cur_path)
             ));
         }
@@ -994,29 +1000,29 @@ impl Extractor {
         self.report
     }
 
-    /// Akış bittiğinde: END/dolgu denetimi, symlink'ler, mode/mtime (derinden yüzeye).
+    /// At the end of the stream: END/padding check, symlinks, mode/mtime (deepest first).
     ///
     /// # Errors
-    /// Kod 4 (END eksik, dolgu uzunluğu), kod 1 (ortam; `--strict` ayrıcalık).
+    /// Code 4 (END missing, padding length), code 1 (environment; privileges with `--strict`).
     pub fn finish(mut self) -> Result<Report> {
         if !self.end_seen {
             return Err(Error::Corrupt {
-                at: "arşiv".into(),
-                detail: Some("END girişi eksik".into()),
+                at: "archive".into(),
+                detail: Some("END entry missing".into()),
             });
         }
         if self.opts.padded && self.consumed != padme(self.end_at) {
             return Err(Error::Corrupt {
-                at: "arşiv".into(),
-                detail: Some("PADMÉ toplam uzunluk uyuşmuyor".into()),
+                at: "archive".into(),
+                detail: Some("PADMÉ total length mismatch".into()),
             });
         }
         self.report.entries = self.entries;
         let Some(root) = self.root.take() else {
-            // Doğrulama: diske dokunulmaz; symlink hedefleri zaten end_entry'de denetlendi.
+            // Verification: the disk is not touched; symlink targets were already checked in end_entry.
             return Ok(self.report);
         };
-        // (2) symlink'ler
+        // (2) symlinks
         let links = std::mem::take(&mut self.symlinks);
         for (path, target) in links {
             let class = names::classify_symlink_target(&target);
@@ -1026,16 +1032,16 @@ impl Extractor {
             );
             if !create {
                 let why = if class == SymlinkClass::Unsafe {
-                    "güvensiz symlink hedefi, kurulmadı"
+                    "unsafe symlink target, not created"
                 } else {
-                    "symlink kurulmadı (--restore-symlinks yok)"
+                    "symlink not created (no --restore-symlinks)"
                 };
                 self.report.skipped.push((path.clone(), why.into()));
                 if self.opts.strict && class == SymlinkClass::Unsafe {
                     return Err(Error::Corrupt {
-                        at: "arşiv".into(),
+                        at: "archive".into(),
                         detail: Some(format!(
-                            "--strict: güvensiz symlink {}",
+                            "--strict: unsafe symlink {}",
                             names::escape_display(&path)
                         )),
                     });
@@ -1044,21 +1050,21 @@ impl Extractor {
             }
             if class == SymlinkClass::Unsafe {
                 self.report.warnings.push(format!(
-                    "güvensiz symlink kuruldu: {} → {}",
+                    "unsafe symlink created: {} → {}",
                     names::escape_display(&path),
                     names::escape_display(&String::from_utf8_lossy(&target))
                 ));
             }
             if self.dedup.contains(&names::fold_key(&path)) {
-                // admit_path zaten ekledi; var olan ad FS tarafından reddedilir.
+                // admit_path already added it; an existing name is refused by the file system.
             }
             match create_symlink(&root, &path, &target) {
                 Ok(()) => self.report.symlinks_created += 1,
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                     return Err(Error::Corrupt {
-                        at: "arşiv".into(),
+                        at: "archive".into(),
                         detail: Some(format!(
-                            "symlink adı zaten var: {}",
+                            "symlink name already exists: {}",
                             names::escape_display(&path)
                         )),
                     });
@@ -1066,17 +1072,17 @@ impl Extractor {
                 Err(e) => {
                     self.report
                         .skipped
-                        .push((path.clone(), format!("symlink kurulamadı: {e}")));
+                        .push((path.clone(), format!("symlink could not be created: {e}")));
                     if self.opts.strict {
                         return Err(Error::Environment(format!(
-                            "--strict: symlink kurulamadı ({}): {e}",
+                            "--strict: symlink could not be created ({}): {e}",
                             names::escape_display(&path)
                         )));
                     }
                 }
             }
         }
-        // (3) mode/mtime derinden yüzeye
+        // (3) mode/mtime, deepest first
         let mut deferred = std::mem::take(&mut self.deferred);
         deferred.sort_by_key(|d| std::cmp::Reverse(d.depth));
         for d in deferred {
@@ -1097,7 +1103,7 @@ fn create_symlink(root: &cap_std::fs::Dir, path: &str, target: &[u8]) -> io::Res
     #[cfg(windows)]
     {
         let t = String::from_utf8_lossy(target).replace('/', "\\");
-        // Hedef kök içinde bir dizine çözülüyorsa dizin bağı.
+        // A directory link if the target resolves to a directory inside the root.
         let is_dir = root
             .metadata(Path::new(path).parent().unwrap_or(Path::new("")).join(&t))
             .is_ok_and(|m| m.is_dir());
@@ -1114,15 +1120,15 @@ fn create_symlink(root: &cap_std::fs::Dir, path: &str, target: &[u8]) -> io::Res
     }
 }
 
-/// Çıkarılan girişlere uygulanan izin maskesi: setuid/setgid/sticky ve grup/diğerleri için
-/// yazma izni her zaman kaldırılır (arşivi hazırlayan kişi alıcıda dünya-yazılabilir dizin
-/// bırakamaz).
+/// Permission mask applied to extracted entries: setuid/setgid/sticky and write permission for
+/// group/others are always removed (whoever made the archive cannot leave a world-writable
+/// directory on the recipient's machine).
 pub const SAFE_MODE_MASK: u32 = 0o755;
 
-/// mode/mtime best-effort (izinler `SAFE_MODE_MASK` ile kısıtlanmıştır).
+/// mode/mtime best effort (permissions are limited by `SAFE_MODE_MASK`).
 fn apply_metadata(root: &cap_std::fs::Dir, path: &str, mode: u32, mtime: i64) {
-    // Platformun zaman aralığını aşan değer (Windows'ta Unix'ten dar) atlanır: `+`/`-` taşmada
-    // panikler, bu da kötü niyetli bir arşivle çıkarmayı çökertebilirdi.
+    // A value outside the platform's time range (narrower on Windows than on Unix) is skipped:
+    // `+`/`-` would panic on overflow, which a malicious archive could use to crash extraction.
     let d = std::time::Duration::from_secs(mtime.unsigned_abs());
     let t = if mtime >= 0 {
         std::time::UNIX_EPOCH.checked_add(d)
@@ -1239,7 +1245,7 @@ mod tests {
         assert!(w.report.skipped.is_empty());
         assert_eq!(w.report.entries, w.entries());
         assert!(w.report.entries >= 6);
-        // adlar NFC
+        // names in NFC
         let nfc = "ş.txt".as_bytes();
         let nfd = "s\u{0327}.txt".as_bytes();
         assert!(bytes.windows(nfc.len()).any(|x| x == nfc));
@@ -1275,7 +1281,7 @@ mod tests {
             assert!(
                 rep.skipped
                     .iter()
-                    .any(|(p, why)| p == "badlink" && why.contains("güvensiz"))
+                    .any(|(p, why)| p == "badlink" && why.contains("unsafe"))
             );
         }
         let _ = (
@@ -1357,8 +1363,8 @@ mod tests {
 
     #[test]
     fn symlink_then_file_through_it_does_not_escape() {
-        // symlink-dizin-sonra-dosya: `l -> ../outside` sonra `l/x` → l kurulmadan dosya gelir;
-        // üst dizin girişi (`l`) yoktur → 4; symlink'ler zaten END sonrası kurulur.
+        // symlink-dir-then-file: `l -> ../outside`, then `l/x` → the file comes before l is created;
+        // there is no parent directory entry (`l`) → 4; symlinks are created after END anyway.
         let bytes = [
             record(T_SYMLINK, "l", 0, 0),
             frames(b"../outside"),
@@ -1390,8 +1396,8 @@ mod tests {
 
     #[test]
     fn extreme_mtimes_do_not_panic() {
-        // Biçimin izin verdiği uç değerler, platformun zaman aralığını aşsa bile (Windows)
-        // çıkarmayı durdurmamalı; zaman yalnızca atlanır.
+        // Extreme values allowed by the format must not stop extraction even if they exceed the
+        // platform's time range (Windows); only the time is skipped.
         let bytes = [
             record(T_FILE, "ileri", 0o644, MAX_MTIME_ABS),
             frames(b"a"),
@@ -1435,7 +1441,7 @@ mod tests {
         .concat();
         let rep = verify_all(&good, ExtractOptions::default()).unwrap();
         assert_eq!(rep.entries, 2);
-        // Yinelenen ad, eksik üst dizin, END yok: çıkarmada olduğu gibi reddedilir.
+        // Duplicate name, missing parent directory, no END: refused as when extracting.
         let dup = [
             record(T_FILE, "a", 0o644, 0),
             frames(b"1"),
@@ -1481,7 +1487,7 @@ mod tests {
                 .permissions()
                 .mode()
                 & 0o7777;
-            assert_eq!(m, 0o755, "dünya-yazılabilir izin kaldırılmalı");
+            assert_eq!(m, 0o755, "world-writable permission must be removed");
             let d = std::fs::metadata(out.join("root/d"))
                 .unwrap()
                 .permissions()
@@ -1542,7 +1548,7 @@ mod tests {
             assert!(matches!(r, Err(Error::Corrupt { .. })));
         }
         let _ = std::fs::remove_dir_all(&out);
-        // ArchivePadReader üretimi tam P(n)
+        // ArchivePadReader produces exactly P(n)
         let mut r = ArchivePadReader::new(&body[..]);
         let mut v = Vec::new();
         r.read_to_end(&mut v).unwrap();
@@ -1568,7 +1574,7 @@ mod tests {
             std::fs::write(src.join("a"), b"1").unwrap();
             let fifo = src.join("fifo");
             let c = std::ffi::CString::new(fifo.to_string_lossy().into_owned()).unwrap();
-            // mkfifo'yu lephy-sys dışından çağıramayız (forbid unsafe): `mkfifo` komutu ile.
+            // We cannot call mkfifo outside lephy-sys (forbid unsafe): use the `mkfifo` command.
             let st = std::process::Command::new("mkfifo")
                 .arg(&fifo)
                 .status()

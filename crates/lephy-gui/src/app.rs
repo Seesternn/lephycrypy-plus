@@ -1,5 +1,5 @@
-//! Tek pencere arayüzü. Akış: bırak/seç → parola → şifrele/çöz → sonuç.
-//! Görsel dil `theme.rs`'de; ikonlar resim değil, birkaç çizgiyle çizilir.
+//! Single-window UI. Flow: drop/choose → password → encrypt/decrypt → result.
+//! The visual language is in `theme.rs`; icons are drawn with a few lines, not images.
 
 use crate::i18n::{Lang, lang, tr};
 use std::path::{Path, PathBuf};
@@ -20,10 +20,10 @@ use crate::logic::{self, Job, Mode, Outcome};
 use crate::secret_field::SecretField;
 use crate::theme::{self, Palette};
 
-/// İçerik sütununun en büyük genişliği.
+/// Maximum width of the content column.
 const COLUMN_W: f32 = 460.0;
 
-/// Parola türetme belleği seçenekleri (MiB, Türkçe ad, İngilizce ad).
+/// Password-derivation memory presets (MiB, Turkish name, English name).
 const KDF_PRESETS: [(u32, &str, &str); 4] = [
     (256, "Hızlı", "Fast"),
     (512, "Önerilen", "Recommended"),
@@ -31,15 +31,15 @@ const KDF_PRESETS: [(u32, &str, &str); 4] = [
     (2048, "En güçlü", "Strongest"),
 ];
 
-/// Seçilen kaynak.
+/// The chosen source.
 struct Source {
     path: PathBuf,
-    /// Tüm kaynaklar (toplu işte birden çok; ilk öğe `path`).
+    /// All sources (several in a batch; the first is `path`).
     paths: Vec<PathBuf>,
     mode: Mode,
     name: String,
     detail: String,
-    /// Şifreli dosyada başlık özeti (algoritma, bellek, içerik türü).
+    /// Header summary of an encrypted file (algorithm, memory, content type).
     summary: Option<String>,
 }
 
@@ -67,35 +67,35 @@ pub struct App {
     show_advanced: bool,
     error: Option<String>,
     job: Option<Receiver<JobResult>>,
-    /// Kesinti tr("İptal", "Cancel") düğmesinden mi geldi (sinyal değil → pencere kapanmaz).
+    /// Whether the interruption came from the Cancel button (not a signal → the window stays open).
     cancel_requested: bool,
-    /// Seçili anahtar dosyası.
+    /// Selected key file.
     keyfile: Option<PathBuf>,
-    /// Şifreledikten sonra orijinali güvenli sil (Gelişmiş ayarlar).
+    /// Securely delete the original after encryption (advanced settings).
     secure_delete: bool,
-    /// Parçalara bölme boyutu (MiB; 0 = kapalı).
+    /// Part size for splitting (MiB; 0 = off).
     split_mib: u64,
-    /// Şifrelemeden önce sıkıştır.
+    /// Compress before encrypting.
     compress: bool,
-    /// Hata düzeltme zarfı ekle.
+    /// Add an error-correction envelope.
     ecc: bool,
-    /// Çözmede kurtarma modu.
+    /// Recovery mode when decrypting.
     recover: bool,
-    /// Güvenli silme onayı bekleniyor (Şifrele'ye basıldı).
+    /// Waiting for secure-deletion confirmation (Encrypt was pressed).
     confirm_delete: bool,
-    /// Üretilen kelime öbeği: kullanıcı not alsın diye bir kez gösterilir (kilitli bellekte).
+    /// Generated passphrase: shown once so the user can write it down (in locked memory).
     generated: Option<lephy_sys::mem::SecretBytes>,
-    /// Açılacak dosya anahtar dosyası gerektiriyor.
+    /// The file to open needs a key file.
     keyfile_required: bool,
-    /// Son karede ölçülen içerik yüksekliği (dikey ortalama için).
+    /// Content height measured in the last frame (for vertical centring).
     content_h: f32,
-    /// Gelişmiş ayarlarda terim açıklamaları açık mı.
+    /// Whether term explanations are open in the advanced settings.
     show_help: bool,
-    /// Fiziksel bellek (MiB; bilinmiyorsa 0). Fazla büyük KDF seçenekleri kapatılır.
+    /// Physical memory (MiB; 0 if unknown). KDF options that are too large are disabled.
     ram_mib: u64,
-    /// Pencere iş sürerken kapatılmak istendi: iş durunca kapanır.
+    /// Closing the window was requested while a job runs: it closes when the job stops.
     close_after_job: bool,
-    /// İşin tahmini toplam akış baytı (0: bilinmiyor).
+    /// Estimated total stream bytes of the job (0: unknown).
     total: Arc<AtomicU64>,
     /// Encrypt to public keys instead of a password.
     use_keys: bool,
@@ -159,7 +159,7 @@ impl Default for App {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Durum geçişleri
+// State transitions
 // ---------------------------------------------------------------------------------------------
 
 impl App {
@@ -192,7 +192,7 @@ impl App {
         self.confirm.clear();
     }
 
-    /// Birden çok kaynak: hepsi aynı işleme (hepsi şifreli ya da hiçbiri) uygun olmalı.
+    /// Several sources: all must suit the same operation (all encrypted or none).
     fn set_sources(&mut self, paths: &[PathBuf]) {
         match paths {
             [] => {}
@@ -234,7 +234,7 @@ impl App {
                     };
                     src.summary = None;
                 }
-                // Toplu işte çıktı bir klasördür: her kaynak oraya ayrı bir dosya olarak yazılır.
+                // In a batch the output is a folder: each source is written there as its own file.
                 self.output = many[0].parent().map(Path::to_path_buf);
                 self.keyfile_required =
                     mode == Mode::Decrypt && many.iter().any(|p| logic::needs_keyfile(p));
@@ -362,8 +362,8 @@ impl App {
         };
         self.confirm_delete = false;
         self.confirm.clear();
-        // Önceki işten kalan iptal, iş başlamadan (UI iş parçacığında) temizlenir; böylece boyut
-        // tahmini sırasında basılan İptal kaybolmaz.
+        // A cancellation left over from the previous job is cleared before the job starts (on the UI
+        // thread), so a Cancel pressed during size estimation is not lost.
         lephy_sys::signal::reset_cancel();
         self.cancel_requested = false;
         let (tx, rx) = std::sync::mpsc::channel();
@@ -379,7 +379,7 @@ impl App {
                 .sum();
             total.store(sum, Ordering::Relaxed);
             let r = if lephy_sys::signal::interrupted() {
-                // Boyut tahmini sırasında iptal edildi: anahtar türetmeye hiç başlanmaz.
+                // Cancelled during size estimation: key derivation never starts.
                 Err(logic::describe_error(
                     &lephy_core::error::Error::Interrupted,
                 ))
@@ -422,20 +422,20 @@ impl App {
             }
         }
         if self.job.is_none() && self.cancel_requested {
-            // İptal düğmesi: bayrak temizlenir, uygulama açık kalır.
+            // Cancel button: the flag is cleared and the app stays open.
             lephy_sys::signal::reset_cancel();
             self.cancel_requested = false;
         }
     }
 
-    /// SIGINT/SIGTERM/Ctrl+C: boştaysa pencereyi kapat; iş sürüyorsa iş önce durur (tmp
-    /// temizlenir), sonra kapanır. Boşta sinyali fark etmek için düzenli yeniden çizim.
+    /// SIGINT/SIGTERM/Ctrl+C: when idle, close the window; when a job runs, the job stops first (temp
+    /// files removed), then it closes. Repaints regularly to notice a signal while idle.
     fn handle_signal(&mut self, ctx: &egui::Context) {
         if lephy_sys::signal::signalled() && !self.running() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        // Pencere kapatma isteği iş sürerken gelirse: iş iptal edilir, yarım dosya silinir,
-        // pencere ancak sonra kapanır.
+        // If a close request arrives while a job runs: the job is cancelled, the partial file deleted,
+        // and only then does the window close.
         if self.running() && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.close_after_job = true;
@@ -501,7 +501,7 @@ impl App {
     fn choose_output(&mut self) {
         let Some(cur) = &self.output else { return };
         if self.batch() {
-            // Toplu işte çıktı bir klasördür.
+            // In a batch the output is a folder.
             if let Some(p) = rfd::FileDialog::new()
                 .set_title(tr("Çıktı klasörünü seçin", "Choose the output folder"))
                 .set_directory(cur)
@@ -530,11 +530,11 @@ impl App {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Çizim
+// Drawing
 // ---------------------------------------------------------------------------------------------
 
 impl App {
-    /// Bir karede tüm arayüz.
+    /// The whole UI for one frame.
     pub fn draw(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
@@ -568,7 +568,7 @@ impl App {
                                         .color(pal.ink),
                                 );
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    // Diğer dilin adı, o dilde yazılır.
+                                    // The other language's name, written in that language.
                                     let (label, next) = match lang() {
                                         Lang::Tr => ("English", Lang::En),
                                         Lang::En => ("Türkçe", Lang::Tr),
@@ -960,7 +960,7 @@ impl App {
             self.delete_confirmation(ui, ctx, pal);
         } else if primary_button(ui, pal, label, enabled).clicked() || (submit && enabled) {
             if self.secure_delete && mode == Mode::Encrypt && !self.use_keys {
-                // Geri alınamaz adım: önce açık onay.
+                // Irreversible step: explicit confirmation first.
                 self.confirm_delete = true;
             } else {
                 self.start(ctx);
@@ -972,7 +972,7 @@ impl App {
         }
     }
 
-    /// Kurtarma modu seçeneği (tek dosya çözmede).
+    /// Recovery-mode option (single-file decryption).
     fn recover_option(&mut self, ui: &mut Ui, pal: Palette) {
         let before = self.recover;
         ui.checkbox(
@@ -1007,7 +1007,7 @@ impl App {
         ui.add_space(6.0);
     }
 
-    /// Güvenli silme onayı: silinecekler listelenir; yalnızca açık onayla başlar.
+    /// Secure-deletion confirmation: lists what will be deleted; starts only on explicit confirmation.
     fn delete_confirmation(&mut self, ui: &mut Ui, ctx: &egui::Context, pal: Palette) {
         let names: Vec<String> = self
             .source
@@ -1074,7 +1074,7 @@ impl App {
         }
     }
 
-    /// "Güçlü bir parola üret": 6 kelimelik öbek iki alana da yazılır ve bir kez gösterilir.
+    /// "Generate a strong password": a 6-word passphrase is written to both fields and shown once.
     fn generator(&mut self, ui: &mut Ui, pal: Palette) {
         if self.generated.is_none() {
             if link_button(
@@ -1103,8 +1103,8 @@ impl App {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 if let Some(p) = &self.generated {
-                    // Görüntülenen metin araç takımının bellek kopyasına düşer; serbest
-                    // bırakılırken sıfırlayan ayırıcı siler (THREAT-MODEL).
+                    // The displayed text ends up in the toolkit's memory copies; the zeroizing
+                    // allocator wipes them when freed (THREAT-MODEL).
                     let text = String::from_utf8_lossy(p.expose());
                     ui.label(
                         RichText::new(text.as_ref())
@@ -1128,7 +1128,7 @@ impl App {
         }
     }
 
-    /// Güç çubuğu: beş bölüm, düzeye göre dolu.
+    /// Strength bar: five segments, filled by level.
     fn strength_bar(&self, ui: &mut Ui, pal: Palette) {
         use lephy_core::strength::Level;
         let e = self.password.strength();
@@ -1214,7 +1214,7 @@ impl App {
             .map(|f| escape_display(&f.to_string_lossy()))
             .unwrap_or_default();
         let dir = if batch {
-            // Klasörün kendisi: her öğe içine ayrı bir dosya olarak yazılır.
+            // The folder itself: each item is written into it as its own file.
             escape_display(&logic::short_dir(out))
         } else {
             out.parent()
@@ -1316,7 +1316,7 @@ impl App {
                     .color(pal.muted)
                     .size(13.0),
                 );
-                // Fiziksel belleğin %75'ini aşan seçenek sunulmaz (CLI'deki bütçe kuralı).
+                // Options above 75 % of physical memory are not offered (the CLI budget rule).
                 let fits = |m: u32| self.ram_mib == 0 || u64::from(m) * 4 <= self.ram_mib * 3;
                 let opts = KDF_PRESETS.map(|(m, t, e)| (m, tr(t, e), fits(m)));
                 segmented(ui, pal, &mut self.kdf_mib, &opts);
@@ -1356,7 +1356,7 @@ impl App {
                         (0, tr("Kapalı", "Off"), true),
                         (100, "100 MB", true),
                         (1024, "1 GB", true),
-                        // FAT32 dosya sınırı 4 GiB − 1 bayt.
+                        // FAT32 file limit is 4 GiB − 1 byte.
                         (4095, tr("FAT32 (4 GB)", "FAT32 (4 GB)"), true),
                     ],
                 );
@@ -1970,7 +1970,7 @@ impl eframe::App for App {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Düğmeler
+// Buttons
 // ---------------------------------------------------------------------------------------------
 
 fn focus_ring(ui: &Ui, resp: &Response, rect: Rect, pal: Palette) {
@@ -1984,7 +1984,7 @@ fn focus_ring(ui: &Ui, resp: &Response, rect: Rect, pal: Palette) {
     }
 }
 
-/// Tam genişlikte birincil düğme.
+/// Full-width primary button.
 fn primary_button(ui: &mut Ui, pal: Palette, text: &str, enabled: bool) -> Response {
     let sense = if enabled {
         Sense::click()
@@ -2019,7 +2019,7 @@ fn primary_button(ui: &mut Ui, pal: Palette, text: &str, enabled: bool) -> Respo
     }
 }
 
-/// Çerçeveli ikincil düğme.
+/// Framed secondary button.
 fn secondary_button(ui: &mut Ui, pal: Palette, text: &str, w: f32, h: f32) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
     resp.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, text));
@@ -2047,7 +2047,7 @@ fn secondary_button(ui: &mut Ui, pal: Palette, text: &str, w: f32, h: f32) -> Re
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// Bölümlü seçim (radyo grubu). Seçenek: (değer, ad, etkin mi).
+/// Segmented choice (radio group). Option: (value, name, enabled).
 fn segmented<T: PartialEq + Copy>(
     ui: &mut Ui,
     pal: Palette,
@@ -2128,7 +2128,7 @@ fn segmented<T: PartialEq + Copy>(
     }
 }
 
-/// Daire içinde "?" düğmesi.
+/// "?" button in a circle.
 fn help_button(ui: &mut Ui, pal: Palette, open: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
     resp.widget_info(|| {
@@ -2167,7 +2167,7 @@ fn help_button(ui: &mut Ui, pal: Palette, open: bool) -> Response {
         ))
 }
 
-/// Terim açıklamaları.
+/// Term explanations.
 fn help_card(ui: &mut Ui, pal: Palette) {
     const TERMS: [(&str, &str, &str, &str); 5] = [
         (
@@ -2223,7 +2223,7 @@ fn help_card(ui: &mut Ui, pal: Palette) {
     ui.add_space(8.0);
 }
 
-/// Çerçevesiz metin düğmesi (vurgu renginde).
+/// Frameless text button (in the accent colour).
 fn link_button(ui: &mut Ui, pal: Palette, text: &str) -> Response {
     ui.add(
         egui::Button::new(RichText::new(text).color(pal.accent).size(14.0))
@@ -2234,7 +2234,7 @@ fn link_button(ui: &mut Ui, pal: Palette, text: &str) -> Response {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Çizgi ikonlar
+// Line icons
 // ---------------------------------------------------------------------------------------------
 
 fn arc(c: Pos2, r: f32, from: f32, to: f32) -> Vec<Pos2> {
@@ -2247,7 +2247,7 @@ fn arc(c: Pos2, r: f32, from: f32, to: f32) -> Vec<Pos2> {
         .collect()
 }
 
-/// Asma kilit: gövde + kemer. `s` ölçek (1.0 ≈ 40 px).
+/// Padlock: body + shackle. `s` is the scale (1.0 ≈ 40 px).
 fn draw_lock(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
     let w = 2.0 * s.max(0.8);
     let body = Rect::from_center_size(c + vec2(0.0, 6.0 * s), vec2(26.0 * s, 20.0 * s));
@@ -2267,7 +2267,7 @@ fn draw_lock(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
     p.circle_filled(body.center() + vec2(0.0, -s), 2.2 * s, color);
 }
 
-/// Belge: köşesi kıvrık sayfa.
+/// Document: page with a folded corner.
 fn draw_doc(p: &egui::Painter, c: Pos2, color: Color32) {
     let r = Rect::from_center_size(c, vec2(16.0, 21.0));
     let f = 5.0;
@@ -2291,7 +2291,7 @@ fn draw_doc(p: &egui::Painter, c: Pos2, color: Color32) {
     ));
 }
 
-/// Klasör: sekmeli gövde.
+/// Folder: body with a tab.
 fn draw_folder(p: &egui::Painter, c: Pos2, color: Color32) {
     let r = Rect::from_center_size(c + vec2(0.0, 1.0), vec2(22.0, 16.0));
     let st = Stroke::new(1.6, color);
@@ -2307,7 +2307,7 @@ fn draw_folder(p: &egui::Painter, c: Pos2, color: Color32) {
     p.add(egui::Shape::line(pts, st));
 }
 
-/// Daire içinde onay işareti.
+/// Check mark in a circle.
 fn draw_check(p: &egui::Painter, c: Pos2, color: Color32) {
     p.circle_stroke(c, 24.0, Stroke::new(2.0, color));
     p.add(egui::Shape::line(
@@ -2343,7 +2343,7 @@ mod tests {
         frame(&ctx, &mut app);
         app.set_source(&d.join("a.txt"));
         assert_eq!(app.mode(), Some(Mode::Encrypt));
-        assert!(!app.can_start(), "parola olmadan başlamamalı");
+        assert!(!app.can_start(), "must not start without a password");
         app.show_advanced = true;
         app.error = Some("Örnek hata.".into());
         for _ in 0..2 {
@@ -2376,7 +2376,7 @@ mod tests {
         app.show_keygen = true;
         app.created_pub = Some("lphy1example".into());
         frame(&ctx, &mut app);
-        assert!(!app.can_start(), "anahtar yokken başlamamalı");
+        assert!(!app.can_start(), "must not start without a key");
         app.show_keygen = false;
         let pk = crate::logic::create_identity(
             &d.join("me.lphykey"),
@@ -2389,7 +2389,7 @@ mod tests {
         assert!(app.can_start());
         app.recipients_text.push_str("lphy1bozuk\n");
         frame(&ctx, &mut app);
-        assert!(!app.can_start(), "geçersiz anahtarla başlamamalı");
+        assert!(!app.can_start(), "must not start with an invalid key");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

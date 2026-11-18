@@ -1,12 +1,12 @@
-//! Birim ve fiziksel disk kimliği. `lephy-usb` kullanır.
+//! Volume and physical-disk identity. Used by `lephy-usb`.
 //!
-//! - [`device_id`]: yolun bulunduğu birimin kimliği (Unix `st_dev`; Windows birim seri no).
-//!   Kök handle açıldıktan sonra her adımda yeniden okunur; değişirse hedef değişmiştir.
-//! - [`open_nocache`]: macOS `F_NOCACHE` ile açma (geri okuma; mevcut sayfaları boşaltmaz —
-//!   DOĞRULANMADI); diğer platformlarda düz açma.
+//! - [`device_id`]: identity of the volume holding a path (Unix `st_dev`; Windows volume serial).
+//!   Re-read at every step after the root handle is opened; if it changes, the target changed.
+//! - [`open_nocache`]: open with macOS `F_NOCACHE` (read-back; does not drop existing pages —
+//!   UNVERIFIED); a plain open on other platforms.
 //! - [`is_elevated`]: Unix `geteuid() == 0`; Windows `TokenElevation` (`--format`
-//!   yalnızca yükseltilmiş oturumda).
-//! - macOS: [`mount_source`] (`statfs.f_mntfromname`, ör. `/dev/disk4s1`).
+//!   only in an elevated session).
+//! - macOS: [`mount_source`] (`statfs.f_mntfromname`, e.g. `/dev/disk4s1`).
 //! - Windows: [`win::volume_info`] (`GetDriveTypeW`, `GetVolumeInformationW`,
 //!   `GetVolumeNameForVolumeMountPointW`, `IOCTL_STORAGE_QUERY_PROPERTY` →
 //!   `STORAGE_DEVICE_DESCRIPTOR`, `IOCTL_STORAGE_GET_DEVICE_NUMBER`), [`win::logical_drives`],
@@ -16,10 +16,10 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
-/// Yolun bulunduğu birimin kimliği.
+/// Identity of the volume holding the path.
 ///
 /// # Errors
-/// G/Ç hatası.
+/// I/O error.
 pub fn device_id(path: &Path) -> io::Result<u64> {
     #[cfg(unix)]
     {
@@ -32,16 +32,16 @@ pub fn device_id(path: &Path) -> io::Result<u64> {
     }
 }
 
-/// Önbelleği atlamaya çalışarak okumak için açar (macOS `F_NOCACHE`).
+/// Opens for reading while trying to bypass the cache (macOS `F_NOCACHE`).
 ///
 /// # Errors
-/// G/Ç hatası.
+/// I/O error.
 pub fn open_nocache(path: &Path) -> io::Result<File> {
     let f = File::open(path)?;
     #[cfg(target_os = "macos")]
     {
         use std::os::fd::AsRawFd;
-        // SAFETY: `f` açık dosya; F_NOCACHE tamsayı argüman alır, bellek işaretçisi almaz.
+        // SAFETY: `f` is an open file; F_NOCACHE takes an integer argument, no memory pointer.
         let rc = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_NOCACHE, 1) };
         if rc == -1 {
             return Err(io::Error::last_os_error());
@@ -50,12 +50,12 @@ pub fn open_nocache(path: &Path) -> io::Result<File> {
     Ok(f)
 }
 
-/// Süreç yönetici/root yetkisiyle mi çalışıyor.
+/// Whether the process runs with administrator/root rights.
 #[must_use]
 pub fn is_elevated() -> bool {
     #[cfg(unix)]
     {
-        // SAFETY: geteuid argüman almaz, her zaman başarılıdır.
+        // SAFETY: geteuid takes no argument and always succeeds.
         unsafe { libc::geteuid() == 0 }
     }
     #[cfg(windows)]
@@ -64,18 +64,18 @@ pub fn is_elevated() -> bool {
     }
 }
 
-/// macOS: birimin bağlama kaynağı (`/dev/diskXsY`).
+/// macOS: the volume's mount source (`/dev/diskXsY`).
 ///
 /// # Errors
-/// G/Ç hatası.
+/// I/O error.
 #[cfg(target_os = "macos")]
 pub fn mount_source(path: &Path) -> io::Result<String> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "yolda NUL"))?;
-    // SAFETY: statfs düz C struct'ı; sıfır başlangıç geçerli.
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))?;
+    // SAFETY: statfs is a plain C struct; zero initialisation is valid.
     let mut st: libc::statfs = unsafe { core::mem::zeroed() };
-    // SAFETY: `c` NUL sonlu; `st` geçerli ve yazılabilir.
+    // SAFETY: `c` is NUL terminated; `st` is valid and writable.
     if unsafe { libc::statfs(c.as_ptr(), &raw mut st) } != 0 {
         return Err(io::Error::last_os_error());
     }
@@ -88,7 +88,7 @@ pub fn mount_source(path: &Path) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// Windows birim/disk sorguları.
+/// Windows volume/disk queries.
 #[cfg(windows)]
 pub mod win {
     use std::io;
@@ -113,7 +113,7 @@ pub mod win {
     use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-    /// `GetDriveTypeW` değeri: çıkarılabilir sürücü.
+    /// `GetDriveTypeW` value: removable drive.
     pub const DRIVE_REMOVABLE: u32 = 2;
     /// `STORAGE_BUS_TYPE`: USB.
     pub const BUS_TYPE_USB: i32 = 7;
@@ -131,20 +131,20 @@ pub mod win {
             .into_owned()
     }
 
-    /// Bir sürücü kökünün (`E:\`) birim ve fiziksel disk bilgisi.
+    /// Volume and physical-disk information of a drive root (`E:\`).
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct VolumeInfo {
-        /// Kök (`E:\`).
+        /// Root (`E:\`).
         pub root: PathBuf,
         /// `GetDriveTypeW`.
         pub drive_type: u32,
-        /// Birim etiketi.
+        /// Volume label.
         pub label: String,
-        /// Dosya sistemi adı (`FAT32`, `exFAT`, `NTFS`).
+        /// File-system name (`FAT32`, `exFAT`, `NTFS`).
         pub fs_name: String,
-        /// Birim seri no (biçimlendirmede değişir).
+        /// Volume serial number (changes on format).
         pub volume_serial: u32,
-        /// Toplam bayt.
+        /// Total bytes.
         pub total_bytes: u64,
         /// `\\?\Volume{GUID}\`.
         pub guid_path: String,
@@ -152,20 +152,20 @@ pub mod win {
         pub bus_type: i32,
         /// `STORAGE_DEVICE_DESCRIPTOR.RemovableMedia`.
         pub removable_media: bool,
-        /// Aygıt seri numarası (boş olabilir — Windows.ta reddedilir).
+        /// Device serial number (may be empty — refused on Windows).
         pub serial: String,
-        /// Üretici + ürün.
+        /// Vendor + product.
         pub product: String,
-        /// `STORAGE_DEVICE_NUMBER.DeviceNumber` (fiziksel disk no).
+        /// `STORAGE_DEVICE_NUMBER.DeviceNumber` (physical disk number).
         pub device_number: u32,
-        /// Bölüm no.
+        /// Partition number.
         pub partition_number: u32,
     }
 
-    /// Mevcut sürücü kökleri (`A:\` … `Z:\`).
+    /// Existing drive roots (`A:\` … `Z:\`).
     #[must_use]
     pub fn logical_drives() -> Vec<PathBuf> {
-        // SAFETY: argüman almaz.
+        // SAFETY: takes no argument.
         let mask = unsafe { GetLogicalDrives() };
         (0u8..26)
             .filter(|i| mask & (1 << i) != 0)
@@ -173,15 +173,15 @@ pub mod win {
             .collect()
     }
 
-    /// `GetSystemDirectoryW` (ör. `C:\Windows\System32`). Harici araçlar bu mutlak yoldan
-    /// çağrılır, PATH kullanılmaz.
+    /// `GetSystemDirectoryW` (e.g. `C:\Windows\System32`). External tools are called from this
+    /// absolute path; PATH is not used.
     ///
     /// # Errors
-    /// G/Ç hatası.
+    /// I/O error.
     pub fn system_directory() -> io::Result<PathBuf> {
         let mut buf = vec![0u16; 260];
         let len = u32::try_from(buf.len()).unwrap_or(260);
-        // SAFETY: `buf` `len` wchar'lık geçerli tampon.
+        // SAFETY: `buf` is a valid buffer of `len` wchars.
         let n = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), len) };
         if n == 0 || n >= len {
             return Err(io::Error::last_os_error());
@@ -189,22 +189,22 @@ pub mod win {
         Ok(PathBuf::from(from_wide(&buf)))
     }
 
-    /// Süreç token'ı yükseltilmiş mi.
+    /// Whether the process token is elevated.
     #[must_use]
     pub fn is_elevated() -> bool {
         let mut token: HANDLE = core::ptr::null_mut();
-        // SAFETY: sahte süreç handle'ı; argüman almaz.
+        // SAFETY: pseudo process handle; takes no argument.
         let me = unsafe { GetCurrentProcess() };
-        // SAFETY: `me` geçerli; `token` geçerli çıktı işaretçisi.
+        // SAFETY: `me` is valid; `token` is a valid output pointer.
         if unsafe { OpenProcessToken(me, TOKEN_QUERY, &raw mut token) } == 0 {
             return false;
         }
-        // SAFETY: `token` OpenProcessToken'dan gelen, sahipliği bize ait geçerli handle.
+        // SAFETY: `token` is a valid handle from OpenProcessToken that we own.
         let token = unsafe { OwnedHandle::from_raw_handle(token) };
         let mut elev = TOKEN_ELEVATION { TokenIsElevated: 0 };
         let mut ret: u32 = 0;
         let size = u32::try_from(size_of::<TOKEN_ELEVATION>()).unwrap_or(4);
-        // SAFETY: `token` geçerli; `elev` `size` baytlık yazılabilir alan; `ret` geçerli çıktı.
+        // SAFETY: `token` is valid; `elev` has `size` writable bytes; `ret` is a valid output.
         let ok = unsafe {
             GetTokenInformation(
                 token.as_raw_handle(),
@@ -217,15 +217,15 @@ pub mod win {
         ok != 0 && elev.TokenIsElevated != 0
     }
 
-    /// Birim seri numarası.
+    /// Volume serial number.
     ///
     /// # Errors
-    /// G/Ç hatası.
+    /// I/O error.
     pub fn volume_serial(path: &Path) -> io::Result<u32> {
         let root = volume_root_of(path)?;
         let w = wide(&root);
         let mut serial: u32 = 0;
-        // SAFETY: `w` NUL sonlu; yalnızca seri no çıktısı istenir, diğerleri NULL/0.
+        // SAFETY: `w` is NUL terminated; only the serial output is requested, the others NULL/0.
         let ok = unsafe {
             GetVolumeInformationW(
                 w.as_ptr(),
@@ -249,27 +249,27 @@ pub mod win {
         let w = wide(path);
         let mut root = vec![0u16; 261];
         let len = u32::try_from(root.len()).unwrap_or(260);
-        // SAFETY: `w` NUL sonlu; `root` `len` wchar'lık geçerli tampon.
+        // SAFETY: `w` is NUL terminated; `root` is a valid buffer of `len` wchars.
         if unsafe { GetVolumePathNameW(w.as_ptr(), root.as_mut_ptr(), len) } == 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(PathBuf::from(from_wide(&root)))
     }
 
-    /// `\\.\E:` aygıt handle'ı (erişim 0: yalnızca IOCTL sorguları).
+    /// `\\.\E:` device handle (access 0: IOCTL queries only).
     fn open_device(root: &Path) -> io::Result<OwnedHandle> {
         let s = root.to_string_lossy();
         let letter = s
             .chars()
             .next()
             .filter(char::is_ascii_alphabetic)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "sürücü harfi yok"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no drive letter"))?;
         let dev: Vec<u16> = format!("\\\\.\\{letter}:")
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
-        let _ = GENERIC_READ; // bilinçli olarak kullanılmıyor: erişim 0 yeterli
-        // SAFETY: `dev` NUL sonlu; erişim 0, paylaşım okuma/yazma, OPEN_EXISTING; şablon NULL.
+        let _ = GENERIC_READ; // deliberately unused: access 0 is enough
+        // SAFETY: `dev` is NUL terminated; access 0, read/write sharing, OPEN_EXISTING; template NULL.
         let h = unsafe {
             CreateFileW(
                 dev.as_ptr(),
@@ -284,7 +284,7 @@ pub mod win {
         if h == INVALID_HANDLE_VALUE || h.is_null() {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: `h` CreateFileW'den gelen geçerli, sahipliği bize ait handle.
+        // SAFETY: `h` is a valid handle from CreateFileW that we own.
         Ok(unsafe { OwnedHandle::from_raw_handle(h) })
     }
 
@@ -307,7 +307,7 @@ pub mod win {
         product: String,
     }
 
-    /// `IOCTL_STORAGE_QUERY_PROPERTY` → `STORAGE_DEVICE_DESCRIPTOR` + dizgiler.
+    /// `IOCTL_STORAGE_QUERY_PROPERTY` → `STORAGE_DEVICE_DESCRIPTOR` + strings.
     fn storage_descriptor(dev: &OwnedHandle) -> io::Result<Descriptor> {
         let query = STORAGE_PROPERTY_QUERY {
             PropertyId: StorageDeviceProperty,
@@ -318,8 +318,8 @@ pub mod win {
         let mut ret: u32 = 0;
         let qlen = u32::try_from(size_of::<STORAGE_PROPERTY_QUERY>()).unwrap_or(12);
         let blen = u32::try_from(buf.len()).unwrap_or(1024);
-        // SAFETY: `dev` geçerli handle; `query` `qlen` baytlık giriş; `buf` `blen` baytlık
-        // yazılabilir çıktı; `ret` geçerli çıktı; overlapped NULL (eşzamanlı).
+        // SAFETY: `dev` is a valid handle; `query` is `qlen` bytes of input; `buf` is `blen` bytes
+        // of writable output; `ret` is a valid output; overlapped NULL (synchronous).
         let ok = unsafe {
             DeviceIoControl(
                 dev.as_raw_handle(),
@@ -336,10 +336,10 @@ pub mod win {
             return Err(io::Error::last_os_error());
         }
         if (ret as usize) < size_of::<STORAGE_DEVICE_DESCRIPTOR>() {
-            return Err(io::Error::other("STORAGE_DEVICE_DESCRIPTOR kısa"));
+            return Err(io::Error::other("STORAGE_DEVICE_DESCRIPTOR too short"));
         }
         buf.truncate(ret as usize);
-        // SAFETY: `buf` en az `size_of::<STORAGE_DEVICE_DESCRIPTOR>()` bayt; hizasız okuma.
+        // SAFETY: `buf` holds at least `size_of::<STORAGE_DEVICE_DESCRIPTOR>()` bytes; unaligned read.
         let desc: STORAGE_DEVICE_DESCRIPTOR =
             unsafe { core::ptr::read_unaligned(buf.as_ptr().cast()) };
         let vendor = c_string_at(&buf, desc.VendorIdOffset);
@@ -361,7 +361,7 @@ pub mod win {
         };
         let mut ret: u32 = 0;
         let nlen = u32::try_from(size_of::<STORAGE_DEVICE_NUMBER>()).unwrap_or(12);
-        // SAFETY: `dev` geçerli; giriş yok; `num` `nlen` baytlık yazılabilir çıktı.
+        // SAFETY: `dev` is valid; no input; `num` is `nlen` bytes of writable output.
         let ok = unsafe {
             DeviceIoControl(
                 dev.as_raw_handle(),
@@ -380,20 +380,20 @@ pub mod win {
         Ok(num)
     }
 
-    /// Bir sürücü kökünün tam bilgisi.
+    /// Full information about a drive root.
     ///
     /// # Errors
-    /// G/Ç hatası (sürücü yok, erişim reddi, IOCTL desteklenmiyor).
+    /// I/O error (no drive, access denied, IOCTL not supported).
     pub fn volume_info(root: &Path) -> io::Result<VolumeInfo> {
         let w = wide(root);
-        // SAFETY: `w` NUL sonlu.
+        // SAFETY: `w` is NUL terminated.
         let drive_type = unsafe { GetDriveTypeW(w.as_ptr()) };
         let mut label = vec![0u16; 262];
         let mut fs = vec![0u16; 64];
         let mut serial: u32 = 0;
         let label_len = u32::try_from(label.len()).unwrap_or(261);
         let fs_len = u32::try_from(fs.len()).unwrap_or(63);
-        // SAFETY: `w` NUL sonlu; `label`/`fs` belirtilen uzunlukta geçerli tamponlar.
+        // SAFETY: `w` is NUL terminated; `label`/`fs` are valid buffers of the given length.
         let ok = unsafe {
             GetVolumeInformationW(
                 w.as_ptr(),
@@ -411,7 +411,7 @@ pub mod win {
         }
         let mut guid = vec![0u16; 64];
         let guid_len = u32::try_from(guid.len()).unwrap_or(63);
-        // SAFETY: `w` NUL sonlu ve `\` ile biten kök; `guid` geçerli tampon.
+        // SAFETY: `w` is NUL terminated and a root ending in `\`; `guid` is a valid buffer.
         if unsafe { GetVolumeNameForVolumeMountPointW(w.as_ptr(), guid.as_mut_ptr(), guid_len) }
             == 0
         {
@@ -420,7 +420,7 @@ pub mod win {
         let mut avail: u64 = 0;
         let mut total: u64 = 0;
         let mut free: u64 = 0;
-        // SAFETY: `w` NUL sonlu; üç çıktı geçerli.
+        // SAFETY: `w` is NUL terminated; the three outputs are valid.
         if unsafe { GetDiskFreeSpaceExW(w.as_ptr(), &raw mut avail, &raw mut total, &raw mut free) }
             == 0
         {

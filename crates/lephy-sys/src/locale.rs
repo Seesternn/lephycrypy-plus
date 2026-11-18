@@ -1,10 +1,9 @@
-//! Kullanıcının tercih ettiği arayüz dili (yalnızca dil kodu, ör. "tr", "en").
+//! The user's preferred UI language (language code only, e.g. "tr", "en").
 //!
-//! macOS: `CFLocaleCopyPreferredLanguages` listesinin ilk öğesi. Windows:
-//! `GetUserDefaultUILanguage` birincil dil kimliği. Diğer platformlar: `None`. Ortam değişkeni
-//! okunmaz.
+//! macOS: the first item of `CFLocaleCopyPreferredLanguages`. Windows: the primary language of
+//! `GetUserDefaultUILanguage`. Other platforms: `None`. Environment variables are not read.
 
-/// Tercih edilen dilin küçük harfli ISO 639-1 kodu; bilinmiyorsa `None`.
+/// Lowercase ISO 639-1 code of the preferred language; `None` if unknown.
 #[must_use]
 pub fn preferred_language() -> Option<String> {
     imp::preferred_language()
@@ -33,30 +32,30 @@ mod imp {
     const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
 
     pub(super) fn preferred_language() -> Option<String> {
-        // SAFETY: argümansız; sahiplik bizdedir (Copy kuralı), aşağıda CFRelease ile bırakılır.
+        // SAFETY: no arguments; we own the result (Copy rule) and release it with CFRelease below.
         let arr = unsafe { CFLocaleCopyPreferredLanguages() };
         if arr.is_null() {
             return None;
         }
         let out = first_code(arr);
-        // SAFETY: `arr` yukarıdaki Copy çağrısından gelen, henüz bırakılmamış geçerli nesne.
+        // SAFETY: `arr` is the valid object from the Copy call above, not yet released.
         unsafe { CFRelease(arr) };
         out
     }
 
     fn first_code(arr: *const c_void) -> Option<String> {
-        // SAFETY: `arr` geçerli bir CFArray.
+        // SAFETY: `arr` is a valid CFArray.
         if unsafe { CFArrayGetCount(arr) } < 1 {
             return None;
         }
-        // SAFETY: indeks 0 < sayı; dönen değer dizinin sahipliğindedir (Get kuralı), bırakılmaz.
+        // SAFETY: index 0 < count; the returned value is owned by the array (Get rule), not released.
         let s = unsafe { CFArrayGetValueAtIndex(arr, 0) };
         if s.is_null() {
             return None;
         }
         let mut buf = [0 as c_char; 64];
         let len = CFIndex::try_from(buf.len()).ok()?;
-        // SAFETY: `s` geçerli bir CFString; `buf` `len` baytlık yazılabilir tampon.
+        // SAFETY: `s` is a valid CFString; `buf` is a writable buffer of `len` bytes.
         let ok = unsafe { CFStringGetCString(s, buf.as_mut_ptr(), len, K_CF_STRING_ENCODING_UTF8) };
         if ok == 0 {
             return None;
@@ -83,7 +82,7 @@ mod imp {
     use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
 
     pub(super) fn preferred_language() -> Option<String> {
-        // SAFETY: argümansız Win32 çağrısı; LANGID döner.
+        // SAFETY: Win32 call without arguments; returns a LANGID.
         let id = unsafe { GetUserDefaultUILanguage() };
         let code = match id & 0x3ff {
             0x1f => "tr",
@@ -106,7 +105,7 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
-    #[cfg_attr(miri, ignore = "FFI; Miri'de çalışmaz")]
+    #[cfg_attr(miri, ignore = "FFI; does not run under Miri")]
     #[test]
     fn language_code_is_lowercase_letters() {
         if let Some(c) = super::preferred_language() {

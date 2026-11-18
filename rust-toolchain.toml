@@ -1,4 +1,4 @@
-# I4: sabit toolchain. MSRV README'de. Miri işi ci.yml'de ayrı tarihli nightly kullanır.
+# Pinned toolchain. MSRV in the README. The Miri job in ci.yml uses a separate dated nightly.
 [toolchain]
 channel = "1.95.0"
 components = ["rustfmt", "clippy"]

@@ -1,17 +1,17 @@
-//! PADMÉ dolgu (FORMAT.md › PADMÉ).
+//! PADMÉ padding (FORMAT.md › PADMÉ).
 //!
 //! `P(L)`: `E = floor(log2 L)`, `S = floor(log2 E) + 1`, `z = E − S`, `m = 2^z − 1`,
 //! `P(L) = (L + m) & !m` (L < 2 → L).
-//! - Ham akış (`content_type = 0`, padded): düz metin `[u64 LE L][veri][sıfır]`, toplam
-//!   `P(L + 8)`; L baştan bilinmelidir. Okuma sırasında dosya L'den farklı bayt verirse → kod 1.
-//! - Arşiv: END sonrası sıfır dolgu, toplam `P(END'e kadar yazılan)`.
-//! - Okuyucu: sıfır olmayan dolgu baytı ya da toplam uzunluk uyuşmazlığı → kod 4.
+//! - Raw stream (`content_type = 0`, padded): plaintext `[u64 LE L][data][zeros]`, total
+//!   `P(L + 8)`; L must be known in advance. If the file yields a different number of bytes than L while reading → code 1.
+//! - Archive: zero padding after END, total `P(bytes written up to END)`.
+//! - Reader: a non-zero padding byte or a total-length mismatch → code 4.
 
 use std::io::{self, Read, Write};
 
 use crate::error::FormatViolation;
 
-/// PADMÉ hedef uzunluğu; `u64` taşarsa `None` (saldırgan denetimli uzunluklar için).
+/// PADMÉ target length; `None` if it overflows `u64` (for attacker-controlled lengths).
 #[must_use]
 pub const fn padme_checked(len: u64) -> Option<u64> {
     if len < 2 {
@@ -27,8 +27,8 @@ pub const fn padme_checked(len: u64) -> Option<u64> {
     }
 }
 
-/// PADMÉ hedef uzunluğu. Yalnızca kendi ürettiğimiz (dosya sistemi kaynaklı) uzunluklar için;
-/// taşma durumunda `u64::MAX` (pratikte erişilemez). Okuyucu tarafı [`padme_checked`] kullanır.
+/// PADMÉ target length. Only for lengths we produce ourselves (from the file system); returns
+/// `u64::MAX` on overflow (unreachable in practice). The reader side uses [`padme_checked`].
 #[must_use]
 pub const fn padme(len: u64) -> u64 {
     match padme_checked(len) {
@@ -37,7 +37,7 @@ pub const fn padme(len: u64) -> u64 {
     }
 }
 
-/// Ham akış dolgulayıcı: `[u64 LE L][veri][sıfır]`; `inner` tam `len` bayt vermezse hata (kod 1).
+/// Raw-stream padder: `[u64 LE L][data][zeros]`; an error (code 1) if `inner` does not yield exactly `len` bytes.
 pub struct RawPadReader<R: Read> {
     inner: R,
     len: u64,
@@ -49,7 +49,7 @@ pub struct RawPadReader<R: Read> {
 }
 
 impl<R: Read> RawPadReader<R> {
-    /// `len`: kaynağın baştan bilinen uzunluğu.
+    /// `len`: the source length, known in advance.
     #[must_use]
     pub fn new(inner: R, len: u64) -> Self {
         Self {
@@ -63,7 +63,7 @@ impl<R: Read> RawPadReader<R> {
         }
     }
 
-    /// Toplam düz metin uzunluğu `P(L + 8)`.
+    /// Total plaintext length `P(L + 8)`.
     #[must_use]
     pub const fn padded_len(&self) -> u64 {
         self.total
@@ -88,22 +88,22 @@ impl<R: Read> Read for RawPadReader<R> {
             let n = self.inner.read(&mut out[..want])?;
             if n == 0 {
                 return Err(io::Error::other(
-                    "kaynak dosya okuma sırasında küçüldü (PADMÉ uzunluğu baştan sabit)",
+                    "the source file shrank while being read (the PADMÉ length is fixed in advance)",
                 ));
             }
             self.body_read += n as u64;
             self.emitted += n as u64;
             return Ok(n);
         }
-        // Kaynak büyüdü mü? Bir bayt daha okumayı dene.
+        // Did the source grow? Try to read one more byte.
         if self.body_read == self.len {
             let mut probe = [0u8; 1];
             if self.inner.read(&mut probe)? != 0 {
                 return Err(io::Error::other(
-                    "kaynak dosya okuma sırasında büyüdü (PADMÉ uzunluğu baştan sabit)",
+                    "the source file grew while being read (the PADMÉ length is fixed in advance)",
                 ));
             }
-            self.body_read += 1; // probe yapıldı işareti
+            self.body_read += 1; // marks that the probe was done
         }
         let remaining = self.total - self.emitted;
         if remaining == 0 {
@@ -116,21 +116,21 @@ impl<R: Read> Read for RawPadReader<R> {
     }
 }
 
-/// Ham akış dolgu çözücü (`Write` adaptörü): `[u64 LE L]` okur, `L` baytı `inner`'a yazar, kalan
-/// baytların sıfır olduğunu ve toplamın `P(L + 8)` olduğunu doğrular ([`finish`](Self::finish)).
+/// Raw-stream unpadder (`Write` adapter): reads `[u64 LE L]`, writes `L` bytes to `inner` and checks
+/// that the remaining bytes are zero and the total is `P(L + 8)` ([`finish`](Self::finish)).
 pub struct RawPadWriter<W: Write> {
     inner: W,
     header: [u8; 8],
     header_pos: usize,
     len: u64,
-    /// `P(L + 8)`; önek tamamlanınca kontrollü hesaplanır.
+    /// `P(L + 8)`; computed with overflow checks once the prefix is complete.
     expected_total: u64,
     written: u64,
     total_seen: u64,
 }
 
 impl<W: Write> RawPadWriter<W> {
-    /// Kurar.
+    /// Builds it.
     pub fn new(inner: W) -> Self {
         Self {
             inner,
@@ -143,16 +143,16 @@ impl<W: Write> RawPadWriter<W> {
         }
     }
 
-    /// Akış bitince: toplam uzunluk `P(L + 8)` olmalı. Döner: düz metin uzunluğu `L`.
+    /// At the end of the stream the total length must be `P(L + 8)`. Returns the plaintext length `L`.
     ///
     /// # Errors
-    /// Biçim ihlali (kod 4) ya da `L` okunmadı.
+    /// Format violation (code 4), or `L` was not read.
     pub fn finish(mut self) -> io::Result<(W, u64)> {
         if self.header_pos < 8 {
-            return Err(FormatViolation::io("PADMÉ uzunluk öneki eksik"));
+            return Err(FormatViolation::io("PADMÉ length prefix missing"));
         }
         if self.total_seen != self.expected_total {
-            return Err(FormatViolation::io("PADMÉ toplam uzunluk uyuşmuyor"));
+            return Err(FormatViolation::io("PADMÉ total length mismatch"));
         }
         self.inner.flush()?;
         Ok((self.inner, self.len))
@@ -170,12 +170,12 @@ impl<W: Write> Write for RawPadWriter<W> {
             rest = &rest[n..];
             if self.header_pos == 8 {
                 self.len = u64::from_le_bytes(self.header);
-                // Saldırgan denetimli L (anahtarı bilen gönderici): taşma → biçim ihlali (kod 4).
+                // Attacker-controlled L (a sender who knows the key): overflow → format violation (code 4).
                 self.expected_total = self
                     .len
                     .checked_add(8)
                     .and_then(padme_checked)
-                    .ok_or_else(|| FormatViolation::io("PADMÉ uzunluk öneki geçersiz (taşma)"))?;
+                    .ok_or_else(|| FormatViolation::io("PADMÉ length prefix invalid (overflow)"))?;
             }
             if rest.is_empty() {
                 return Ok(buf.len());
@@ -191,11 +191,11 @@ impl<W: Write> Write for RawPadWriter<W> {
         }
         if !rest.is_empty() {
             if rest.iter().any(|&b| b != 0) {
-                return Err(FormatViolation::io("PADMÉ dolgusunda sıfır olmayan bayt"));
+                return Err(FormatViolation::io("non-zero byte in PADMÉ padding"));
             }
             self.total_seen += rest.len() as u64;
             if self.total_seen > self.expected_total {
-                return Err(FormatViolation::io("PADMÉ dolgusu beklenenden uzun"));
+                return Err(FormatViolation::io("PADMÉ padding longer than expected"));
             }
         }
         Ok(buf.len())
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn padme_values() {
-        // PADMÉ makalesi: 1024 → 1024, 1000 → 1024? (E=9,S=4,z=5,m=31 → 1024); 100 → 104 (E=6,S=3,z=3,m=7)
+        // PADMÉ paper: 1024 → 1024, 1000 → 1024 (E=9,S=4,z=5,m=31); 100 → 104 (E=6,S=3,z=3,m=7)
         assert_eq!(padme(0), 0);
         assert_eq!(padme(1), 1);
         assert_eq!(padme(8), 8);
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn overflowing_length_prefix_is_format_violation_not_panic() {
-        // Fuzz bulgusu (decrypt_known_key): L ≈ 2^64 önekinde `L + 8` taşıyordu.
+        // Fuzz finding (decrypt_known_key): with an L ≈ 2^64 prefix, `L + 8` overflowed.
         for l in [
             u64::MAX,
             u64::MAX - 7,
@@ -263,19 +263,19 @@ mod tests {
         let (_, l) = w.finish().unwrap();
         assert_eq!(l, 1000);
         assert_eq!(out, data);
-        // küçülen kaynak → hata
+        // shrinking source → error
         let mut r = RawPadReader::new(&data[..500], 1000);
         assert!(r.read_to_end(&mut Vec::new()).is_err());
-        // büyüyen kaynak → hata
+        // growing source → error
         let mut r = RawPadReader::new(&data[..], 900);
         assert!(r.read_to_end(&mut Vec::new()).is_err());
-        // sıfır olmayan dolgu → biçim ihlali
+        // non-zero padding → format violation
         let mut bad = padded.clone();
         bad[1010] = 1;
         let mut w = RawPadWriter::new(Vec::new());
         let e = w.write_all(&bad).unwrap_err();
         assert!(FormatViolation::is(&e));
-        // kısa dolgu → finish hatası
+        // short padding → finish error
         let mut w = RawPadWriter::new(Vec::new());
         w.write_all(&padded[..padded.len() - 1]).unwrap();
         assert!(FormatViolation::is(&w.finish().unwrap_err()));

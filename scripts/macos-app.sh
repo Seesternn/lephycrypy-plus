@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# macOS uygulama paketi üretir: target/macos/lephycrypy+.app (ve --dmg ile disk görüntüsü).
-# İmza ad-hoc'tur (yalnızca bu Mac'te çalıştırmak için); dağıtım için Developer ID imzası ve
-# notarization ayrıca gerekir.
+# Builds the macOS app bundle: target/macos/lephycrypy+.app (and a disk image with --dmg).
+# The signature is ad hoc (to run it on this Mac only); distribution also needs a Developer ID
+# signature and notarization.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

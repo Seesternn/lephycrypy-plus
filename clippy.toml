@@ -1,14 +1,14 @@
-# sır yolunda sıfırlanmayan tamponlar yasak (clippy disallowed_types).
+# Buffers that are not zeroized are forbidden on the secret path (clippy disallowed_types).
 disallowed-types = [
-    { path = "std::io::BufReader", reason = "iç tampon sıfırlanmaz; sır yolunda havuz tamponu kullanılır" },
-    { path = "std::io::BufWriter", reason = "iç tampon sıfırlanmaz; sır yolunda havuz tamponu kullanılır" },
-    { path = "std::io::Stdout", reason = "LineWriter sıfırlanmaz; --stdout için lephy_sys ham fd yazımı" },
-    { path = "std::io::StdoutLock", reason = "LineWriter sıfırlanmaz; --stdout için lephy_sys ham fd yazımı" },
+    { path = "std::io::BufReader", reason = "the inner buffer is not zeroized; use a pool buffer on the secret path" },
+    { path = "std::io::BufWriter", reason = "the inner buffer is not zeroized; use a pool buffer on the secret path" },
+    { path = "std::io::Stdout", reason = "LineWriter is not zeroized; use lephy_sys raw fd writes for --stdout" },
+    { path = "std::io::StdoutLock", reason = "LineWriter is not zeroized; use lephy_sys raw fd writes for --stdout" },
 ]
 disallowed-methods = [
-    # aead::Aead::encrypt/decrypt (Vec dönen) `aead/alloc` feature'ı kapalı olduğundan derlemede yoktur
-    # (Cargo.toml: aead default-features = false); CI `cargo tree -e features` ile `aead/alloc` yokluğunu denetler.
-    { path = "blake3::keyed_hash", reason = "Hasher'ı sıfırlanamaz; Hasher::new_keyed + zeroize" },
-    { path = "std::env::var", reason = "parola/sır env'den asla okunmaz" },
-    { path = "std::env::var_os", reason = "parola/sır env'den asla okunmaz; bulut kökü tespiti lephy_sys::fs üzerinden" },
+    # aead::Aead::encrypt/decrypt (returning Vec) do not exist in the build because `aead/alloc` is off
+    # (Cargo.toml: aead default-features = false); CI checks with `cargo tree -e features` that `aead/alloc` is absent.
+    { path = "blake3::keyed_hash", reason = "its Hasher cannot be zeroized; use Hasher::new_keyed + zeroize" },
+    { path = "std::env::var", reason = "passwords/secrets are never read from the environment" },
+    { path = "std::env::var_os", reason = "passwords/secrets are never read from the environment; cloud-root detection goes through lephy_sys::fs" },
 ]

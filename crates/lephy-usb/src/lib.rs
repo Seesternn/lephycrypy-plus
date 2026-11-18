@@ -1,13 +1,13 @@
-//! lephycrypy+ USB (1.1): yalnızca **çıkarılabilir USB ortamını** temizle ve yalnızca şifreli
-//! `.lphy` dosyasını yaz. `#![forbid(unsafe_code)]`; tüm FFI `lephy-sys`.
+//! lephycrypy+ USB: wipe **removable USB media** only and write only the encrypted `.lphy`
+//! file. `#![forbid(unsafe_code)]`; all FFI is in `lephy-sys`.
 //!
-//! Kurallar (hiçbiri bayrakla aşılamaz): USB veriyolu **ve** çıkarılabilir ortam; dahili/sanal/
-//! sistem birimleri reddedilir; Windows'ta seri numarası zorunlu; onay etiket
-//! **ve** GiB boyut; her adımdan önce aygıt kimliği yeniden okunur (fark → kod 5).
+//! Rules (no flag overrides any of them): USB bus **and** removable media; internal/virtual/
+//! system volumes are refused; a serial number is required on Windows; confirmation needs the
+//! label **and** the size in GiB; the device identity is re-read before every step (a difference → code 5).
 //!
-//! Gerçek donanımla doğrulanmadı: `diskutil` plist anahtarlarının bir USB bellekteki değerleri,
-//! Windows `STORAGE_DEVICE_DESCRIPTOR` alanlarının USB bellekteki değerleri, `diskutil eraseVolume`
-//! ve `Format-Volume -Path` uçtan uca davranışı (THREAT-MODEL › USB).
+//! Not verified on real hardware: the values of the `diskutil` plist keys on a USB stick, the
+//! values of the Windows `STORAGE_DEVICE_DESCRIPTOR` fields on a USB stick, and the end-to-end
+//! behaviour of `diskutil eraseVolume` and `Format-Volume -Path` (THREAT-MODEL › USB).
 
 #![forbid(unsafe_code)]
 

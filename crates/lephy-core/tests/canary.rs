@@ -1,13 +1,13 @@
-//! Kanarya taraması — yalnızca Linux (`/proc/self/maps` + `/proc/self/mem`),
-//! `test-vectors` feature'ı ile. Yöntemin sağlamlığı DOĞRULANMADI (plan); sonuçlar raporlanır.
+//! Canary scan — Linux only (`/proc/self/maps` + `/proc/self/mem`), with the `test-vectors`
+//! feature. How reliable the method is remains UNVERIFIED; the results are reported.
 //!
-//! Bilinen parola ve FK, hiçbir bitişik literal ya da heap kopyası bırakmadan çalışma anında
-//! üretilir; ardından `ops::encrypt` + `ops::decrypt` çalıştırılır ve süreç kendi okunabilir
-//! belleğini tarar.
+//! A known password and FK are produced at run time without leaving any contiguous literal or heap
+//! copy; then `ops::encrypt` + `ops::decrypt` run and the process scans its own readable
+//! memory.
 //!
-//! Beklenti: `[heap]` (glibc malloc) bölgesinde eşleşme **yok** → iddia. Yığınlar ve anonim
-//! eşlemeler (iş parçacığı yığınları, büyük ayırmalar) yalnızca raporlanır; sır envanterindeki
-//! "hayır" satırları (HKDF/SHA-2 taşıma kopyaları, yazmaç taşmaları) buralarda görünebilir.
+//! Expectation: **no** match in the `[heap]` region (glibc malloc) → asserted. Stacks and anonymous
+//! mappings (thread stacks, large allocations) are only reported; the "no" rows of the secret
+//! inventory (HKDF/SHA-2 move copies, register spills) can appear there.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -24,9 +24,9 @@ use lephy_core::kdf::KdfParams;
 use lephy_core::ops::{self, DecryptOptions, EncryptOptions, Input, Output};
 use lephy_sys::mem::SecretBytes;
 
-/// Kanarya baytı i: bitişik literal olmadan hesaplanır.
+/// Canary byte i: computed without a contiguous literal.
 fn pw_byte(i: usize) -> u8 {
-    // "lphy-canary-" + 20 küçük harf; ASCII, 32 bayt.
+    // "lphy-canary-" + 20 lowercase letters; ASCII, 32 bytes.
     const HEAD: [u8; 12] = [
         b'l' ^ 0x55,
         b'p' ^ 0x55,
@@ -55,7 +55,7 @@ fn fk_byte(i: usize) -> u8 {
 const PW_LEN: usize = 32;
 const FK_LEN: usize = 32;
 
-/// `salt`/`prefix`/`wrap_nonce` sabit, FK hesaplanmış; hiçbir şey heap'te tutulmaz.
+/// `salt`/`prefix`/`wrap_nonce` fixed, FK computed; nothing is kept on the heap.
 struct CanaryEntropy {
     calls: usize,
 }
@@ -83,8 +83,8 @@ struct Hits {
 }
 
 fn scan(needle_at: impl Fn(usize) -> u8, len: usize) -> Hits {
-    // Arama deseninin ilk 8 baytı yığında tek kopya halinde (aranan desen olarak) durur; tam
-    // eşleşme `len` bayt ister ve karşılaştırma bayt bayt yapılır, desen bellekte tutulmaz.
+    // The first 8 bytes of the search pattern sit on the stack as a single copy (as the pattern);
+    // a full match needs `len` bytes and is compared byte by byte, the pattern is not kept in memory.
     let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
     let mut mem = std::fs::File::open("/proc/self/mem").unwrap();
     let mut hits = Hits::default();
@@ -115,7 +115,7 @@ fn scan(needle_at: impl Fn(usize) -> u8, len: usize) -> Hits {
             let mut i = 0;
             while i + len <= got {
                 if buf[i] == needle_at(0) && (1..len).all(|j| buf[i + j] == needle_at(j)) {
-                    // Tarayıcının kendi tamponu (`buf`) heap'tedir; okunan kopya sayılmaz.
+                    // The scanner's own buffer (`buf`) is on the heap; the copy read is not counted.
                     let addr = off + i as u64;
                     let self_buf = buf.as_ptr() as u64;
                     if !(self_buf..self_buf + buf.len() as u64).contains(&addr) {
@@ -129,7 +129,7 @@ fn scan(needle_at: impl Fn(usize) -> u8, len: usize) -> Hits {
                 }
                 i += 1;
             }
-            // Okuma penceresi `len − 1` bayt örtüşür: sınırda bölünen eşleşme kaçmaz.
+            // The read window overlaps by `len − 1` bytes: a match split at a boundary is not missed.
             off += got.saturating_sub(len.saturating_sub(1)).max(1) as u64;
         }
     }
@@ -189,9 +189,9 @@ fn canary_not_left_in_heap_after_encrypt_and_decrypt() {
     }
     let pw_hits = scan(pw_byte, PW_LEN);
     let fk_hits = scan(fk_byte, FK_LEN);
-    eprintln!("kanarya parola: {pw_hits:?}");
-    eprintln!("kanarya FK:     {fk_hits:?}");
+    eprintln!("canary password: {pw_hits:?}");
+    eprintln!("canary FK:       {fk_hits:?}");
     let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!(pw_hits.heap, 0, "parola heap'te kaldı");
-    assert_eq!(fk_hits.heap, 0, "FK heap'te kaldı");
+    assert_eq!(pw_hits.heap, 0, "the password stayed on the heap");
+    assert_eq!(fk_hits.heap, 0, "the FK stayed on the heap");
 }

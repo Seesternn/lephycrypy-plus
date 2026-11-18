@@ -1,11 +1,11 @@
-//! macOS güvenli klavye girişi (Secure Event Input).
+//! macOS Secure Event Input.
 //!
-//! Etkinken, girdi izleme izni almış başka süreçler (ör. `CGEventTap`) tuş vuruşlarını okuyamaz;
-//! `NSSecureTextField` bunu kendiliğinden yapar, egui'nin özel parola alanı için elle açılır.
-//! Çağrılar sistem tarafında sayılır: her `Enable` bir `Disable` ile dengelenmelidir; bunu
-//! [`SecureInputGuard`] garanti eder. Diğer platformlarda no-op'tur (Windows'ta eşdeğeri yok).
+//! While it is enabled, other processes with input-monitoring permission (e.g. `CGEventTap`)
+//! cannot read keystrokes; `NSSecureTextField` does this itself, egui's custom password field
+//! enables it by hand. Calls are counted by the system: every `Enable` must be balanced by a
+//! `Disable`, which [`SecureInputGuard`] guarantees. A no-op elsewhere (Windows has no equivalent).
 
-/// Var olduğu sürece güvenli klavye girişini açık tutar.
+/// Keeps Secure Event Input enabled while it exists.
 #[derive(Debug)]
 pub struct SecureInputGuard {
     _private: (),
@@ -19,12 +19,12 @@ unsafe extern "C" {
 }
 
 impl SecureInputGuard {
-    /// Güvenli girişi açar.
+    /// Enables secure input.
     #[must_use]
     pub fn new() -> Self {
         #[cfg(target_os = "macos")]
         {
-            // SAFETY: argümansız Carbon çağrısı; sistem sayacını artırır, Drop dengeler.
+            // SAFETY: Carbon call without arguments; increments the system counter, Drop balances it.
             let _ = unsafe { EnableSecureEventInput() };
         }
         Self { _private: () }
@@ -41,7 +41,7 @@ impl Drop for SecureInputGuard {
     fn drop(&mut self) {
         #[cfg(target_os = "macos")]
         {
-            // SAFETY: argümansız Carbon çağrısı; `new` içindeki Enable ile dengelenir.
+            // SAFETY: Carbon call without arguments; balanced with the Enable in `new`.
             let _ = unsafe { DisableSecureEventInput() };
         }
     }
@@ -49,7 +49,7 @@ impl Drop for SecureInputGuard {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    #[cfg_attr(miri, ignore = "FFI; Miri'de çalışmaz")]
+    #[cfg_attr(miri, ignore = "FFI; does not run under Miri")]
     #[test]
     fn guard_is_balanced() {
         let a = super::SecureInputGuard::new();

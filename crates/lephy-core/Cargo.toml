@@ -1,6 +1,6 @@
 [package]
 name = "lephy-core"
-description = "lephycrypy+ çekirdeği: kriptografi, biçim, arşiv, pipeline (#![forbid(unsafe_code)])"
+description = "lephycrypy+ core: cryptography, format, archive, pipeline (#![forbid(unsafe_code)])"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,12 +10,11 @@ publish.workspace = true
 
 [features]
 default = []
-# Açık karar 2: zxcvbn parola gücü; sıfırlanmayan parola kopyaları bırakır, varsayılan kapalı.
-# sabit salt/nonce/FK enjeksiyonu + işaret dizgesi. YALNIZCA testler için;
-# lephy-cli/lephy-gui bu feature ile derlenmeyi `const` iddiasıyla reddeder.
+# Fixed salt/nonce/FK injection + a marker string. FOR TESTS ONLY;
+# lephy-cli/lephy-gui refuse to build with this feature through a `const` assertion.
 test-vectors = []
-# hata enjeksiyonu (pipeline ortasında panik) — YALNIZCA panik hook testi için
-# (tests/fault/panic_hook.sh). Release'te bulunmadığı CI'da işaret dizgesiyle denetlenir.
+# Fault injection (a panic in the middle of the pipeline) — ONLY for the panic-hook test
+# (tests/fault/panic_hook.sh). CI checks with a marker string that it is absent from releases.
 fault-injection = []
 
 [dependencies]
@@ -38,19 +37,19 @@ getrandom = { workspace = true }
 unicode-normalization = { workspace = true }
 crossbeam-channel = { workspace = true }
 cap-std = { workspace = true }
-# `strength` feature.ı (zxcvbn) isteğe bağlıdır.
+# The password-strength estimate is built in (no zxcvbn).
 
 [dev-dependencies]
 hex = "0.4"
-# I2: özellik tabanlı testler (yalnızca test; fork/timeout kapalı).
+# Property-based tests (tests only; fork/timeout off).
 proptest = { version = "1.12", default-features = false, features = ["std"] }
 
-# I7: deterministik vektör testleri yalnızca `test-vectors` feature'ı ile derlenir.
+# Deterministic vector tests are built only with the `test-vectors` feature.
 [[test]]
 name = "vectors"
 required-features = ["test-vectors"]
 
-# I9: kanarya taraması (yalnızca Linux; dosya `cfg(target_os = "linux")`).
+# Canary scan (Linux only; the file is `cfg(target_os = "linux")`).
 [[test]]
 name = "canary"
 required-features = ["test-vectors"]

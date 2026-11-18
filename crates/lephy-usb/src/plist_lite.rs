@@ -1,30 +1,30 @@
-//! `diskutil -plist` çıktısı için küçük XML plist ayrıştırıcısı.
+//! A small XML plist parser for `diskutil -plist` output.
 //!
-//! `plist` crate'i yerine: yalnızca `dict`, `array`, `key`, `string`,
-//! `integer`, `true`, `false` gerekir; `plist` zinciri 15+ denetlenmemiş crate getiriyordu
-//! (cargo-vet istisnalarını büyütmemek). Girdi `/usr/sbin/diskutil` çıktısıdır. Derinlik
-//! sınırlıdır (64); tanınmayan öğeler (`real`, `date`, `data`) [`Value::Other`] olarak atlanır.
-//! Varlıklar: `&amp; &lt; &gt; &quot; &apos; &#N; &#xH;`.
+//! Used instead of the `plist` crate: only `dict`, `array`, `key`, `string`, `integer`, `true`
+//! and `false` are needed; the `plist` tree brought in 15+ unaudited crates (to keep
+//! `cargo vet` exemptions small). The input is `/usr/sbin/diskutil` output. Depth is limited
+//! (64); unknown elements (`real`, `date`, `data`) are skipped as [`Value::Other`].
+//! Entities: `&amp; &lt; &gt; &quot; &apos; &#N; &#xH;`.
 
-/// Plist değeri.
+/// Plist value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
-    /// Sözlük (sıra korunur).
+    /// Dictionary (order preserved).
     Dict(Vec<(String, Value)>),
-    /// Dizi.
+    /// Array.
     Array(Vec<Value>),
-    /// Dizge.
+    /// String.
     String(String),
-    /// Tamsayı.
+    /// Integer.
     Integer(i128),
-    /// Mantıksal.
+    /// Boolean.
     Bool(bool),
-    /// Desteklenmeyen tür (`real`, `date`, `data`).
+    /// Unsupported type (`real`, `date`, `data`).
     Other,
 }
 
 impl Value {
-    /// Sözlükte anahtar.
+    /// Key in a dictionary.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Value> {
         match self {
@@ -32,7 +32,7 @@ impl Value {
             _ => None,
         }
     }
-    /// Dizge.
+    /// String.
     #[must_use]
     pub fn as_str(&self) -> Option<&str> {
         match self {
@@ -40,7 +40,7 @@ impl Value {
             _ => None,
         }
     }
-    /// Mantıksal.
+    /// Boolean.
     #[must_use]
     pub const fn as_bool(&self) -> Option<bool> {
         match self {
@@ -48,7 +48,7 @@ impl Value {
             _ => None,
         }
     }
-    /// İşaretsiz tamsayı.
+    /// Unsigned integer.
     #[must_use]
     pub fn as_u64(&self) -> Option<u64> {
         match self {
@@ -56,7 +56,7 @@ impl Value {
             _ => None,
         }
     }
-    /// Dizi.
+    /// Array.
     #[must_use]
     pub fn as_array(&self) -> Option<&[Value]> {
         match self {
@@ -64,7 +64,7 @@ impl Value {
             _ => None,
         }
     }
-    /// Sözlük mü.
+    /// Whether it is a dictionary.
     #[must_use]
     pub const fn is_dict(&self) -> bool {
         matches!(self, Value::Dict(_))
@@ -106,7 +106,7 @@ impl<'a> P<'a> {
         }
     }
 
-    /// `<ad ...>` ya da `<ad .../>` okur: (ad, kendiliğinden kapanan).
+    /// Reads `<name ...>` or `<name .../>`: (name, self-closing).
     fn open_tag(&mut self) -> Option<(&'a str, bool)> {
         self.skip_misc();
         let r = self.rest();
@@ -222,7 +222,7 @@ fn unescape(raw: &str) -> Option<String> {
     Some(out)
 }
 
-/// XML plist'i ayrıştırır. Geçersiz/beklenmeyen yapı → `None`.
+/// Parses an XML plist. Invalid/unexpected structure → `None`.
 #[must_use]
 pub fn parse(input: &[u8]) -> Option<Value> {
     let s = std::str::from_utf8(input).ok()?;
@@ -233,7 +233,7 @@ pub fn parse(input: &[u8]) -> Option<Value> {
         p.close_tag("plist")?;
         Some(v)
     } else {
-        // Sarmalayıcısız değer.
+        // A value without the plist wrapper.
         let mut p = P { s, i: 0 };
         p.value(0)
     }
@@ -284,7 +284,7 @@ mod tests {
         assert!(parse(ok.as_bytes()).is_some());
     }
 
-    /// Gerçek `diskutil` çıktısıyla (salt okunur; makine verisi depoya yazılmaz).
+    /// With real `diskutil` output (read only; machine data is not written to the repository).
     #[cfg(target_os = "macos")]
     #[test]
     fn parses_live_diskutil_output() {
@@ -293,7 +293,7 @@ mod tests {
             .output()
             .unwrap();
         assert!(out.status.success());
-        let v = parse(&out.stdout).expect("gerçek diskutil plist'i ayrıştırılmalı");
+        let v = parse(&out.stdout).expect("real diskutil plist must parse");
         assert_eq!(v.get("MountPoint").and_then(Value::as_str), Some("/"));
         assert!(v.get("BusProtocol").and_then(Value::as_str).is_some());
         assert!(v.get("TotalSize").and_then(Value::as_u64).unwrap_or(0) > 0);
@@ -302,7 +302,7 @@ mod tests {
             .args(["list", "-plist"])
             .output()
             .unwrap();
-        let v = parse(&out.stdout).expect("diskutil list -plist ayrıştırılmalı");
+        let v = parse(&out.stdout).expect("diskutil list -plist must parse");
         assert!(
             v.get("AllDisksAndPartitions")
                 .and_then(Value::as_array)

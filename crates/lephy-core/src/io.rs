@@ -1,13 +1,13 @@
-//! Atomik yazma ve tmp yönetimi.
+//! Atomic writes and temporary-file management.
 //!
-//! - Tmp adı `.lphy-tmp-<16 hex>` (macOS'ta `.noindex` sonekli; Windows'ta
-//!   `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED`), hedef dizinde, `create_new`, 0600.
+//! - Temp name `.lphy-tmp-<16 hex>` (with a `.noindex` suffix on macOS;
+//!   `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED` on Windows), in the target directory, `create_new`, 0600.
 //! - [`AtomicWriter::commit`]: `sync_all` → noclobber rename (`--force`: replace) → dizin fsync.
-//!   Noclobber desteklenmeyen FS'de `lstat` + düz rename geri dönüşü ve uyarı (yarış penceresi
-//!   THREAT-MODEL'de).
-//! - Tmp yolu panik hook'u için `lephy_sys::fs::tmp_register` ile kayda alınır; Drop'ta
-//!   (commit edilmediyse) silinir.
-//! - [`scan_stale`] / [`cleanup`]: bayat tmp'ler. [`precheck_space`]: kod 8.
+//!   On file systems without no-clobber: `lstat` + plain rename fallback with a warning (race
+//!   window: see THREAT-MODEL).
+//! - The temp path is registered for the panic hook with `lephy_sys::fs::tmp_register`; it is
+//!   deleted on Drop (if not committed).
+//! - [`scan_stale`] / [`cleanup`]: stale temp files. [`precheck_space`]: code 8.
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 use crate::entropy::{Entropy, OsEntropy};
 use crate::error::{Error, Result};
 
-/// Tmp ad öneki.
+/// Temp name prefix.
 pub const TMP_PREFIX: &str = ".lphy-tmp-";
-/// FAT32 dosya boyutu sınırı.
+/// FAT32 file-size limit.
 pub const FAT32_MAX: u64 = 4 * 1024 * 1024 * 1024 - 1;
 
 fn hex16(entropy: &mut dyn Entropy) -> Result<String> {
@@ -30,10 +30,10 @@ fn hex16(entropy: &mut dyn Entropy) -> Result<String> {
     }))
 }
 
-/// Hedef dizinde yeni tmp adı.
+/// A new temp name in the target directory.
 ///
 /// # Errors
-/// RNG hatası.
+/// RNG error.
 pub fn tmp_name(entropy: &mut dyn Entropy) -> Result<String> {
     let mut s = format!("{TMP_PREFIX}{}", hex16(entropy)?);
     if cfg!(target_os = "macos") {
@@ -42,14 +42,14 @@ pub fn tmp_name(entropy: &mut dyn Entropy) -> Result<String> {
     Ok(s)
 }
 
-/// Commit sonucu.
+/// Commit result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommitOutcome {
-    /// Noclobber desteklenmediği için kontrol-sonra-rename yoluna düşüldü (uyarı gerekir).
+    /// No-clobber was not supported, so check-then-rename was used (needs a warning).
     pub noclobber_fallback: bool,
 }
 
-/// Atomik dosya yazıcısı.
+/// Atomic file writer.
 pub struct AtomicWriter {
     file: Option<File>,
     tmp_path: PathBuf,
@@ -59,11 +59,11 @@ pub struct AtomicWriter {
 }
 
 impl AtomicWriter {
-    /// `target`'ın dizininde tmp dosyası oluşturur. Hedef varsa ve `force` değilse kod 7 — bu
-    /// denetim hem burada (erken) hem commit'te (atomik) yapılır.
+    /// Creates a temp file in `target`'s directory. If the target exists and `force` is not set:
+    /// code 7 — checked both here (early) and on commit (atomically).
     ///
     /// # Errors
-    /// Kod 7 (`Exists`), kod 1 (G/Ç).
+    /// Code 7 (`Exists`), code 1 (I/O).
     pub fn create(target: &Path, force: bool) -> Result<Self> {
         if !force && target.symlink_metadata().is_ok() {
             return Err(Error::Exists(target.display().to_string()));
@@ -80,7 +80,7 @@ impl AtomicWriter {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
         }
-        // Ad çakışmasında (16 hex) yeniden dene.
+        // Retry on a name collision (16 hex).
         let (file, tmp_path) = loop {
             let p = dir.join(tmp_name(&mut entropy)?);
             match opts.open(&p) {
@@ -100,25 +100,25 @@ impl AtomicWriter {
         })
     }
 
-    /// Yazılacak dosya.
+    /// The file being written.
     ///
     /// # Panics
-    /// Olmaz: `file` yalnızca `commit` içinde alınır.
+    /// Never: `file` is only taken inside `commit`.
     #[allow(clippy::missing_panics_doc, clippy::expect_used)]
     pub fn file(&mut self) -> &mut File {
         self.file.as_mut().expect("AtomicWriter: file")
     }
 
-    /// Tmp yolu (test/teşhis).
+    /// Temp path (tests/diagnostics).
     #[must_use]
     pub fn tmp_path(&self) -> &Path {
         &self.tmp_path
     }
 
-    /// Unix'te hedef izinlerini ayarlar (son adım); diğerlerinde no-op.
+    /// Sets the target permissions on Unix (last step); no-op elsewhere.
     ///
     /// # Errors
-    /// G/Ç.
+    /// I/O.
     pub fn set_mode(&mut self, mode: u32) -> Result<()> {
         #[cfg(unix)]
         {
@@ -130,15 +130,15 @@ impl AtomicWriter {
         Ok(())
     }
 
-    /// fsync → rename → dizin fsync.
+    /// fsync → rename → directory fsync.
     ///
     /// # Errors
-    /// Kod 7 (hedef var), kod 1.
+    /// Code 7 (target exists), code 1.
     pub fn commit(mut self, force: bool) -> Result<CommitOutcome> {
         let file = self
             .file
             .take()
-            .ok_or_else(|| Error::Environment("AtomicWriter yeniden commit".into()))?;
+            .ok_or_else(|| Error::Environment("AtomicWriter committed twice".into()))?;
         file.sync_all()?;
         drop(file);
         let mut outcome = CommitOutcome {
@@ -153,7 +153,7 @@ impl AtomicWriter {
                     return Err(Error::Exists(self.target.display().to_string()));
                 }
                 Err(lephy_sys::fs::NoclobberError::Unsupported) => {
-                    // Geri dönüş: kontrol-sonra-rename (yarış penceresi THREAT-MODEL'de).
+                    // Fallback: check-then-rename (race window: see THREAT-MODEL).
                     if self.target.symlink_metadata().is_ok() {
                         return Err(Error::Exists(self.target.display().to_string()));
                     }
@@ -184,10 +184,10 @@ impl Drop for AtomicWriter {
     }
 }
 
-/// Dizindeki bayat tmp dosyaları (`.lphy-tmp-*`, `.noindex` soneki dahil).
+/// Stale temp files in a directory (`.lphy-tmp-*`, including the `.noindex` suffix).
 ///
 /// # Errors
-/// Dizin okunamadı.
+/// The directory could not be read.
 pub fn scan_stale(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     for e in std::fs::read_dir(dir)? {
@@ -200,10 +200,10 @@ pub fn scan_stale(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// Verilen tmp yollarını siler (onay çağıranda). Silinen sayı.
+/// Deletes the given temp paths (the caller asks for confirmation). Returns the number deleted.
 ///
 /// # Errors
-/// G/Ç.
+/// I/O.
 pub fn cleanup(paths: &[PathBuf]) -> Result<usize> {
     let mut n = 0;
     for p in paths {
@@ -218,7 +218,7 @@ pub fn cleanup(paths: &[PathBuf]) -> Result<usize> {
     Ok(n)
 }
 
-/// Boş alan ve FAT32 ön kontrolü (kod 8). `needed` = tahmini çıktı boyutu.
+/// Free-space and FAT32 pre-check (code 8). `needed` = estimated output size.
 ///
 /// # Errors
 /// `Error::DiskSpace`.
@@ -228,14 +228,14 @@ pub fn precheck_space(dir: &Path, needed: u64) -> Result<()> {
         .filter(|free| *free < needed)
     {
         return Err(Error::DiskSpace(format!(
-            "~{} MiB gerekli, {} MiB boş",
+            "~{} MiB needed, {} MiB free",
             needed / 1024 / 1024,
             free / 1024 / 1024
         )));
     }
     if needed > FAT32_MAX && lephy_sys::fs::is_fat(dir).unwrap_or(false) {
         return Err(Error::DiskSpace(
-            "FAT32 birimde dosya 4 GiB'ı aşamaz".into(),
+            "a file on a FAT32 volume cannot exceed 4 GiB".into(),
         ));
     }
     Ok(())

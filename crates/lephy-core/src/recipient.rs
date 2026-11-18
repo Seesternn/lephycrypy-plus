@@ -45,7 +45,7 @@ const IDENTITY_MAGIC: &[u8; 8] = b"LPHYID1\0";
 const IDENTITY_FILE_MAX: u64 = 4096;
 
 fn arena_err(e: impl fmt::Display) -> Error {
-    Error::Environment(format!("kilitli bellek: {e}"))
+    Error::Environment(format!("locked memory: {e}"))
 }
 
 fn bad_key(detail: &str) -> Error {
@@ -174,7 +174,7 @@ fn x25519(scalar: &[u8], point: &[u8; 32]) -> Result<Zeroizing<[u8; 32]>> {
     // A low-order point gives an all-zero shared secret (RFC 7748 §6.1).
     if out.ct_eq(&[0u8; 32]).unwrap_u8() == 1 {
         return Err(Error::Corrupt {
-            at: "başlık".into(),
+            at: "header".into(),
             detail: Some("X25519 low-order point".into()),
         });
     }
@@ -290,7 +290,7 @@ pub fn wrap_for(
 fn key_ref(s: &SecretBytes) -> Result<&[u8; KEY_LEN]> {
     s.expose()
         .try_into()
-        .map_err(|_| Error::Environment("anahtar 32 bayt değil".into()))
+        .map_err(|_| Error::Environment("key is not 32 bytes".into()))
 }
 
 /// Finds the stanza for `identity` and returns the file key.
@@ -306,7 +306,7 @@ pub fn unwrap_with(
 ) -> Result<SecretBytes> {
     if ext.is_empty() || !ext.len().is_multiple_of(STANZA_LEN) {
         return Err(Error::Corrupt {
-            at: "başlık".into(),
+            at: "header".into(),
             detail: Some("recipient stanzas".into()),
         });
     }
@@ -317,8 +317,8 @@ pub fn unwrap_with(
         let nonce = &st[32..56];
         if nonce[nl..].iter().any(|&x| x != 0) {
             return Err(Error::Corrupt {
-                at: "başlık".into(),
-                detail: Some("nonce kuyruğu ≠ 0".into()),
+                at: "header".into(),
+                detail: Some("nonce tail ≠ 0".into()),
             });
         }
         let Ok(ss) = x25519(identity.secret.expose(), &eph) else {
@@ -338,7 +338,7 @@ pub fn unwrap_with(
             wrapper.open_in_place(&nonce[..nl], &wrap_aad(header, &eph), fk.expose_mut(), &tag)?;
         if ok.is_err() {
             return Err(Error::Corrupt {
-                at: "başlık".into(),
+                at: "header".into(),
                 detail: Some("recipient wrapped_fk (commit matched)".into()),
             });
         }
@@ -428,7 +428,7 @@ pub fn read_identity_file(
     log: &mut dyn FnMut(&str),
 ) -> Result<Identity> {
     let not_identity = || Error::Corrupt {
-        at: "anahtar dosyası".into(),
+        at: "identity file".into(),
         detail: Some("not an identity file".into()),
     };
     let f = std::fs::File::open(path)?;

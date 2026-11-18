@@ -1,13 +1,13 @@
-//! STREAM çerçeveleme (FORMAT.md › STREAM; B1).
+//! STREAM framing (FORMAT.md › STREAM).
 //!
-//! Nonce = `prefix || BE32(i) || last`; `XChaCha` 19+4+1 = 24, AES 7+4+1 = 12. Kanonik son chunk
-//! kuralları ve `chunk_size + 17` baytlık ileri okuma [`crate::pipeline`]'dadır; burada yalnızca
-//! nonce kurulumu ve tek chunk mühürleme/açma vardır.
+//! Nonce = `prefix || BE32(i) || last`; `XChaCha` 19+4+1 = 24, AES 7+4+1 = 12. The canonical
+//! last-chunk rules and the `chunk_size + 17`-byte read-ahead are in [`crate::pipeline`]; this module
+//! only builds nonces and seals/opens a single chunk.
 
 use crate::cipher::{AlgId, SharedCipher, TAG_LEN};
 use crate::error::Result;
 
-/// Chunk nonce'u; `len` geçerli bayt sayısı.
+/// Chunk nonce; `len` is the number of valid bytes.
 #[derive(Debug, Clone, Copy)]
 pub struct ChunkNonce {
     bytes: [u8; 24],
@@ -15,7 +15,7 @@ pub struct ChunkNonce {
 }
 
 impl ChunkNonce {
-    /// Kurar.
+    /// Builds it.
     #[must_use]
     pub fn new(alg: AlgId, prefix: &[u8; 24], index: u32, last: bool) -> Self {
         let pl = alg.prefix_len();
@@ -29,18 +29,18 @@ impl ChunkNonce {
         }
     }
 
-    /// Bayt dilimi.
+    /// Byte slice.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes[..self.len]
     }
 }
 
-/// `buf[..len]` düz metnini yerinde şifreler, tag'i `buf[len..len+16]`'ya yazar.
-/// Döner: ciphertext uzunluğu (`len + 16`).
+/// Encrypts the plaintext `buf[..len]` in place and writes the tag to `buf[len..len+16]`.
+/// Returns the ciphertext length (`len + 16`).
 ///
 /// # Errors
-/// AEAD hatası.
+/// AEAD error.
 pub fn seal_chunk(
     cipher: &SharedCipher,
     prefix: &[u8; 24],
@@ -56,11 +56,11 @@ pub fn seal_chunk(
     Ok(len + TAG_LEN)
 }
 
-/// `buf[..ct_len]` (ciphertext || tag) yerinde açılır; düz metin `buf[..ct_len-16]`.
-/// Döner: `Ok(Some(plain_len))`; tag hatası → `Ok(None)`.
+/// Opens `buf[..ct_len]` (ciphertext || tag) in place; the plaintext is `buf[..ct_len-16]`.
+/// Returns `Ok(Some(plain_len))`; a tag failure is `Ok(None)`.
 ///
 /// # Errors
-/// Nonce uzunluğu (iç tutarsızlık).
+/// Nonce length (internal inconsistency).
 pub fn open_chunk(
     cipher: &SharedCipher,
     prefix: &[u8; 24],
@@ -116,7 +116,7 @@ mod tests {
         buf[..100].copy_from_slice(&[0xAB; 100]);
         let ct = seal_chunk(&c, &prefix, &aad, 3, false, &mut buf, 100).unwrap();
         assert_eq!(ct, 116);
-        // last bayrağı değişince açılmaz (B1: last=1 ortada → 4)
+        // does not open once the last flag changes (last=1 in the middle → 4)
         let mut copy = buf.clone();
         assert!(
             open_chunk(&c, &prefix, &aad, 3, true, &mut copy, ct)

@@ -1,9 +1,9 @@
-//! AEAD soyutlaması.
+//! AEAD abstraction.
 //!
-//! Yalnızca yerinde/ayrık-tag API'si kullanılır (`AeadInOut::*_inout_detached`); `Vec` döndüren
-//! `Aead::encrypt/decrypt` clippy `disallowed-methods` ile yasaktır. AEAD struct'ı
-//! [`SharedCipher`] içinde kilitli arenada ([`SecretBox`]) yaşar; `!Clone`, `Sync` — işçiler
-//! `&SharedCipher` paylaşır, anahtar kopyalanmaz.
+//! Only the in-place, detached-tag API is used (`AeadInOut::*_inout_detached`); the `Vec`-returning
+//! `Aead::encrypt/decrypt` are forbidden by clippy `disallowed-methods`. The AEAD struct lives in
+//! locked arena memory ([`SecretBox`]) inside [`SharedCipher`]; it is `!Clone` and `Sync` — workers
+//! share `&SharedCipher`, the key is never copied.
 
 use aead::inout::InOutBuf;
 use aead::{AeadInOut, KeyInit};
@@ -13,18 +13,18 @@ use lephy_sys::mem::SecretBox;
 
 use crate::error::{Error, Result};
 
-/// Algoritma kimliği (FORMAT.md › Başlık, ofset 8).
+/// Algorithm identifier (FORMAT.md › Header, offset 8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum AlgId {
-    /// XChaCha20-Poly1305 (varsayılan): 24 B nonce, 19 B prefix.
+    /// XChaCha20-Poly1305 (default): 24 B nonce, 19 B prefix.
     XChaCha20Poly1305 = 1,
-    /// AES-256-GCM: 12 B nonce, 7 B prefix; kuyruklar sıfır.
+    /// AES-256-GCM: 12 B nonce, 7 B prefix; tails are zero.
     Aes256Gcm = 2,
 }
 
 impl AlgId {
-    /// Bayttan.
+    /// From a byte.
     #[must_use]
     pub const fn from_u8(b: u8) -> Option<Self> {
         match b {
@@ -34,7 +34,7 @@ impl AlgId {
         }
     }
 
-    /// Nonce uzunluğu (bayt).
+    /// Nonce length (bytes).
     #[must_use]
     pub const fn nonce_len(self) -> usize {
         match self {
@@ -43,13 +43,13 @@ impl AlgId {
         }
     }
 
-    /// STREAM prefix uzunluğu (`nonce_len − 5`).
+    /// STREAM prefix length (`nonce_len − 5`).
     #[must_use]
     pub const fn prefix_len(self) -> usize {
         self.nonce_len() - 5
     }
 
-    /// Kullanıcıya gösterilen ad.
+    /// Name shown to the user.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -59,32 +59,32 @@ impl AlgId {
     }
 }
 
-/// Tag uzunluğu.
+/// Tag length.
 pub const TAG_LEN: usize = 16;
-/// Anahtar uzunluğu.
+/// Key length.
 pub const KEY_LEN: usize = 32;
 
-#[allow(clippy::large_enum_variant)] // her iki değişken de arenada (SecretBox) yaşar
+#[allow(clippy::large_enum_variant)] // both variants live in the arena (SecretBox)
 enum Inner {
     X(XChaCha20Poly1305),
     A(Aes256Gcm),
 }
 
-/// Kilitli arenada yaşayan AEAD; `Clone` uygulamaz.
+/// AEAD living in locked arena memory; does not implement `Clone`.
 pub struct SharedCipher {
     inner: SecretBox<Inner>,
     alg: AlgId,
 }
 
 impl SharedCipher {
-    /// Anahtardan kurar. `key` çağıranın `SecretBytes`'ındadır; struct'ın yığındaki geçici
-    /// kopyası `SecretBox::new` ile arenaya taşınır (yığın kalıntısı THREAT-MODEL'de).
+    /// Builds it from a key. `key` is in the caller's `SecretBytes`; the struct's temporary copy
+    /// on the stack is moved into the arena by `SecretBox::new` (stack residue: see THREAT-MODEL).
     ///
     /// # Errors
-    /// Arena dolu/kurulamadı.
+    /// Arena full or could not be set up.
     pub fn new(alg: AlgId, key: &[u8; KEY_LEN]) -> Result<Self> {
-        // Anahtar yığına kopyalanmaz: dilimden doğrudan kurulur.
-        let bad = |_| Error::Environment("anahtar uzunluğu".into());
+        // The key is not copied to the stack: built directly from the slice.
+        let bad = |_| Error::Environment("key length".into());
         let inner = match alg {
             AlgId::XChaCha20Poly1305 => {
                 Inner::X(XChaCha20Poly1305::new_from_slice(key).map_err(bad)?)
@@ -95,16 +95,16 @@ impl SharedCipher {
         Ok(Self { inner: boxed, alg })
     }
 
-    /// Algoritma.
+    /// Algorithm.
     #[must_use]
     pub const fn alg(&self) -> AlgId {
         self.alg
     }
 
-    /// Yerinde şifreler; tag'i döner. `nonce.len()` algoritmanın nonce uzunluğu olmalıdır.
+    /// Encrypts in place and returns the tag. `nonce.len()` must be the algorithm's nonce length.
     ///
     /// # Errors
-    /// Nonce uzunluğu yanlış ya da AEAD sınırı (`Corrupt` değil, `Environment`).
+    /// Wrong nonce length or AEAD limit (`Environment`, not `Corrupt`).
     pub fn seal_in_place(&self, nonce: &[u8], aad: &[u8], buf: &mut [u8]) -> Result<[u8; TAG_LEN]> {
         let tag = match &*self.inner {
             Inner::X(c) => {
@@ -116,15 +116,15 @@ impl SharedCipher {
                 c.encrypt_inout_detached(&n, aad, InOutBuf::from(buf))
             }
         }
-        .map_err(|_| Error::Environment("AEAD şifreleme hatası (uzunluk sınırı)".into()))?;
+        .map_err(|_| Error::Environment("AEAD encryption error (length limit)".into()))?;
         Ok(tag.into())
     }
 
-    /// Yerinde çözer ve tag'i doğrular. Doğrulama hatası `Err(())` ile ayırt edilir ki çağıran
-    /// doğru `Corrupt { at }` üretsin.
+    /// Decrypts in place and checks the tag. An authentication failure is reported as `Err(())`
+    /// so that the caller can produce the right `Corrupt { at }`.
     ///
     /// # Errors
-    /// `Ok(Err(()))`: tag/uzunluk hatası; `Err(_)`: nonce uzunluğu yanlış.
+    /// `Ok(Err(()))`: tag/length failure; `Err(_)`: wrong nonce length.
     pub fn open_in_place(
         &self,
         nonce: &[u8],
@@ -150,19 +150,19 @@ impl SharedCipher {
 fn nonce_x(nonce: &[u8]) -> Result<aead::Nonce<XChaCha20Poly1305>> {
     let arr: [u8; 24] = nonce
         .try_into()
-        .map_err(|_| Error::Environment("XChaCha nonce 24 bayt olmalı".into()))?;
+        .map_err(|_| Error::Environment("XChaCha nonce must be 24 bytes".into()))?;
     Ok(arr.into())
 }
 
 fn nonce_a(nonce: &[u8]) -> Result<aead::Nonce<Aes256Gcm>> {
     let arr: [u8; 12] = nonce
         .try_into()
-        .map_err(|_| Error::Environment("AES-GCM nonce 12 bayt olmalı".into()))?;
+        .map_err(|_| Error::Environment("AES-GCM nonce must be 12 bytes".into()))?;
     Ok(arr.into())
 }
 
-/// `SharedCipher: !Clone`. Derleme zamanı iddiası (autoref özelleştirme kalıbı:
-/// `Clone` uygulanırsa `some_item` belirsizleşir ve derleme hatası verir).
+/// `SharedCipher: !Clone`. Compile-time assertion (autoref specialisation pattern: if `Clone`
+/// were implemented, `some_item` would become ambiguous and fail to compile).
 const _: () = {
     trait AmbiguousIfClone<A> {
         fn some_item() {}
@@ -189,7 +189,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(&buf, b"merhaba dunya");
-            // bozuk aad
+            // tampered aad
             let mut buf2 = *b"merhaba dunya";
             let tag2 = c.seal_in_place(&nonce, b"aad", &mut buf2).unwrap();
             assert!(

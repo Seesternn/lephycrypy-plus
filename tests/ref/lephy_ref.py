@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""lephycrypy+ v1 Python referans uygulaması.
+"""lephycrypy+ Python reference implementation.
 
-YALNIZCA docs/FORMAT.md okunarak yazılmıştır; Rust koduna bakılmamıştır. Amaç: Rust çıktısıyla
-bayt bayt karşılaştırılacak test vektörleri üretmek (tests/kat/vectors/). Kapsam:
-content_type=0, dolgusuz. Arşiv ve PADMÉ dahil değildir.
+Written ONLY from docs/FORMAT.md, without looking at the Rust code. Purpose: produce test vectors
+compared byte for byte with the Rust output (tests/kat/vectors/). Covers raw streams, archives,
+PADMÉ, compression (stored DEFLATE blocks) and X25519 recipients.
 
-Bağımlılıklar: cryptography, argon2-cffi, blake3. XChaCha20-Poly1305 `cryptography`'de yoktur;
-HChaCha20 burada elle uygulanır ve draft-irtf-cfrg-xchacha-03 §2.2.1 vektörüyle doğrulanır.
+Dependencies: cryptography, argon2-cffi, blake3. XChaCha20-Poly1305 is not in `cryptography`;
+HChaCha20 is implemented here by hand and checked against the draft-irtf-cfrg-xchacha-03 §2.2.1 vector.
 
-Kullanım:
+Usage:
     python3 -I lephy_ref.py selftest
-    python3 -I lephy_ref.py vectors <çıktı_dizini>
+    python3 -I lephy_ref.py vectors <output_dir>
 """
 from __future__ import annotations
 
@@ -94,7 +94,7 @@ def seal(alg: int, key: bytes, nonce: bytes, aad: bytes, pt: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------------------------------------
-# Anahtar türetme (FORMAT.md › Anahtar türetme)
+# Key derivation (FORMAT.md › Key derivation)
 # ---------------------------------------------------------------------------------------------
 def hkdf32(ikm: bytes, salt: bytes, info: bytes) -> bytes:
     return HKDF(algorithm=hashes.SHA512(), length=32, salt=salt, info=info).derive(ikm)
@@ -139,7 +139,7 @@ def derive_keys(kek: bytes, salt: bytes, fk: bytes, prefix24: bytes) -> dict:
 
 
 # ---------------------------------------------------------------------------------------------
-# Başlık ve akış
+# Header and stream
 # ---------------------------------------------------------------------------------------------
 def nonce_len(alg):
     return 24 if alg == 1 else 12
@@ -225,7 +225,7 @@ def encrypt_stream(alg, data_key, prefix24, aad, chunk_size, plaintext: bytes) -
     out = bytearray()
     pl = prefix_len(alg)
     n = len(plaintext)
-    # Kanonik son chunk: tam katta ek boş chunk yok; yalnızca 0 baytta tek boş son chunk.
+    # Canonical last chunk: no extra empty chunk at an exact multiple; a single empty last chunk only for 0 bytes.
     chunks = [plaintext[i:i + chunk_size] for i in range(0, n, chunk_size)] or [b""]
     for i, c in enumerate(chunks):
         last = i == len(chunks) - 1
@@ -244,7 +244,7 @@ def encrypt_file(alg, chunk_code, m_kib, t, p, pwd_nfc, keyfile, salt, prefix, w
 
 
 # ---------------------------------------------------------------------------------------------
-# PADMÉ ve arşiv (FORMAT.md › PADMÉ, Arşiv)
+# PADMÉ and archive (FORMAT.md › PADMÉ, Archive)
 # ---------------------------------------------------------------------------------------------
 def padme(L: int) -> int:
     if L < 2:
@@ -281,21 +281,21 @@ def archive_padded(entries: bytes) -> bytes:
 
 
 def deflate_stored(data: bytes) -> bytes:
-    """RFC 1951 ham DEFLATE, yalnızca "stored" bloklar (≤ 65 535 B; son blokta BFINAL).
-    Belirlenimlidir; FORMAT.md v2 test vektörleri için. Okuyucular her geçerli DEFLATE'i kabul
-    eder."""
+    """RFC 1951 raw DEFLATE, "stored" blocks only (≤ 65 535 B; BFINAL on the last block).
+    Deterministic; for the FORMAT.md v2 test vectors. Readers accept any valid DEFLATE
+    stream."""
     out = bytearray()
     blocks = [data[i:i + 65535] for i in range(0, len(data), 65535)] or [b""]
     for i, b in enumerate(blocks):
         final = 1 if i == len(blocks) - 1 else 0
-        out += bytes([final])  # BFINAL + BTYPE=00, bayt sınırına hizalı
+        out += bytes([final])  # BFINAL + BTYPE=00, aligned to a byte boundary
         out += struct.pack("<HH", len(b), len(b) ^ 0xFFFF)
         out += b
     return bytes(out)
 
 
 def compressed_stream(inner: bytes, padded: bool) -> bytes:
-    """v2 sıkıştırma: DEFLATE(inner) + (dolgu açıksa) padme(L) − L sıfır."""
+    """v2 compression: DEFLATE(inner) + (with padding) padme(L) − L zeros."""
     c = deflate_stored(inner)
     return c + (b"\0" * (padme(len(c)) - len(c)) if padded else b"")
 
@@ -310,7 +310,7 @@ def encrypt_stream_file(alg, content_type, padded, chunk_code, m_kib, t, p, pwd_
 
 
 # ---------------------------------------------------------------------------------------------
-# Test vektörleri (FORMAT.md › Test vektörleri)
+# Test vectors (FORMAT.md › Test vectors)
 # ---------------------------------------------------------------------------------------------
 COMMON = dict(m_kib=64 * 1024, t=1, p=1)
 SALT = bytes(range(0x00, 0x20))
@@ -337,7 +337,7 @@ def selftest():
     # RFC 7748 §6.1 X25519
     a = bytes.fromhex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")
     assert x25519_public(a).hex() == "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"
-    # RFC 9106 §5.3 (secret/ad'li; sadece kütüphane doğrulaması)
+    # RFC 9106 §5.3 (with secret/ad; only a library check)
     from argon2.low_level import hash_secret_raw as hsr  # noqa
     print("selftest ok")
 
@@ -360,14 +360,14 @@ def vectors(outdir: str):
             f.write(blob)
         meta[f"v{num}"] = {"alg": alg, "chunk_code": chunk_code, "plain_len": len(pt),
                            "keyfile": kf.hex() if kf else None, "sha256_blake3": blake3.blake3(blob).hexdigest()}
-    # 5: arşiv, a.txt="hi", mode 0644, mtime 0, padded
+    # 5: archive, a.txt="hi", mode 0644, mtime 0, padded
     pt5 = archive_padded(archive_entry(0, "a.txt", 0o644, 0, b"hi"))
     blob = encrypt_stream_file(1, 1, True, 0, COMMON["m_kib"], COMMON["t"], COMMON["p"], pwd, None,
                                SALT, PREFIX, WRAP, FK, pt5)
     with open(os.path.join(outdir, "v5.lphy"), "wb") as f:
         f.write(blob)
     meta["v5"] = {"alg": 1, "chunk_code": 0, "content_type": 1, "padded": True, "plain_len": len(pt5)}
-    # 6: ham + pad, "hello"
+    # 6: raw + pad, "hello"
     pt6 = raw_padded(b"hello")
     blob = encrypt_stream_file(1, 0, True, 0, COMMON["m_kib"], COMMON["t"], COMMON["p"], pwd, None,
                                SALT, PREFIX, WRAP, FK, pt6)
@@ -375,7 +375,7 @@ def vectors(outdir: str):
         f.write(blob)
     meta["v6"] = {"alg": 1, "chunk_code": 0, "content_type": 0, "padded": True, "plain_len": len(pt6)}
     assert padme(100) == 104 and padme(1000) == 1024 and padme(1_000_000) == 1_015_808
-    # 12: v2, ham + sıkıştırma + dolgu
+    # 12: v2, raw + compression + padding
     raw12 = b"lephycrypy v2 " * 40
     blob = encrypt_stream_file(1, 0, True, 0, COMMON["m_kib"], COMMON["t"], COMMON["p"], pwd, None,
                                SALT, PREFIX, WRAP, FK, compressed_stream(raw12, True), compressed=True)
@@ -383,7 +383,7 @@ def vectors(outdir: str):
         f.write(blob)
     meta["v12"] = {"alg": 1, "chunk_code": 0, "content_type": 0, "padded": True, "compressed": True,
                    "plaintext": raw12.decode()}
-    # 13: v2, arşiv + sıkıştırma (dolgusuz), a.txt="hi"
+    # 13: v2, archive + compression (no padding), a.txt="hi"
     ar13 = archive_entry(0, "a.txt", 0o644, 0, b"hi") + archive_end()
     blob = encrypt_stream_file(2, 1, False, 0, COMMON["m_kib"], COMMON["t"], COMMON["p"], pwd, None,
                                SALT, PREFIX, WRAP, FK, compressed_stream(ar13, False), compressed=True)
@@ -406,19 +406,19 @@ def vectors(outdir: str):
     meta["v14"] = {"alg": 1, "chunk_code": 0, "content_type": 0, "padded": False,
                    "recipients": [x25519_public(sk1).hex(), x25519_public(sk2).hex()],
                    "identities": [sk1.hex(), sk2.hex()], "plaintext": pt14.decode()}
-    # 7/8/11: KEK eşitliği
+    # 7/8/11: equal KEKs
     nfd = "ş ğ İ é".encode("utf-8")
     nfc = "ş ğ İ é".encode("utf-8")
     assert normalize_password(nfd, True) == normalize_password(nfc, True)
     assert normalize_password(b"test\r\n", False) == normalize_password(b"test\n", False) == b"test"
     kek7 = derive_kek(normalize_password(nfd, True), SALT, **COMMON, keyfile=None)
     meta["v7_kek"] = kek7.hex()
-    # 10: HKDF çıktıları (parola "test", keyfile yok, XChaCha prefix)
+    # 10: HKDF outputs (password "test", no key file, XChaCha prefix)
     kek = derive_kek(pwd, SALT, **COMMON, keyfile=None)
     keys = derive_keys(kek, SALT, FK, PREFIX[:19].ljust(24, b"\0"))
     meta["v10"] = {k: v.hex() for k, v in keys.items()}
     meta["v10"]["argon2_out"] = kek.hex()
-    # AES prefix ile data/hmac anahtarları (v4 için)
+    # AES-prefix data/hmac keys (for v4)
     keys_a = derive_keys(kek, SALT, FK, PREFIX[:7].ljust(24, b"\0"))
     meta["v10_aes"] = {k: v.hex() for k, v in keys_a.items()}
     with open(os.path.join(outdir, "vectors.json"), "w") as f:

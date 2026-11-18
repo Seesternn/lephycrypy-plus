@@ -1,14 +1,14 @@
-//! Parçalara bölme: `ad.lphy` → `ad.lphy.001`, `ad.lphy.002`, …
+//! Splitting into parts: `name.lphy` → `name.lphy.001`, `name.lphy.002`, …
 //!
-//! Bölme biçimin altındadır (biçim bayrağı yok): parçaları sırayla birleştirmek özgün dosyayı
-//! verir. Bütünlüğü STREAM sağlar; eksik, kısaltılmış ya da yer değiştirmiş bir parça çözmede
-//! bozulma (kod 4) olarak yakalanır.
+//! Splitting sits below the format (no format flag): concatenating the parts in order gives the
+//! original file. Integrity comes from STREAM; a missing, truncated or reordered part is caught
+//! as damage (code 4) when decrypting.
 //!
-//! Bölme diskte en fazla bir parça kadar ek yer kullanır: şifreleme bittikten sonra parçalar
-//! dosyanın **sonundan** başlayarak ayrı dosyalara kopyalanır ve özgün dosya her adımda
-//! kısaltılır; en son kalan baş kısım `.001` olur. Yarıda kesilirse özgün dosya (kısaltılmış
-//! hâliyle) ve o ana kadar yazılan son parçalar kalır; `.001` yalnızca en sonda oluştuğu için
-//! yarım bir küme çözülmeye çalışılmaz.
+//! Splitting uses at most one part of extra disk space: after encryption the parts are copied
+//! into separate files starting from the **end** of the file, and the original is truncated after
+//! each step; the remaining head becomes `.001`. If interrupted, the (truncated) original and the
+//! last parts written so far remain; since `.001` is created only at the very end, a half-written
+//! set is never decrypted.
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -16,12 +16,12 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-/// En küçük parça boyutu.
+/// Smallest part size.
 pub const MIN_PART: u64 = 1024 * 1024;
-/// En çok parça sayısı.
+/// Largest number of parts.
 pub const MAX_PARTS: usize = 999;
 
-/// `n`. parçanın yolu (`n` 1'den başlar).
+/// Path of part `n` (`n` starts at 1).
 #[must_use]
 pub fn part_path(base: &Path, n: usize) -> PathBuf {
     let mut s = base.as_os_str().to_os_string();
@@ -29,23 +29,23 @@ pub fn part_path(base: &Path, n: usize) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Yol bir kümenin ilk parçası mı (`….001`).
+/// Whether the path is the first part of a set (`….001`).
 #[must_use]
 pub fn is_first_part(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "001")
 }
 
-/// İlk parçadan kümenin taban adı (`ad.lphy.001` → `ad.lphy`).
+/// Base name of the set from its first part (`name.lphy.001` → `name.lphy`).
 #[must_use]
 pub fn base_of(first: &Path) -> PathBuf {
     first.with_extension("")
 }
 
-/// Kümenin parçaları, sırayla. Biri eksik olana kadar ilerler; sondaki dışındaki tüm parçalar
-/// aynı boyutta olmalıdır.
+/// The parts of the set, in order. Stops at the first missing one; every part except the last
+/// must have the same size.
 ///
 /// # Errors
-/// İlk parça yok, sıra dışı boyut (kod 4) ya da G/Ç.
+/// First part missing, inconsistent sizes (code 4) or I/O.
 pub fn parts(first: &Path) -> Result<Vec<PathBuf>> {
     let base = base_of(first);
     let mut out = Vec::new();
@@ -59,7 +59,7 @@ pub fn parts(first: &Path) -> Result<Vec<PathBuf>> {
     if out.is_empty() {
         return Err(Error::Io(io::Error::new(
             io::ErrorKind::NotFound,
-            "ilk parça yok",
+            "first part missing",
         )));
     }
     let sizes: Vec<u64> = out
@@ -70,14 +70,14 @@ pub fn parts(first: &Path) -> Result<Vec<PathBuf>> {
         && (rest.iter().any(|&s| s != sizes[0]) || *last > sizes[0] || *last == 0)
     {
         return Err(Error::Corrupt {
-            at: "parçalar".into(),
-            detail: Some("parça boyutları tutarsız (eksik ya da değiştirilmiş parça)".into()),
+            at: "parts".into(),
+            detail: Some("inconsistent part sizes (missing or modified part)".into()),
         });
     }
     Ok(out)
 }
 
-/// Parçaları sırayla tek akış olarak okur.
+/// Reads the parts in order as one stream.
 pub struct JoinReader {
     files: Vec<PathBuf>,
     next: usize,
@@ -85,7 +85,7 @@ pub struct JoinReader {
 }
 
 impl JoinReader {
-    /// Parça listesinden okuyucu.
+    /// Reader over a list of parts.
     #[must_use]
     pub const fn new(files: Vec<PathBuf>) -> Self {
         Self {
@@ -117,10 +117,10 @@ impl Read for JoinReader {
     }
 }
 
-/// Toplam uzunluk.
+/// Total length.
 ///
 /// # Errors
-/// G/Ç.
+/// I/O.
 pub fn total_len(parts: &[PathBuf]) -> Result<u64> {
     let mut t = 0u64;
     for p in parts {
@@ -129,20 +129,22 @@ pub fn total_len(parts: &[PathBuf]) -> Result<u64> {
     Ok(t)
 }
 
-/// `path`'i `part_size` baytlık parçalara böler (sondaki daha kısa olabilir); özgün dosya
-/// kaybolur, parçaların listesi döner. Dosya tek parçaya sığıyorsa yalnızca `.001` adını alır.
+/// Splits `path` into parts of `part_size` bytes (the last may be shorter); the original file
+/// is gone afterwards and the list of parts is returned. A file that fits one part is just renamed to `.001`.
 ///
 /// # Errors
-/// Parça boyutu < 1 MiB, parça sayısı > 999, var olan parça adı (kod 7) ya da G/Ç.
+/// Part size < 1 MiB, more than 999 parts, an existing part name (code 7) or I/O.
 pub fn split_file(path: &Path, part_size: u64) -> Result<Vec<PathBuf>> {
     if part_size < MIN_PART {
-        return Err(Error::Environment("parça boyutu en az 1 MiB olmalı".into()));
+        return Err(Error::Environment(
+            "the part size must be at least 1 MiB".into(),
+        ));
     }
     let len = std::fs::metadata(path)?.len();
     let count = usize::try_from(len.div_ceil(part_size).max(1)).unwrap_or(usize::MAX);
     if count > MAX_PARTS {
         return Err(Error::Environment(format!(
-            "en fazla {MAX_PARTS} parça; daha büyük bir parça boyutu seçin"
+            "at most {MAX_PARTS} parts; choose a larger part size"
         )));
     }
     let names: Vec<PathBuf> = (1..=count).map(|n| part_path(path, n)).collect();
@@ -153,12 +155,12 @@ pub fn split_file(path: &Path, part_size: u64) -> Result<Vec<PathBuf>> {
         .read(true)
         .write(true)
         .open(path)?;
-    let mut buf = vec![0u8; 1 << 20]; // şifreli veri; sır değil
+    let mut buf = vec![0u8; 1 << 20]; // encrypted data; not secret
     for n in (2..=count).rev() {
         let start = part_size * (n as u64 - 1);
         let mut w = crate::io::AtomicWriter::create(&names[n - 1], false)?;
         src.seek(SeekFrom::Start(start))?;
-        // Önceki adımlar dosyayı kısalttı: kalan uzunluk güncel boyuttan.
+        // Earlier steps truncated the file: the remaining length is the current size.
         let mut left = src.metadata()?.len() - start;
         while left > 0 {
             let k = usize::try_from(left.min(buf.len() as u64)).unwrap_or(buf.len());
@@ -167,7 +169,7 @@ pub fn split_file(path: &Path, part_size: u64) -> Result<Vec<PathBuf>> {
             left -= k as u64;
         }
         w.commit(false)?;
-        // Parça kalıcılaştıktan sonra özgün dosya kısaltılır.
+        // The original is truncated only after the part is durable.
         src.set_len(start)?;
         src.sync_all()?;
     }
@@ -175,7 +177,7 @@ pub fn split_file(path: &Path, part_size: u64) -> Result<Vec<PathBuf>> {
     lephy_sys::fs::rename_noclobber(path, &names[0]).map_err(|e| match e {
         lephy_sys::fs::NoclobberError::Exists => Error::Exists(names[0].display().to_string()),
         lephy_sys::fs::NoclobberError::Unsupported => {
-            Error::Environment("dosya sistemi atomik yeniden adlandırmayı desteklemiyor".into())
+            Error::Environment("the file system does not support atomic rename".into())
         }
         lephy_sys::fs::NoclobberError::Io(e) => Error::Io(e),
     })?;
@@ -214,8 +216,8 @@ mod tests {
         let mut joined = Vec::new();
         JoinReader::new(found).read_to_end(&mut joined).unwrap();
         assert_eq!(joined, data);
-        // Ortadaki parça eksik: kalanlar bulunur ama boyutlar tutarsız değil; çözme
-        // kesilmiş akışı yakalar. Ortadaki kısaltılmış parça ise burada yakalanır.
+        // A missing middle part: the rest is found and the sizes are not inconsistent; decryption
+        // catches the truncated stream. A truncated middle part is caught here.
         std::fs::OpenOptions::new()
             .write(true)
             .open(&ps[1])
@@ -230,13 +232,13 @@ mod tests {
     fn small_file_becomes_single_part_and_names_are_never_overwritten() {
         let d = tmp("small");
         let f = d.join("y.lphy");
-        std::fs::write(&f, b"kucuk").unwrap();
-        std::fs::write(part_path(&f, 1), b"var").unwrap();
+        std::fs::write(&f, b"small").unwrap();
+        std::fs::write(part_path(&f, 1), b"exists").unwrap();
         assert!(matches!(split_file(&f, MIN_PART), Err(Error::Exists(_))));
         std::fs::remove_file(part_path(&f, 1)).unwrap();
         let ps = split_file(&f, MIN_PART).unwrap();
         assert_eq!(ps.len(), 1);
-        assert_eq!(std::fs::read(&ps[0]).unwrap(), b"kucuk");
+        assert_eq!(std::fs::read(&ps[0]).unwrap(), b"small");
         assert!(split_file(&d.join("z"), 10).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }

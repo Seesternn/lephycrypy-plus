@@ -1,20 +1,20 @@
-//! Kilitli bellek.
+//! Locked memory.
 //!
-//! - **Arena:** süreç başına tek, sabit boyutlu (`ARENA_PAGES` sayfa), sayfa hizalı bölge;
-//!   büyümez, yer değiştirmez. Taban/uzunluk `static` atomiklerde tutulur ki panik hook'u kilit
-//!   almadan sıfırlayabilsin. 64 baytlık birimler üzerinde bitmap ile first-fit ayırma; sayfa
-//!   başına referans sayacı: `mlock`/`VirtualLock` sayfa ilk kullanımında, `munlock` yalnızca
-//!   sayfadaki son sır bırakılınca (POSIX `mlock` sayım yapmaz).
-//! - [`SecretBytes`]: arenada sabit kapasiteli bayt tamponu; `expose()`/`expose_mut()`,
-//!   `Debug` → `[REDACTED]`, `Clone`/`Display` yok; Drop'ta sıfırlanır; kapasite aşımı hata.
-//! - [`SecretBox<T>`]: arenada hizalı yer, `ptr::write` ile kurulum, Drop'ta `drop_in_place` +
-//!   ham sıfırlama (AEAD struct'ları için).
-//! - [`LargeSecretBuf<T>`]: `mmap`/`VirtualAlloc` ile büyük bölge (Argon2 belleği, chunk havuzu);
-//!   kilit best-effort; `MADV_DONTDUMP` yalnızca Linux; Drop'ta sıfırla + unmap; hook listesine
-//!   kaydedilir.
-//! - [`zeroize_all_registered`]: panik hook'unun (1) adımı.
+//! - **Arena:** one fixed-size (`ARENA_PAGES` pages), page-aligned region per process; it never
+//!   grows or moves. Base/length are kept in `static` atomics so that the panic hook can zeroize
+//!   it without taking a lock. First-fit allocation with a bitmap over 64-byte units; per-page
+//!   reference counts: `mlock`/`VirtualLock` on a page's first use, `munlock` only when the last
+//!   secret on the page is released (POSIX `mlock` does not count).
+//! - [`SecretBytes`]: fixed-capacity byte buffer in the arena; `expose()`/`expose_mut()`,
+//!   `Debug` → `[REDACTED]`, no `Clone`/`Display`; zeroized on Drop; exceeding the capacity is an error.
+//! - [`SecretBox<T>`]: aligned space in the arena, built with `ptr::write`, `drop_in_place` + raw
+//!   zeroization on Drop (for AEAD structs).
+//! - [`LargeSecretBuf<T>`]: large region via `mmap`/`VirtualAlloc` (Argon2 memory, chunk pool);
+//!   best-effort lock; `MADV_DONTDUMP` on Linux only; zeroize + unmap on Drop; registered with the
+//!   hook.
+//! - [`zeroize_all_registered`]: step (1) of the panic hook.
 //!
-//! `cfg(miri)`: OS çağrıları yerine `std::alloc` + no-op kilit.
+//! `cfg(miri)`: `std::alloc` + a no-op lock instead of OS calls.
 
 use core::fmt;
 use core::ops::{Deref, DerefMut};
@@ -25,37 +25,37 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 
 use zeroize::Zeroize;
 
-/// Arena ayırma birimi (bayt). Tüm slot'lar bu hizada başlar.
+/// Arena allocation unit (bytes). Every slot starts at this alignment.
 const UNIT: usize = 64;
-/// Arena sayfa sayısı (macOS arm64'te 16 KiB sayfa → 256 KiB).
+/// Number of arena pages (16 KiB pages on macOS arm64 → 256 KiB).
 const ARENA_PAGES: usize = 16;
-/// Hook için kayıtlı büyük bölge sayısı.
+/// Number of large regions registered for the hook.
 const MAX_REGIONS: usize = 16;
 
-/// Bellek hataları.
+/// Memory errors.
 #[derive(Debug)]
 pub enum MemError {
-    /// Arena dolu; istenen boyut için bitişik yer yok.
+    /// Arena full; no contiguous space for the requested size.
     ArenaExhausted {
-        /// İstenen bayt.
+        /// Requested bytes.
         requested: usize,
     },
-    /// Arena kurulamadı (mmap/VirtualAlloc).
+    /// The arena could not be set up (mmap/VirtualAlloc).
     ArenaInit(io::Error),
-    /// Sabit kapasite aşıldı (`SecretBytes`).
+    /// Fixed capacity exceeded (`SecretBytes`).
     CapacityExceeded {
-        /// Kapasite.
+        /// Capacity.
         capacity: usize,
-        /// İstenen toplam uzunluk.
+        /// Requested total length.
         requested: usize,
     },
-    /// Tür hizası desteklenmiyor (> sayfa boyutu).
+    /// Type alignment not supported (> page size).
     AlignmentUnsupported(usize),
-    /// Boyut hesabı taştı ya da sıfır.
+    /// Size computation overflowed or is zero.
     InvalidSize,
-    /// Büyük bölge ayrılamadı.
+    /// Large region could not be allocated.
     MapFailed(io::Error),
-    /// Hook kayıt tablosu dolu (aynı anda > 16 büyük bölge).
+    /// Hook registry full (> 16 large regions at once).
     RegistryFull,
 }
 
@@ -63,20 +63,20 @@ impl fmt::Display for MemError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MemError::ArenaExhausted { requested } => {
-                write!(f, "kilitli bellek arenası dolu ({requested} bayt istendi)")
+                write!(f, "locked-memory arena full ({requested} bytes requested)")
             }
-            MemError::ArenaInit(e) => write!(f, "kilitli bellek arenası kurulamadı: {e}"),
+            MemError::ArenaInit(e) => write!(f, "locked-memory arena could not be set up: {e}"),
             MemError::CapacityExceeded {
                 capacity,
                 requested,
             } => write!(
                 f,
-                "sır tamponu kapasitesi aşıldı ({requested} > {capacity})"
+                "secret buffer capacity exceeded ({requested} > {capacity})"
             ),
-            MemError::AlignmentUnsupported(a) => write!(f, "desteklenmeyen hiza: {a}"),
-            MemError::InvalidSize => write!(f, "geçersiz boyut"),
-            MemError::MapFailed(e) => write!(f, "büyük bellek bölgesi ayrılamadı: {e}"),
-            MemError::RegistryFull => write!(f, "büyük bölge kayıt tablosu dolu"),
+            MemError::AlignmentUnsupported(a) => write!(f, "unsupported alignment: {a}"),
+            MemError::InvalidSize => write!(f, "invalid size"),
+            MemError::MapFailed(e) => write!(f, "large memory region could not be allocated: {e}"),
+            MemError::RegistryFull => write!(f, "large-region registry full"),
         }
     }
 }
@@ -84,7 +84,7 @@ impl fmt::Display for MemError {
 impl std::error::Error for MemError {}
 
 // ---------------------------------------------------------------------------------------------
-// OS arka ucu
+// OS back end
 // ---------------------------------------------------------------------------------------------
 
 #[cfg(not(miri))]
@@ -95,7 +95,7 @@ mod os {
 
     #[cfg(unix)]
     pub(super) fn page_size() -> usize {
-        // SAFETY: sysconf bellek işaretçisi almaz.
+        // SAFETY: sysconf takes no memory pointer.
         let v = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
         usize::try_from(v).ok().filter(|p| *p >= 64).unwrap_or(4096)
     }
@@ -103,9 +103,9 @@ mod os {
     #[cfg(windows)]
     pub(super) fn page_size() -> usize {
         use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
-        // SAFETY: SYSTEM_INFO düz bir C struct'ıdır; sıfır ile başlatılması geçerlidir.
+        // SAFETY: SYSTEM_INFO is a plain C struct; zero initialisation is valid.
         let mut si: SYSTEM_INFO = unsafe { core::mem::zeroed() };
-        // SAFETY: `si` geçerli ve yazılabilir; çağrı yalnızca onu doldurur.
+        // SAFETY: `si` is valid and writable; the call only fills it.
         unsafe { GetSystemInfo(&raw mut si) };
         usize::try_from(si.dwPageSize)
             .ok()
@@ -113,11 +113,11 @@ mod os {
             .unwrap_or(4096)
     }
 
-    /// Sıfırlanmış, sayfa hizalı anonim bölge.
+    /// Zeroed, page-aligned anonymous region.
     #[cfg(unix)]
     pub(super) fn map(len: usize) -> Result<NonNull<u8>, MemError> {
-        // SAFETY: addr = NULL (çekirdek seçer), len > 0, PROT_READ|WRITE, MAP_PRIVATE|MAP_ANON,
-        // fd = -1, offset = 0: anonim eşleme için geçerli argüman kümesi.
+        // SAFETY: addr = NULL (the kernel chooses), len > 0, PROT_READ|WRITE, MAP_PRIVATE|MAP_ANON,
+        // fd = -1, offset = 0: a valid argument set for an anonymous mapping.
         let p = unsafe {
             libc::mmap(
                 core::ptr::null_mut(),
@@ -137,15 +137,15 @@ mod os {
 
     #[cfg(unix)]
     pub(super) fn unmap(p: NonNull<u8>, len: usize) {
-        // SAFETY: `p`/`len` aynı `map` çağrısından gelir; bölge başka yerde kullanılmıyor
-        // (çağıran Drop içinde, tek sahiplik).
+        // SAFETY: `p`/`len` come from the same `map` call; the region is not used elsewhere
+        // (the caller is in Drop, sole ownership).
         let _ = unsafe { libc::munmap(p.as_ptr().cast::<libc::c_void>(), len) };
     }
 
     #[cfg(unix)]
     pub(super) fn lock(p: NonNull<u8>, len: usize) -> io::Result<()> {
-        // SAFETY: `p`/`len` eşlenmiş bir bölgeyi tanımlar (çağıran garanti eder); mlock bu
-        // aralığı yalnızca kilitler.
+        // SAFETY: `p`/`len` describe a mapped region (guaranteed by the caller); mlock only locks
+        // this range.
         let rc = unsafe { libc::mlock(p.as_ptr().cast::<libc::c_void>(), len) };
         if rc == 0 {
             Ok(())
@@ -156,16 +156,16 @@ mod os {
 
     #[cfg(unix)]
     pub(super) fn unlock(p: NonNull<u8>, len: usize) {
-        // SAFETY: `p`/`len` daha önce `lock` ile kilitlenmiş eşlenmiş bölge.
+        // SAFETY: `p`/`len` is a mapped region previously locked with `lock`.
         let _ = unsafe { libc::munlock(p.as_ptr().cast::<libc::c_void>(), len) };
     }
 
-    /// Linux: core dump'tan hariç tut (best-effort). Diğer Unix'lerde no-op.
+    /// Linux: exclude from core dumps (best effort). A no-op on other Unix systems.
     #[cfg(unix)]
     pub(super) fn exclude_from_dump(p: NonNull<u8>, len: usize) {
         #[cfg(target_os = "linux")]
         {
-            // SAFETY: `p`/`len` eşlenmiş bölge; MADV_DONTDUMP yalnızca bir bayrak koyar.
+            // SAFETY: `p`/`len` is a mapped region; MADV_DONTDUMP only sets a flag.
             let _ = unsafe {
                 libc::madvise(p.as_ptr().cast::<libc::c_void>(), len, libc::MADV_DONTDUMP)
             };
@@ -181,8 +181,8 @@ mod os {
         use windows_sys::Win32::System::Memory::{
             MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc,
         };
-        // SAFETY: lpAddress = NULL, dwSize = len > 0, geçerli bayraklar; VirtualAlloc sıfırlanmış
-        // sayfalar döndürür.
+        // SAFETY: lpAddress = NULL, dwSize = len > 0, valid flags; VirtualAlloc returns zeroed
+        // pages.
         let p = unsafe {
             VirtualAlloc(
                 core::ptr::null_mut(),
@@ -197,7 +197,7 @@ mod os {
     #[cfg(windows)]
     pub(super) fn unmap(p: NonNull<u8>, _len: usize) {
         use windows_sys::Win32::System::Memory::{MEM_RELEASE, VirtualFree};
-        // SAFETY: `p` aynı VirtualAlloc çağrısının taban adresi; MEM_RELEASE için dwSize = 0 şart.
+        // SAFETY: `p` is the base address from the same VirtualAlloc call; MEM_RELEASE requires dwSize = 0.
         let _ = unsafe { VirtualFree(p.as_ptr().cast::<core::ffi::c_void>(), 0, MEM_RELEASE) };
     }
 
@@ -208,9 +208,9 @@ mod os {
         };
         let mut min: usize = 0;
         let mut max: usize = 0;
-        // SAFETY: GetCurrentProcess sahte handle döndürür, kapatılmaz; argüman almaz.
+        // SAFETY: GetCurrentProcess returns a pseudo handle, not closed; takes no argument.
         let me = unsafe { GetCurrentProcess() };
-        // SAFETY: `me` geçerli; min/max geçerli çıktı işaretçileri.
+        // SAFETY: `me` is valid; min/max are valid output pointers.
         let ok = unsafe { GetProcessWorkingSetSize(me, &raw mut min, &raw mut max) };
         if ok == 0 {
             return;
@@ -218,7 +218,7 @@ mod os {
         let (Some(nmin), Some(nmax)) = (min.checked_add(extra), max.checked_add(extra)) else {
             return;
         };
-        // SAFETY: yalnızca sayısal argümanlar; başarısızlık best-effort (kilit sonra hata verir).
+        // SAFETY: numeric arguments only; failure is best effort (locking reports the error later).
         let _ = unsafe { SetProcessWorkingSetSize(me, nmin, nmax) };
     }
 
@@ -226,7 +226,7 @@ mod os {
     pub(super) fn lock(p: NonNull<u8>, len: usize) -> io::Result<()> {
         use windows_sys::Win32::System::Memory::VirtualLock;
         grow_working_set(len);
-        // SAFETY: `p`/`len` VirtualAlloc ile commit edilmiş bölge içindedir.
+        // SAFETY: `p`/`len` lie inside a region committed with VirtualAlloc.
         let ok = unsafe { VirtualLock(p.as_ptr().cast::<core::ffi::c_void>(), len) };
         if ok == 0 {
             Err(io::Error::last_os_error())
@@ -238,7 +238,7 @@ mod os {
     #[cfg(windows)]
     pub(super) fn unlock(p: NonNull<u8>, len: usize) {
         use windows_sys::Win32::System::Memory::VirtualUnlock;
-        // SAFETY: `p`/`len` daha önce VirtualLock ile kilitlenmiş bölge.
+        // SAFETY: `p`/`len` is a region previously locked with VirtualLock.
         let _ = unsafe { VirtualUnlock(p.as_ptr().cast::<core::ffi::c_void>(), len) };
     }
 
@@ -248,8 +248,8 @@ mod os {
 
 #[cfg(miri)]
 mod os {
-    //! Miri arka ucu: `std::alloc` + no-op kilit. Hizalama/sınır aritmetiği ve
-    //! zeroize-sonra-dealloc buradan denetlenir.
+    //! Miri back end: `std::alloc` + a no-op lock. Alignment/bounds arithmetic and
+    //! zeroize-then-dealloc are checked here.
     use super::MemError;
     use core::ptr::NonNull;
     use std::alloc::{Layout, alloc_zeroed, dealloc};
@@ -263,14 +263,14 @@ mod os {
 
     pub(super) fn map(len: usize) -> Result<NonNull<u8>, MemError> {
         let layout = Layout::from_size_align(len, MIRI_PAGE).map_err(|_| MemError::InvalidSize)?;
-        // SAFETY: layout boyutu sıfır değil (çağıran `len > 0` garanti eder).
+        // SAFETY: the layout size is non-zero (the caller guarantees `len > 0`).
         let p = unsafe { alloc_zeroed(layout) };
         NonNull::new(p).ok_or_else(|| MemError::MapFailed(io::Error::other("alloc_zeroed")))
     }
 
     pub(super) fn unmap(p: NonNull<u8>, len: usize) {
         if let Ok(layout) = Layout::from_size_align(len, MIRI_PAGE) {
-            // SAFETY: `p` aynı layout ile `alloc_zeroed`'dan geldi; tek sahiplik.
+            // SAFETY: `p` came from `alloc_zeroed` with the same layout; sole ownership.
             unsafe { dealloc(p.as_ptr(), layout) };
         }
     }
@@ -282,7 +282,7 @@ mod os {
     pub(super) fn exclude_from_dump(_p: NonNull<u8>, _len: usize) {}
 }
 
-/// Sayfa boyutu (önbellekli).
+/// Page size (cached).
 fn page_size() -> usize {
     static PAGE: AtomicUsize = AtomicUsize::new(0);
     let p = PAGE.load(Ordering::Relaxed);
@@ -294,7 +294,7 @@ fn page_size() -> usize {
     p
 }
 
-/// `[offset, offset+len)` aralığının kapsadığı sayfa indeksleri (dahil), arena sınırına kırpılmış.
+/// Page indices (inclusive) covered by `[offset, offset+len)`, clipped to the arena.
 fn page_span(offset: usize, len: usize, page: usize) -> (usize, usize) {
     let first = (offset / page).min(ARENA_PAGES - 1);
     let last = ((offset + len.max(1) - 1) / page).min(ARENA_PAGES - 1);
@@ -305,13 +305,13 @@ fn round_up(n: usize, m: usize) -> Option<usize> {
     n.checked_add(m - 1).map(|v| v / m * m)
 }
 
-/// Volatile sıfırlama; `zeroize` crate'i üzerinden (ayırma yapmaz).
+/// Volatile zeroization through the `zeroize` crate (no allocation).
 fn zero_bytes(p: NonNull<u8>, len: usize) {
     if len == 0 {
         return;
     }
-    // SAFETY: çağıran `p..p+len` aralığının bu süreçte eşlenmiş, yazılabilir ve bu çağrı
-    // süresince başka hiçbir referansla kullanılmayan bellek olduğunu garanti eder.
+    // SAFETY: the caller guarantees that `p..p+len` is memory mapped in this process, writable,
+    // and not used through any other reference during this call.
     let s = unsafe { core::slice::from_raw_parts_mut(p.as_ptr(), len) };
     s.zeroize();
 }
@@ -320,19 +320,19 @@ fn zero_bytes(p: NonNull<u8>, len: usize) {
 // Arena
 // ---------------------------------------------------------------------------------------------
 
-/// Hook için: arena tabanı (NULL = kurulmadı) ve uzunluğu.
+/// For the hook: arena base (NULL = not set up) and length.
 static ARENA_BASE: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 static ARENA_LEN: AtomicUsize = AtomicUsize::new(0);
-/// Herhangi bir `mlock`/`VirtualLock` başarısız oldu mu (uyarı / `--strict-memory`).
+/// Whether any `mlock`/`VirtualLock` failed (warning / `--strict-memory`).
 static LOCK_FAILED: AtomicBool = AtomicBool::new(false);
 
 struct ArenaState {
-    /// Birim başına 1 bit; 1 = dolu.
+    /// 1 bit per unit; 1 = used.
     bitmap: Vec<u64>,
     units: usize,
-    /// Sayfa başına canlı ayırma sayısı.
+    /// Live allocations per page.
     page_refs: Vec<u32>,
-    /// Sayfa başına kilit durumu.
+    /// Lock state per page.
     page_locked: Vec<bool>,
     last_lock_error: Option<String>,
 }
@@ -340,7 +340,7 @@ struct ArenaState {
 static STATE: Mutex<Option<ArenaState>> = Mutex::new(None);
 
 fn arena_base() -> NonNull<u8> {
-    // Yalnızca STATE Some iken çağrılır; o zaman ARENA_BASE null değildir.
+    // Called only while STATE is Some; ARENA_BASE is then not null.
     NonNull::new(ARENA_BASE.load(Ordering::Acquire)).unwrap_or(NonNull::dangling())
 }
 
@@ -380,7 +380,7 @@ impl ArenaState {
         }
     }
 
-    /// `k` birimlik, `align_units` katı başlangıçlı boş aralık bulur.
+    /// Finds a free range of `k` units starting at a multiple of `align_units`.
     fn find_run(&self, k: usize, align_units: usize) -> Option<usize> {
         let mut start = 0;
         while start + k <= self.units {
@@ -410,12 +410,12 @@ impl ArenaState {
         for u in start..start + k {
             self.set(u, true);
         }
-        // Sayfa refcount + ilk kullanımda kilit.
+        // Page refcount + lock on first use.
         let base = arena_base();
         let (first_page, last_page) = page_span(start * UNIT, k * UNIT, page);
         for pg in first_page..=last_page {
             if self.page_refs[pg] == 0 && !self.page_locked[pg] {
-                // SAFETY-sözleşmesi: `base + pg*page` arena içindedir.
+                // SAFETY contract: `base + pg*page` is inside the arena.
                 let pp = NonNull::new(base.as_ptr().wrapping_add(pg * page)).unwrap_or(base);
                 match os::lock(pp, page) {
                     Ok(()) => self.page_locked[pg] = true,
@@ -453,17 +453,17 @@ impl ArenaState {
     }
 }
 
-/// Arena'dan `size` bayt, `align` hizalı slot ayırır; sıfırlanmış döner.
+/// Allocates a slot of `size` bytes with alignment `align` from the arena; returned zeroed.
 fn arena_alloc(size: usize, align: usize) -> Result<NonNull<u8>, MemError> {
     let off = with_state(|st| st.alloc(size, align))?;
     let base = arena_base();
-    // Slot sıfır olduğundan emin ol (önceki kullanıcı Drop'ta sıfırladı; yine de garanti).
+    // Make sure the slot is zero (the previous user zeroized it on Drop; guaranteed anyway).
     let p = NonNull::new(base.as_ptr().wrapping_add(off)).ok_or(MemError::InvalidSize)?;
     zero_bytes(p, size.max(1));
     Ok(p)
 }
 
-/// Slotu sıfırlar ve serbest bırakır.
+/// Zeroizes and frees the slot.
 fn arena_free(p: NonNull<u8>, size: usize) {
     zero_bytes(p, size.max(1));
     let base = arena_base();
@@ -474,13 +474,13 @@ fn arena_free(p: NonNull<u8>, size: usize) {
     });
 }
 
-/// Herhangi bir kilitleme başarısız olduysa `true` (uyarı; `--strict-memory` ile hata).
+/// `true` if any locking failed (warning; an error with `--strict-memory`).
 #[must_use]
 pub fn lock_failed() -> bool {
     LOCK_FAILED.load(Ordering::Relaxed)
 }
 
-/// Son kilit hatasının metni (varsa).
+/// Text of the last locking error (if any).
 #[must_use]
 pub fn last_lock_error() -> Option<String> {
     STATE
@@ -493,75 +493,75 @@ pub fn last_lock_error() -> Option<String> {
 // SecretBytes
 // ---------------------------------------------------------------------------------------------
 
-/// Kilitli arenada sabit kapasiteli bayt tamponu. Tek sır türü.
+/// Fixed-capacity byte buffer in the locked arena. The single secret type.
 pub struct SecretBytes {
     ptr: NonNull<u8>,
     cap: usize,
     len: usize,
 }
 
-// SAFETY: içerik düz baytlardır; `&SecretBytes` yalnızca okuma, `&mut` tek yazar.
+// SAFETY: the content is plain bytes; `&SecretBytes` only reads, `&mut` is the single writer.
 unsafe impl Send for SecretBytes {}
-// SAFETY: yukarıdaki gibi; iç değişebilirlik yok.
+// SAFETY: as above; no interior mutability.
 unsafe impl Sync for SecretBytes {}
 
 impl SecretBytes {
-    /// `cap` baytlık sıfırlanmış, kilitli tampon (uzunluk 0).
+    /// Zeroed, locked buffer of `cap` bytes (length 0).
     ///
     /// # Errors
-    /// Arena dolu ya da kurulamadıysa.
+    /// If the arena is full or could not be set up.
     pub fn with_capacity(cap: usize) -> Result<Self, MemError> {
         let ptr = arena_alloc(cap.max(1), UNIT)?;
         Ok(Self { ptr, cap, len: 0 })
     }
 
-    /// Dilimi kopyalar (kaynağı sıfırlamak çağıranın işidir).
+    /// Copies the slice (zeroizing the source is the caller's job).
     ///
     /// # Errors
-    /// Arena dolu ya da kurulamadıysa.
+    /// If the arena is full or could not be set up.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, MemError> {
         let mut s = Self::with_capacity(bytes.len())?;
         s.push_slice(bytes)?;
         Ok(s)
     }
 
-    /// Kapasite.
+    /// Capacity.
     #[must_use]
     pub const fn capacity(&self) -> usize {
         self.cap
     }
-    /// Uzunluk.
+    /// Length.
     #[must_use]
     pub const fn len(&self) -> usize {
         self.len
     }
-    /// Boş mu.
+    /// Whether it is empty.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    /// İçeriği okur.
+    /// Reads the content.
     #[must_use]
     pub fn expose(&self) -> &[u8] {
-        // SAFETY: `ptr..ptr+cap` arena slotu; `len ≤ cap`; tüm baytlar başlatılmış (sıfır/yazılmış).
+        // SAFETY: `ptr..ptr+cap` is an arena slot; `len ≤ cap`; every byte is initialised (zero/written).
         unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 
-    /// İçeriği değiştirir (uzunluk sabit).
+    /// Changes the content (fixed length).
     pub fn expose_mut(&mut self) -> &mut [u8] {
-        // SAFETY: yukarıdaki gibi; `&mut self` tek erişim.
+        // SAFETY: as above; `&mut self` is the only access.
         unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
     }
 
-    /// `len..cap` arası boş alan; okuyucular doğrudan buraya yazıp [`set_len`](Self::set_len) çağırır.
+    /// Free space `len..cap`; readers write here directly and call [`set_len`](Self::set_len).
     pub fn spare_mut(&mut self) -> &mut [u8] {
         let tail = self.ptr.as_ptr().wrapping_add(self.len);
-        // SAFETY: `ptr+len .. ptr+cap` slot içinde; başlatılmış; `&mut self` tek erişim.
+        // SAFETY: `ptr+len .. ptr+cap` is inside the slot and initialised; `&mut self` is the only access.
         unsafe { core::slice::from_raw_parts_mut(tail, self.cap - self.len) }
     }
 
-    /// Uzunluğu ayarlar (`n ≤ cap`). Kısalırken artan kısım sıfırlanır.
+    /// Sets the length (`n ≤ cap`). When shrinking, the removed part is zeroized.
     ///
     /// # Errors
     /// `n > cap`.
@@ -580,7 +580,7 @@ impl SecretBytes {
         Ok(())
     }
 
-    /// Sona ekler; kapasite aşılırsa hata, tampon büyütülmez.
+    /// Appends; an error if the capacity is exceeded, the buffer is never grown.
     ///
     /// # Errors
     /// `len + bytes.len() > cap`.
@@ -600,14 +600,14 @@ impl SecretBytes {
         Ok(())
     }
 
-    /// Kısaltır; kesilen kısım sıfırlanır.
+    /// Truncates; the removed part is zeroized.
     pub fn truncate(&mut self, n: usize) {
         if n < self.len {
             let _ = self.set_len(n);
         }
     }
 
-    /// Tüm içeriği sıfırlar, uzunluk 0.
+    /// Zeroizes the whole content, length 0.
     pub fn clear(&mut self) {
         self.truncate(0);
     }
@@ -629,29 +629,29 @@ impl fmt::Debug for SecretBytes {
 // SecretBox<T>
 // ---------------------------------------------------------------------------------------------
 
-/// Kilitli arenada yaşayan `T`. Drop'ta `drop_in_place` + ham sıfırlama.
+/// A `T` living in the locked arena. `drop_in_place` + raw zeroization on Drop.
 pub struct SecretBox<T> {
     ptr: NonNull<T>,
     size: usize,
 }
 
-// SAFETY: `SecretBox<T>` yalnızca `T`'nin kendisine sahiptir; `Box<T>` ile aynı kurallar.
+// SAFETY: `SecretBox<T>` owns only the `T` itself; same rules as `Box<T>`.
 unsafe impl<T: Send> Send for SecretBox<T> {}
-// SAFETY: yukarıdaki gibi.
+// SAFETY: as above.
 unsafe impl<T: Sync> Sync for SecretBox<T> {}
 
 impl<T> SecretBox<T> {
-    /// `value`'yu arenaya taşır. Çağıranın yığındaki kopyası taşıma sonrasında geçersizdir
-    /// (Rust taşıma semantiği; yığın kalıntısı THREAT-MODEL'de).
+    /// Moves `value` into the arena. The caller's stack copy is invalid after the move
+    /// (Rust move semantics; stack residue: see THREAT-MODEL).
     ///
     /// # Errors
-    /// Arena dolu, kurulamadı ya da `align_of::<T>()` sayfa boyutunu aşıyor.
+    /// Arena full, could not be set up, or `align_of::<T>()` exceeds the page size.
     pub fn new(value: T) -> Result<Self, MemError> {
         let size = size_of::<T>().max(1);
         let raw = arena_alloc(size, align_of::<T>())?;
         let ptr = raw.cast::<T>();
-        // SAFETY: `ptr` `align_of::<T>()` hizalı, `size_of::<T>()` baytlık yazılabilir slot;
-        // `value` sahipliği buraya taşınır.
+        // SAFETY: `ptr` is a writable slot aligned to `align_of::<T>()` with `size_of::<T>()` bytes;
+        // ownership of `value` moves here.
         unsafe { ptr.as_ptr().write(value) };
         Ok(Self { ptr, size })
     }
@@ -660,21 +660,21 @@ impl<T> SecretBox<T> {
 impl<T> Deref for SecretBox<T> {
     type Target = T;
     fn deref(&self) -> &T {
-        // SAFETY: `ptr` `new` içinde başlatılmış geçerli bir `T`'yi gösterir; Drop'a kadar canlı.
+        // SAFETY: `ptr` points to a valid `T` initialised in `new`; alive until Drop.
         unsafe { self.ptr.as_ref() }
     }
 }
 
 impl<T> DerefMut for SecretBox<T> {
     fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: yukarıdaki gibi; `&mut self` tek erişim.
+        // SAFETY: as above; `&mut self` is the only access.
         unsafe { self.ptr.as_mut() }
     }
 }
 
 impl<T> Drop for SecretBox<T> {
     fn drop(&mut self) {
-        // SAFETY: `ptr` başlatılmış `T`; yalnızca bir kez düşürülür (Drop tek çağrılır).
+        // SAFETY: `ptr` is an initialised `T`; it is dropped only once (Drop runs once).
         unsafe { core::ptr::drop_in_place(self.ptr.as_ptr()) };
         arena_free(self.ptr.cast::<u8>(), self.size);
     }
@@ -690,9 +690,9 @@ impl<T> fmt::Debug for SecretBox<T> {
 // LargeSecretBuf<T>
 // ---------------------------------------------------------------------------------------------
 
-/// Hook kayıt yuvası. `state` hook ile `Drop` arasındaki yarışı önler: hook yalnızca ACTIVE
-/// yuvayı HOOK'a alıp sıfırlar; Drop yuvayı ACTIVE→RETIRING alamazsa (hook sıfırlıyor) hook
-/// bitene kadar bekler. Böylece hook eşlemesi kaldırılmış belleğe hiç yazmaz.
+/// Hook registry slot. `state` prevents a race between the hook and `Drop`: the hook only moves an
+/// ACTIVE slot to HOOK and zeroizes it; if Drop cannot move the slot ACTIVE→RETIRING (the hook is
+/// zeroizing), it waits for the hook. So the hook never writes to unmapped memory.
 struct Slot {
     state: AtomicU8,
     ptr: AtomicPtr<u8>,
@@ -729,7 +729,7 @@ fn register_region(p: NonNull<u8>, len: usize) -> Result<usize, MemError> {
     Err(MemError::RegistryFull)
 }
 
-/// Yuvayı emekliye ayırır; bölge ancak bundan sonra unmap edilebilir.
+/// Retires the slot; only then may the region be unmapped.
 fn retire_region(i: usize) {
     let slot = &REGIONS[i];
     while slot
@@ -737,12 +737,12 @@ fn retire_region(i: usize) {
         .compare_exchange(S_ACTIVE, S_RETIRING, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        // Hook bu bölgeyi sıfırlıyor (ardından abort gelir): bitmesini bekle.
+        // The hook is zeroizing this region (an abort follows): wait for it to finish.
         std::thread::yield_now();
     }
 }
 
-/// Unmap sonrası yuvayı boşaltır.
+/// Clears the slot after unmapping.
 fn free_region(i: usize) {
     let slot = &REGIONS[i];
     slot.len.store(0, Ordering::Release);
@@ -750,8 +750,8 @@ fn free_region(i: usize) {
     slot.state.store(S_FREE, Ordering::Release);
 }
 
-/// `mmap`/`VirtualAlloc` ile ayrılmış, best-effort kilitli büyük bölge. `T: Copy` olduğundan
-/// Drop çalıştırılmaz; bölge ham baytlar olarak sıfırlanır.
+/// Large region allocated with `mmap`/`VirtualAlloc`, locked best effort. Since `T: Copy`, no
+/// Drop runs; the region is zeroized as raw bytes.
 pub struct LargeSecretBuf<T: Copy> {
     ptr: NonNull<T>,
     len: usize,
@@ -760,17 +760,17 @@ pub struct LargeSecretBuf<T: Copy> {
     slot: usize,
 }
 
-// SAFETY: bölgeye yalnızca bu değer sahiptir; `T: Send` ise taşınabilir.
+// SAFETY: only this value owns the region; it can be moved if `T: Send`.
 unsafe impl<T: Copy + Send> Send for LargeSecretBuf<T> {}
-// SAFETY: `&self` yalnızca `&[T]` verir; `T: Sync` ise paylaşılabilir.
+// SAFETY: `&self` only gives `&[T]`; it can be shared if `T: Sync`.
 unsafe impl<T: Copy + Sync> Sync for LargeSecretBuf<T> {}
 
 impl<T: Copy> LargeSecretBuf<T> {
-    /// `len` adet `T`, her biri `init` ile doldurulmuş. Kilit denenir; başarısızlık
-    /// [`is_locked`](Self::is_locked) ile görülür ve [`lock_failed`] bayrağına yansır.
+    /// `len` items of `T`, each filled with `init`. Locking is attempted; a failure is visible
+    /// through [`is_locked`](Self::is_locked) and the [`lock_failed`] flag.
     ///
     /// # Errors
-    /// Boyut taşması, hiza > sayfa, eşleme hatası, kayıt tablosu dolu.
+    /// Size overflow, alignment > page, mapping error, registry full.
     pub fn new_filled(len: usize, init: T) -> Result<Self, MemError> {
         let page = page_size();
         if align_of::<T>() > page {
@@ -803,8 +803,8 @@ impl<T: Copy> LargeSecretBuf<T> {
         let ptr = raw.cast::<T>();
         for i in 0..len {
             let slot = ptr.as_ptr().wrapping_add(i);
-            // SAFETY: `ptr` sayfa hizalı (≥ align_of::<T>()), `i < len` ve `len*size_of::<T>()
-            // ≤ map_len`; `T: Copy` olduğundan üzerine yazma Drop gerektirmez.
+            // SAFETY: `ptr` is page aligned (≥ align_of::<T>()), `i < len` and `len*size_of::<T>()
+            // ≤ map_len`; since `T: Copy`, overwriting needs no Drop.
             unsafe { slot.write(init) };
         }
         Ok(Self {
@@ -816,32 +816,32 @@ impl<T: Copy> LargeSecretBuf<T> {
         })
     }
 
-    /// Eleman sayısı.
+    /// Number of items.
     #[must_use]
     pub const fn len(&self) -> usize {
         self.len
     }
-    /// Boş mu.
+    /// Whether it is empty.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
-    /// Kilit başarılı mı.
+    /// Whether locking succeeded.
     #[must_use]
     pub const fn is_locked(&self) -> bool {
         self.locked
     }
 
-    /// Dilim.
+    /// Slice.
     #[must_use]
     pub fn as_slice(&self) -> &[T] {
-        // SAFETY: `ptr..ptr+len` `new_filled` içinde başlatılmış, hizalı; Drop'a kadar canlı.
+        // SAFETY: `ptr..ptr+len` was initialised in `new_filled` and is aligned; alive until Drop.
         unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 
-    /// Değişebilir dilim.
+    /// Mutable slice.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        // SAFETY: yukarıdaki gibi; `&mut self` tek erişim.
+        // SAFETY: as above; `&mut self` is the only access.
         unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
     }
 }
@@ -878,26 +878,26 @@ impl<T: Copy> fmt::Debug for LargeSecretBuf<T> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Panik hook'u desteği
+// Panic-hook support
 // ---------------------------------------------------------------------------------------------
 
-/// Arenayı ve kayıtlı tüm büyük bölgeleri sıfırlar. Panik hook'unun (1) adımı.
-/// Kilit almaz, ayırma yapmaz. `(arena_bayt, bölge_sayısı)` döner.
+/// Zeroizes the arena and every registered large region. Step (1) of the panic hook.
+/// Takes no lock and does not allocate. Returns `(arena_bytes, region_count)`.
 ///
-/// Diğer iş parçacıkları bu sırada hâlâ çalışıyor olabilir; abort hemen ardından geldiği için
-/// bu veri yarışı kabul edilir (THREAT-MODEL › Bellek). Yalnızca abort öncesi çağrılmalıdır.
+/// Other threads may still be running meanwhile; since an abort follows immediately, this data
+/// race is accepted (THREAT-MODEL › Memory). Call it only right before aborting.
 pub fn zeroize_all_registered() -> (usize, usize) {
     let mut arena = 0;
     if let Some(base) = NonNull::new(ARENA_BASE.load(Ordering::Acquire)) {
         let len = ARENA_LEN.load(Ordering::Acquire);
-        // SAFETY (kabul edilen yarış): arena süreç ömrü boyunca eşlenmiş kalır; eşzamanlı
-        // okuyucular olabilir, abort izleyeceğinden veri yarışı bilinçli olarak kabul edilir.
+        // SAFETY (accepted race): the arena stays mapped for the process lifetime; concurrent
+        // readers may exist, and since an abort follows, the data race is deliberately accepted.
         zero_bytes(base, len);
         arena = len;
     }
     let mut regions = 0;
     for slot in &REGIONS {
-        // Yalnızca ACTIVE yuva alınır; HOOK durumundayken Drop unmap edemez (retire_region bekler).
+        // Only an ACTIVE slot is taken; in the HOOK state Drop cannot unmap (retire_region waits).
         if slot
             .state
             .compare_exchange(S_ACTIVE, S_HOOK, Ordering::AcqRel, Ordering::Acquire)
@@ -907,8 +907,8 @@ pub fn zeroize_all_registered() -> (usize, usize) {
         }
         let l = slot.len.load(Ordering::Acquire);
         if let Some(p) = NonNull::new(slot.ptr.load(Ordering::Acquire)).filter(|_| l > 0) {
-            // HOOK durumu bölgenin eşlenmiş kalmasını garanti eder; eşzamanlı okuyucular olabilir
-            // (abort izler, veri yarışı kabul edilir).
+            // The HOOK state guarantees the region stays mapped; concurrent readers may exist
+            // (an abort follows; the data race is accepted).
             zero_bytes(p, l);
             regions += 1;
         }
@@ -926,8 +926,8 @@ pub fn zeroize_all_registered() -> (usize, usize) {
 mod tests {
     use super::*;
 
-    /// Testler aynı süreç arenasını paylaşır; arenayı bilerek dolduran test diğerlerini aç
-    /// bırakmasın diye bellek testleri sırayla çalışır.
+    /// Tests share the same process arena; memory tests run one at a time so that the test that
+    /// deliberately fills the arena does not starve the others.
     fn serial() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: Mutex<()> = Mutex::new(());
         LOCK.lock()
@@ -945,14 +945,18 @@ mod tests {
             s.push_slice(b"123456"),
             Err(MemError::CapacityExceeded { .. })
         ));
-        assert_eq!(s.capacity(), 8, "kapasite değişmemeli");
+        assert_eq!(s.capacity(), 8, "capacity must not change");
         s.spare_mut()[0] = b'z';
         s.set_len(4).unwrap();
         assert_eq!(s.expose(), b"abcz");
         s.truncate(2);
         assert_eq!(s.expose(), b"ab");
         s.set_len(4).unwrap();
-        assert_eq!(&s.expose()[2..], &[0, 0], "kesilen kısım sıfırlanmalı");
+        assert_eq!(
+            &s.expose()[2..],
+            &[0, 0],
+            "the removed part must be zeroized"
+        );
         assert_eq!(format!("{s:?}"), "SecretBytes([REDACTED])");
     }
 
@@ -965,10 +969,10 @@ mod tests {
             a.push_slice(&[0xAA; 32]).unwrap();
             p = a.ptr;
         }
-        // Aynı slot sıfır olarak yeniden verilmeli (first-fit).
+        // The same slot must be handed out again, zeroed (first-fit).
         let b = SecretBytes::with_capacity(32).unwrap();
         if b.ptr == p {
-            // SAFETY: slot `b`'ye ait, 32 bayt kapasite, tüm baytlar başlatılmış.
+            // SAFETY: the slot belongs to `b`, 32 bytes of capacity, every byte initialised.
             let full = unsafe { core::slice::from_raw_parts(b.ptr.as_ptr(), 32) };
             assert!(full.iter().all(|&x| x == 0));
         }
@@ -977,10 +981,10 @@ mod tests {
     #[test]
     fn page_refcount_keeps_page_locked_until_last_drop() {
         let _serial = serial();
-        // aynı sayfada iki sır, biri düşünce sayfa kilitli kalır. Diğer testler aynı
-        // arenayı paylaştığından yalnızca "b yaşarken sayfa kilitli ve refs ≥ 1" denetlenir;
-        // tam sayaç eşitliği `page_span`/`alloc` mantığıyla aşağıdaki tek-iş-parçacıklı
-        // `refcount_arithmetic` testinde doğrulanır.
+        // two secrets on the same page; when one is dropped the page stays locked. Since other
+        // tests share the arena, only "while b lives the page is locked and refs ≥ 1" is checked;
+        // exact counter equality is verified with the `page_span`/`alloc` logic in the
+        // single-threaded `refcount_arithmetic` test below.
         let page = page_size();
         let pg =
             |s: &SecretBytes| (s.ptr.as_ptr() as usize - arena_base().as_ptr() as usize) / page;
@@ -992,9 +996,12 @@ mod tests {
         let idx = pg(&a);
         drop(a);
         let (refs, locked) = with_state(|st| Ok((st.page_refs[idx], st.page_locked[idx]))).unwrap();
-        assert!(refs >= 1, "b hâlâ canlı");
+        assert!(refs >= 1, "b is still alive");
         if !lock_failed() {
-            assert!(locked, "sayfada hâlâ sır varken kilit kalkmamalı");
+            assert!(
+                locked,
+                "the lock must stay while the page still holds a secret"
+            );
         }
         drop(b);
     }
@@ -1002,7 +1009,7 @@ mod tests {
     #[test]
     fn refcount_arithmetic() {
         let _serial = serial();
-        // page_span: tek sayfa, sınırda biten ve iki sayfaya yayılan aralıklar.
+        // page_span: a single page, a range ending at a boundary and one spanning two pages.
         let page = page_size();
         assert_eq!(page_span(0, 64, page), (0, 0));
         assert_eq!(page_span(page - 64, 64, page), (0, 0));
@@ -1019,7 +1026,7 @@ mod tests {
             match SecretBytes::with_capacity(4096) {
                 Ok(s) => keep.push(s),
                 Err(MemError::ArenaExhausted { .. }) => break,
-                Err(e) => panic!("beklenmeyen hata: {e}"),
+                Err(e) => panic!("unexpected error: {e}"),
             }
             assert!(keep.len() < 10_000);
         }
@@ -1065,7 +1072,7 @@ mod tests {
         assert_eq!(
             buf.as_slice()[5],
             Blk([0; 16]),
-            "hook sıfırlaması bölgeyi kapsamalı"
+            "the hook's zeroization must cover the region"
         );
         drop(buf);
     }

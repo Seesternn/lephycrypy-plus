@@ -1,7 +1,7 @@
-//! `lephycrypy-gui` — masaüstü arayüzü (1.2). `#![forbid(unsafe_code)]`.
+//! `lephycrypy-gui` — the desktop app. `#![forbid(unsafe_code)]`.
 //!
-//! Süreç başı CLI ile aynıdır: sertleştirme → panik hook'u → sinyal işleyici. Ek olarak sıfırlayan
-//! global ayırıcı açıktır.
+//! Process start is the same as the CLI: hardening → panic hook → signal handler. In addition the
+//! zeroizing global allocator is enabled.
 //!
 //! Files to open arrive from the operating system: on macOS as an open-documents event
 //! (double-click, "Open With", Dock), on Windows as `--open <absolute path>` from the Explorer
@@ -12,7 +12,7 @@
 
 const _: () = assert!(
     !lephy_core::TEST_VECTORS_ENABLED,
-    "lephy-gui, lephy-core/test-vectors feature'ı ile derlenemez"
+    "lephy-gui cannot be built with the lephy-core/test-vectors feature"
 );
 
 #[cfg(any(target_os = "macos", windows))]
@@ -39,7 +39,7 @@ static ALLOC: lephy_sys::alloc::ZeroizingAlloc = lephy_sys::alloc::ZeroizingAllo
 #[cfg(not(any(target_os = "macos", windows)))]
 fn main() -> ExitCode {
     eprintln!(
-        "hata: lephycrypy-gui yalnızca macOS ve Windows'ta desteklenir; komut satırı için `lephycrypy`"
+        "error: lephycrypy-gui is supported only on macOS and Windows; use `lephycrypy` on the command line"
     );
     ExitCode::from(1)
 }
@@ -47,17 +47,17 @@ fn main() -> ExitCode {
 #[cfg(any(target_os = "macos", windows))]
 fn main() -> ExitCode {
     if let Err(e) = lephy_sys::platform::harden() {
-        eprintln!("uyarı: süreç sertleştirme kısmen başarısız: {e}");
+        eprintln!("warning: process hardening partly failed: {e}");
     }
     lephy_sys::platform::install_panic_hook();
     if let Err(e) = lephy_sys::signal::install() {
-        eprintln!("uyarı: sinyal işleyici kurulamadı: {e}");
+        eprintln!("warning: the signal handler could not be installed: {e}");
     }
     if cfg!(all(target_os = "macos", not(debug_assertions))) {
         let _ = lephy_sys::platform::deny_debugger();
     }
     let Some(font) = fonts::find_system_fonts() else {
-        eprintln!("hata: Türkçe karakterleri kapsayan bir sistem yazı tipi bulunamadı");
+        eprintln!("error: no system font covering Turkish characters was found");
         return ExitCode::from(1);
     };
     let options = eframe::NativeOptions {
@@ -76,14 +76,14 @@ fn main() -> ExitCode {
         ..Default::default()
     };
     let r = run(options, font);
-    // Son güvence: hâlâ kayıtlı yarım tmp dosyası varsa sil.
+    // Last resort: delete any half-written temp file that is still registered.
     let _ = lephy_sys::fs::tmp_unlink_all_in_hook();
     lephy_sys::signal::mark_cleanup_done();
     match r {
         Ok(()) if lephy_sys::signal::signalled() => ExitCode::from(130),
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("hata: pencere açılamadı: {e}");
+            eprintln!("error: the window could not be opened: {e}");
             ExitCode::from(1)
         }
     }
@@ -117,7 +117,7 @@ fn run(options: eframe::NativeOptions, font: fonts::SystemFonts) -> Result<(), S
     if cfg!(target_os = "macos")
         && !lephy_sys::open_docs::install_macos_handler("WinitApplicationDelegate")
     {
-        eprintln!("uyarı: Finder'dan dosya açma kurulamadı");
+        eprintln!("warning: opening files from Finder could not be set up");
     }
     lephy_sys::open_docs::push(open_args());
     let mut app = eframe::create_native(

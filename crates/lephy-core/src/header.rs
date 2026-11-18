@@ -1,24 +1,24 @@
-//! 256 baytlık başlık (FORMAT.md › Başlık).
+//! The 256-byte header (FORMAT.md › Header).
 //!
-//! `parse` sırası: sabit alanlar → reserved (ofs 12, 15, 28..32, 192..224) sıfır → bilinmeyen
-//! bayrak bitleri → nonce kuyrukları (AES) → KDF biçim sınırları; ihlal →
-//! `Error::Corrupt { at: "başlık" }`, KDF'den önce. Bütçe (`m×t`, RAM) burada **değil**,
-//! `kdf::check_budget`'tadır (kod 6).
+//! `parse` order: fixed fields → reserved bytes (offsets 12, 15, 28..32, 192..224) zero → unknown
+//! flag bits → nonce tails (AES) → KDF format limits; a violation →
+//! `Error::Corrupt { at: "header" }`, before key derivation. The budget (`m×t`, RAM) is **not**
+//! checked here but in `kdf::check_budget` (code 6).
 
 use crate::cipher::AlgId;
 use crate::error::{Error, Result};
 use crate::kdf::KdfParams;
 
-/// Başlık uzunluğu.
+/// Header length.
 pub const HEADER_LEN: usize = 256;
 /// Magic.
 pub const MAGIC: [u8; 6] = *b"LPHY+\0";
-/// Biçim sürümü (v2 özelliği kullanılmayan dosyalar).
+/// Format version (files that use no v2 feature).
 pub const VERSION: u16 = 1;
-/// v2: `feature_flags` (ofset 12) kullanan dosyalar. Yazıcı v2'yi yalnızca bir v2 özelliği
-/// açıksa yazar; böylece v1 dosyaları bayt bayt aynı kalır.
+/// v2: files that use `feature_flags` (offset 12). Writers write v2 only when a v2 feature is
+/// used, so v1 files stay byte for byte the same.
 pub const VERSION_2: u16 = 2;
-/// `feature_flags.bit0`: içerik şifrelemeden önce ham DEFLATE ile sıkıştırıldı.
+/// `feature_flags.bit0`: the content was compressed with raw DEFLATE before encryption.
 pub const FEATURE_COMPRESSED: u8 = 0x01;
 /// `feature_flags.bit1`: the file key is wrapped for X25519 recipients (no password slot).
 /// `kdf_id = 0`, the password fields are zero and `header[28..30]` holds the recipient count;
@@ -30,63 +30,63 @@ const KNOWN_FEATURES: u8 = FEATURE_COMPRESSED | FEATURE_RECIPIENTS;
 pub const MAX_RECIPIENTS: u16 = 64;
 /// One recipient stanza: `eph_pk 32 ‖ wrap_nonce 24 ‖ commit 32 ‖ wrapped_fk 48`.
 pub const STANZA_LEN: usize = 136;
-/// `wrapped_fk` AAD aralığı.
+/// `wrapped_fk` AAD range.
 pub const WRAP_AAD_END: usize = 144;
-/// `header_mac` girdisi aralığı.
+/// `header_mac` input range.
 pub const MAC_END: usize = 224;
 
-/// İçerik türü (ofset 9).
+/// Content type (offset 9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum ContentType {
-    /// Ham akış (tek dosya/stdin).
+    /// Raw stream (single file/stdin).
     #[default]
     Raw = 0,
-    /// Arşiv.
+    /// Archive.
     Archive = 1,
 }
 
-/// Ayrıştırılmış başlık.
+/// Parsed header.
 #[derive(Debug, Clone)]
 pub struct Header {
-    /// Algoritma.
+    /// Algorithm.
     pub alg: AlgId,
-    /// İçerik türü.
+    /// Content type.
     pub content_type: ContentType,
-    /// PADMÉ dolgulu mu (`stream_flags.bit0`).
+    /// PADMÉ padded (`stream_flags.bit0`).
     pub padded: bool,
     /// `chunk_code` 0..=4.
     pub chunk_code: u8,
-    /// Argon2 parametreleri.
+    /// Argon2 parameters.
     pub kdf: KdfParams,
-    /// Keyfile kullanılıyor mu (`kdf_flags.bit0`).
+    /// Whether a key file is used (`kdf_flags.bit0`).
     pub keyfile: bool,
-    /// İçerik sıkıştırılmış mı (v2 `feature_flags.bit0`).
+    /// Whether the content is compressed (v2 `feature_flags.bit0`).
     pub compressed: bool,
     /// Recipient count (v2 `feature_flags.bit1`); 0 = password file.
     pub recipients: u16,
     /// Argon2 salt.
     pub salt: [u8; 32],
-    /// STREAM nonce prefix'i (24 B'ın tamamı; AES'te kuyruk sıfır).
+    /// STREAM nonce prefix (all 24 bytes; the tail is zero for AES).
     pub stream_nonce_prefix: [u8; 24],
-    /// Wrap nonce (24 B; AES'te kuyruk sıfır).
+    /// Wrap nonce (24 B; the tail is zero for AES).
     pub wrap_nonce: [u8; 24],
-    /// Taahhüt etiketi.
+    /// Commitment tag.
     pub commit_tag: [u8; 32],
-    /// Sarılmış FK (32 + 16).
+    /// Wrapped FK (32 + 16).
     pub wrapped_fk: [u8; 48],
-    /// Başlık MAC'i.
+    /// Header MAC.
     pub header_mac: [u8; 32],
 }
 
 fn corrupt(detail: &str) -> Error {
     Error::Corrupt {
-        at: "başlık".into(),
+        at: "header".into(),
         detail: Some(detail.into()),
     }
 }
 
-/// `chunk_code` → chunk boyutu (bayt).
+/// `chunk_code` → chunk size (bytes).
 #[must_use]
 pub const fn chunk_size_for(code: u8) -> Option<usize> {
     match code {
@@ -100,13 +100,13 @@ pub const fn chunk_size_for(code: u8) -> Option<usize> {
 }
 
 impl Header {
-    /// Chunk boyutu.
+    /// Chunk size.
     #[must_use]
     pub fn chunk_size(&self) -> usize {
         chunk_size_for(self.chunk_code).unwrap_or(1024 * 1024)
     }
 
-    /// Serileştirir. Reserved alanlar sıfır; AES nonce kuyrukları sıfırlanır.
+    /// Serialises it. Reserved fields are zero; AES nonce tails are cleared.
     #[must_use]
     pub fn to_bytes(&self) -> [u8; HEADER_LEN] {
         let mut b = [0u8; HEADER_LEN];
@@ -157,10 +157,10 @@ impl Header {
         usize::from(self.recipients) * STANZA_LEN
     }
 
-    /// Ayrıştırır ve biçim denetimlerini yapar (FORMAT.md › Çözme sırası, adım 1).
+    /// Parses and runs the format checks (FORMAT.md › Decryption order, step 1).
     ///
     /// # Errors
-    /// Her ihlal `Error::Corrupt { at: "başlık" }` (kod 4); ayrıntı yalnızca `--verbose`.
+    /// Every violation is `Error::Corrupt { at: "header" }` (code 4); the detail only with `--verbose`.
     #[allow(clippy::too_many_lines)] // the checks are read top to bottom in FORMAT.md order
     pub fn parse(b: &[u8; HEADER_LEN]) -> Result<Self> {
         if b[0..6] != MAGIC {
@@ -170,20 +170,20 @@ impl Header {
         let features = match version {
             VERSION => {
                 if b[12] != 0 {
-                    return Err(corrupt("reserved bayt ≠ 0"));
+                    return Err(corrupt("reserved byte ≠ 0"));
                 }
                 0
             }
             VERSION_2 => {
                 if b[12] & !KNOWN_FEATURES != 0 {
-                    return Err(corrupt("bilinmeyen feature_flags biti"));
+                    return Err(corrupt("unknown feature_flags bit"));
                 }
                 if b[12] == 0 {
-                    return Err(corrupt("v2 başlığında özellik yok"));
+                    return Err(corrupt("v2 header without a feature"));
                 }
                 b[12]
             }
-            _ => return Err(corrupt("bilinmeyen sürüm")),
+            _ => return Err(corrupt("unknown version")),
         };
         let alg = AlgId::from_u8(b[8]).ok_or_else(|| corrupt("alg_id"))?;
         let content_type = match b[9] {
@@ -192,7 +192,7 @@ impl Header {
             _ => return Err(corrupt("content_type")),
         };
         if b[10] & 0xFE != 0 {
-            return Err(corrupt("stream_flags rezerve bit"));
+            return Err(corrupt("stream_flags reserved bit"));
         }
         let padded = b[10] & 1 == 1;
         let chunk_code = b[11];
@@ -200,10 +200,10 @@ impl Header {
             return Err(corrupt("chunk_code"));
         }
         if b[15] != 0 {
-            return Err(corrupt("reserved bayt ≠ 0"));
+            return Err(corrupt("reserved byte ≠ 0"));
         }
         if b[192..224].iter().any(|&x| x != 0) {
-            return Err(corrupt("reserved alan ≠ 0"));
+            return Err(corrupt("reserved field ≠ 0"));
         }
         let recipients = if features & FEATURE_RECIPIENTS != 0 {
             // No password slot: kdf_id 0 and every password field zero.
@@ -227,12 +227,12 @@ impl Header {
                 return Err(corrupt("kdf_id"));
             }
             if b[28..32].iter().any(|&x| x != 0) {
-                return Err(corrupt("reserved alan ≠ 0"));
+                return Err(corrupt("reserved field ≠ 0"));
             }
             0
         };
         if b[14] & 0xFE != 0 {
-            return Err(corrupt("kdf_flags rezerve bit"));
+            return Err(corrupt("kdf_flags reserved bit"));
         }
         let keyfile = b[14] & 1 == 1;
         let kdf = KdfParams {
@@ -249,13 +249,13 @@ impl Header {
         stream_nonce_prefix.copy_from_slice(&b[64..88]);
         let mut wrap_nonce = [0u8; 24];
         wrap_nonce.copy_from_slice(&b[88..112]);
-        // Nonce kuyruk kuralı.
+        // Nonce tail rule.
         if stream_nonce_prefix[alg.prefix_len()..]
             .iter()
             .any(|&x| x != 0)
             || wrap_nonce[alg.nonce_len()..].iter().any(|&x| x != 0)
         {
-            return Err(corrupt("nonce kuyruğu ≠ 0"));
+            return Err(corrupt("nonce tail ≠ 0"));
         }
         let mut commit_tag = [0u8; 32];
         commit_tag.copy_from_slice(&b[112..144]);
@@ -282,7 +282,7 @@ impl Header {
     }
 }
 
-/// `chunk_aad = BLAKE3(header[0..13] || header[64..88])` — yalnızca değişmez alanlar.
+/// `chunk_aad = BLAKE3(header[0..13] || header[64..88])` — immutable fields only.
 #[must_use]
 pub fn chunk_aad(b: &[u8; HEADER_LEN]) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
@@ -291,22 +291,22 @@ pub fn chunk_aad(b: &[u8; HEADER_LEN]) -> [u8; 32] {
     *h.finalize().as_bytes()
 }
 
-/// Yeni başlık için şifreleyicinin ürettiği değişken alanlar.
+/// Variable fields the encryptor produces for a new header.
 #[derive(Debug, Clone, Copy)]
 pub struct NewHeaderParams {
-    /// Algoritma.
+    /// Algorithm.
     pub alg: AlgId,
-    /// İçerik türü.
+    /// Content type.
     pub content_type: ContentType,
-    /// Dolgu.
+    /// Padding.
     pub padded: bool,
     /// `chunk_code`.
     pub chunk_code: u8,
     /// KDF.
     pub kdf: KdfParams,
-    /// Keyfile var mı.
+    /// Whether a key file is used.
     pub keyfile: bool,
-    /// Sıkıştırma (biçim v2).
+    /// Compression (format v2).
     pub compressed: bool,
 }
 
@@ -366,10 +366,10 @@ mod tests {
         let _ = &mut b;
         match Header::parse(&b) {
             Err(Error::Corrupt { at, detail: d }) => {
-                assert_eq!(at, "başlık");
+                assert_eq!(at, "header");
                 assert!(d.unwrap().contains(detail), "{detail}");
             }
-            other => panic!("beklenen Corrupt({detail}), gelen {other:?}"),
+            other => panic!("expected Corrupt({detail}), got {other:?}"),
         }
     }
 
@@ -390,7 +390,7 @@ mod tests {
         expect_corrupt(b, "kdf_flags");
         let mut b = h.to_bytes();
         b[7] = 9;
-        expect_corrupt(b, "sürüm");
+        expect_corrupt(b, "version");
     }
 
     #[test]
@@ -429,10 +429,10 @@ mod tests {
         let h = sample();
         let mut b = h.to_bytes();
         b[64 + 7] = 1;
-        expect_corrupt(b, "nonce kuyruğu");
+        expect_corrupt(b, "nonce tail");
         let mut b = h.to_bytes();
         b[88 + 12] = 1;
-        expect_corrupt(b, "nonce kuyruğu");
+        expect_corrupt(b, "nonce tail");
     }
 
     #[test]

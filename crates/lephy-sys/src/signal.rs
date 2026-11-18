@@ -1,66 +1,66 @@
-//! Sinyal işleme.
+//! Signal handling.
 //!
-//! Unix: SIGINT/SIGTERM/SIGHUP için doğrudan `sigaction`, **`SA_RESTART` olmadan**; işleyici
-//! yalnızca [`INTERRUPTED`] bayrağını kaldırır ve self-pipe'a 1 bayt yazar (async-signal-safe).
-//! İkinci sinyalde `_exit(130)` (tmp kalabilir, `cleanup` bulur). Ana iş parçacığı dışındaki iş
-//! parçacıkları [`mask_signals_on_this_thread`] ile maskelenir.
+//! Unix: direct `sigaction` for SIGINT/SIGTERM/SIGHUP, **without `SA_RESTART`**; the handler only
+//! sets the [`INTERRUPTED`] flag and writes 1 byte to the self-pipe (async-signal-safe). A second
+//! signal calls `_exit(130)` (temp files may remain; `cleanup` finds them). Threads other than the
+//! main thread are masked with [`mask_signals_on_this_thread`].
 //!
-//! Windows: `SetConsoleCtrlHandler`; sistem işleyiciyi yeni iş parçacığında çalıştırır. Ctrl+C /
-//! Ctrl+Break: bayrak + `CancelSynchronousIo(ana iş parçacığı)` (konsol okumasını kırar,
-//! DOĞRULANMADI) + `TRUE`. Close/Logoff/Shutdown: bayrak, sonra [`mark_cleanup_done`] için
-//! ≤ ~4,5 s bekler (sistem sınırı 5000 ms).
+//! Windows: `SetConsoleCtrlHandler`; the system runs the handler on a new thread. Ctrl+C /
+//! Ctrl+Break: flag + `CancelSynchronousIo(main thread)` (breaks the console read,
+//! UNVERIFIED) + `TRUE`. Close/Logoff/Shutdown: flag, then waits ≤ ~4.5 s for
+//! [`mark_cleanup_done`] (system limit 5000 ms).
 //!
-//! `signal-hook`/`ctrlc` kullanılmaz.
+//! `signal-hook`/`ctrlc` are not used.
 
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Sinyal bayrağı (SIGINT/SIGTERM/SIGHUP, Windows konsol olayları). İkinci gerçek sinyal
-/// `_exit(130)` ile çıkar.
+/// Signal flag (SIGINT/SIGTERM/SIGHUP, Windows console events). A second real signal exits with
+/// `_exit(130)`.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
-/// Uygulama içi iptal (GUI "İptal" düğmesi). Sinyal bayrağından ayrıdır: iptalden sonra gelen
-/// ilk sinyal temizliği atlayan `_exit` yolunu tetiklemez.
+/// In-app cancellation (the app's "Cancel" button). Separate from the signal flag: the first
+/// signal after a cancellation does not trigger the `_exit` path that skips cleanup.
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
-/// Durulmalı mı: sinyal alındı ya da iptal istendi. Hat her chunk sınırında yoklar.
+/// Whether to stop: a signal arrived or cancellation was requested. The pipeline polls it at every chunk boundary.
 #[must_use]
 pub fn interrupted() -> bool {
     INTERRUPTED.load(Ordering::SeqCst) || CANCELLED.load(Ordering::SeqCst)
 }
 
-/// Yalnızca gerçek bir sinyal alındı mı (uygulama içi iptal hariç).
+/// Whether a real signal arrived (excluding in-app cancellation).
 #[must_use]
 pub fn signalled() -> bool {
     INTERRUPTED.load(Ordering::SeqCst)
 }
 
-/// Uygulama içi iptal ister (GUI "İptal" düğmesi, pencere kapatma): hat bir sonraki chunk
-/// sınırında `Interrupted` ile durur, tmp dosyaları normal yoldan silinir.
+/// Requests in-app cancellation (the app's "Cancel" button, closing the window): the pipeline
+/// stops with `Interrupted` at the next chunk boundary and temp files are removed normally.
 pub fn request_cancel() {
     CANCELLED.store(true, Ordering::SeqCst);
 }
 
-/// Uygulama içi iptali temizler (sinyal bayrağına dokunmaz).
+/// Clears in-app cancellation (does not touch the signal flag).
 pub fn reset_cancel() {
     CANCELLED.store(false, Ordering::SeqCst);
 }
 
-/// Eski ad: [`request_cancel`].
+/// Old name: [`request_cancel`].
 pub fn request_interrupt() {
     request_cancel();
 }
 
-/// İki bayrağı da sıfırlar (yalnızca testler ve ardışık komutlar için).
+/// Resets both flags (tests and consecutive commands only).
 pub fn reset_interrupted() {
     INTERRUPTED.store(false, Ordering::SeqCst);
     CANCELLED.store(false, Ordering::SeqCst);
 }
 
-/// İşleyiciyi kurar; tekrar çağrılması zararsızdır.
+/// Installs the handler; calling it again is harmless.
 ///
 /// # Errors
-/// `pipe`/`sigaction` (Unix) ya da `SetConsoleCtrlHandler`/`DuplicateHandle` (Windows) hatası.
+/// `pipe`/`sigaction` (Unix) or `SetConsoleCtrlHandler`/`DuplicateHandle` (Windows) error.
 pub fn install() -> io::Result<()> {
     if INSTALLED.swap(true, Ordering::SeqCst) {
         return Ok(());
@@ -68,28 +68,28 @@ pub fn install() -> io::Result<()> {
     imp::install()
 }
 
-/// `fd` sinyal işleyicinin kendi self-pipe uçlarından biri mi (Unix; diğerlerinde `false`).
+/// Whether `fd` is one of the signal handler's own self-pipe ends (Unix; `false` elsewhere).
 #[must_use]
 pub fn is_internal_fd(fd: i32) -> bool {
     imp::is_internal_fd(fd)
 }
 
-/// Unix: self-pipe okuma ucu (poll için). Windows: `None`.
+/// Unix: the self-pipe read end (for poll). Windows: `None`.
 #[must_use]
 pub fn self_pipe_read_fd() -> Option<i32> {
     imp::self_pipe_read_fd()
 }
 
-/// Bu iş parçacığında SIGINT/SIGTERM/SIGHUP maskeler (ana iş parçacığı dışındakiler için).
-/// Windows'ta no-op.
+/// Masks SIGINT/SIGTERM/SIGHUP on this thread (for threads other than the main thread).
+/// A no-op on Windows.
 ///
 /// # Errors
-/// `pthread_sigmask` hatası.
+/// `pthread_sigmask` error.
 pub fn mask_signals_on_this_thread() -> io::Result<()> {
     imp::mask_signals_on_this_thread()
 }
 
-/// Windows konsol kapatma işleyicisine "temizlik bitti" der; diğer platformlarda no-op.
+/// Tells the Windows console close handler that cleanup is done; a no-op elsewhere.
 pub fn mark_cleanup_done() {
     imp::mark_cleanup_done();
 }
@@ -105,52 +105,52 @@ mod imp {
 
     const SIGNALS: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
 
-    /// Bu iş parçacığının `errno` konumu.
+    /// This thread's `errno` location.
     fn errno_ptr() -> *mut libc::c_int {
         #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
-        // SAFETY: `__error` argüman almaz, iş parçacığına özgü geçerli bir işaretçi döndürür ve
-        // async-signal-safe'dir.
+        // SAFETY: `__error` takes no argument, returns a valid thread-specific pointer and is
+        // async-signal-safe.
         let p = unsafe { libc::__error() };
         #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "freebsd")))]
-        // SAFETY: `__errno_location` argüman almaz, iş parçacığına özgü geçerli bir işaretçi
-        // döndürür ve async-signal-safe'dir.
+        // SAFETY: `__errno_location` takes no argument, returns a valid thread-specific pointer
+        // and is async-signal-safe.
         let p = unsafe { libc::__errno_location() };
         p
     }
 
     extern "C" fn handler(_sig: libc::c_int) {
-        // Kesilen kodun errno'su korunur (işleyicideki `write` onu değiştirebilir).
+        // The interrupted code's errno is preserved (the handler's `write` may change it).
         let ep = errno_ptr();
-        // SAFETY: `ep` bu iş parçacığının geçerli, hizalı errno konumu.
+        // SAFETY: `ep` is this thread's valid, aligned errno location.
         let saved = unsafe { ep.read() };
         if INTERRUPTED.swap(true, Ordering::SeqCst) {
-            // İkinci sinyal: hemen çık (async-signal-safe).
-            // SAFETY: `_exit` async-signal-safe'dir ve argüman almaz.
+            // Second signal: exit at once (async-signal-safe).
+            // SAFETY: `_exit` is async-signal-safe and takes no argument.
             unsafe { libc::_exit(130) };
         }
         let wr = PIPE_WR.load(Ordering::SeqCst);
         if wr >= 0 {
             let b = [b'x'];
-            // SAFETY: `wr` kurulumda açılmış geçerli, non-blocking bir pipe ucu; `b` 1 baytlık
-            // geçerli tampon; `write` async-signal-safe'dir. Dönüş değeri yok sayılır (pipe dolu
-            // olabilir, bayrak zaten kalktı).
+            // SAFETY: `wr` is a valid non-blocking pipe end opened during setup; `b` is a valid
+            // 1-byte buffer; `write` is async-signal-safe. The return value is ignored (the pipe may
+            // be full; the flag is already set).
             let _ = unsafe { libc::write(wr, b.as_ptr().cast::<libc::c_void>(), 1) };
         }
-        // SAFETY: `ep` bu iş parçacığının geçerli, hizalı errno konumu.
+        // SAFETY: `ep` is this thread's valid, aligned errno location.
         unsafe { ep.write(saved) };
     }
 
     fn set_flags(fd: libc::c_int) -> io::Result<()> {
-        // SAFETY: F_GETFL bellek işaretçisi almaz; `fd` geçerli.
+        // SAFETY: F_GETFL takes no memory pointer; `fd` is valid.
         let fl = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if fl < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: F_SETFL yalnızca tamsayı bayrak alır.
+        // SAFETY: F_SETFL takes only an integer flag.
         if unsafe { libc::fcntl(fd, libc::F_SETFL, fl | libc::O_NONBLOCK) } < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: F_SETFD yalnızca tamsayı bayrak alır.
+        // SAFETY: F_SETFD takes only an integer flag.
         if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -159,7 +159,7 @@ mod imp {
 
     pub(super) fn install() -> io::Result<()> {
         let mut fds: [libc::c_int; 2] = [-1, -1];
-        // SAFETY: `fds` 2 elemanlı geçerli dizi; `pipe` iki fd yazar.
+        // SAFETY: `fds` is a valid 2-element array; `pipe` writes two fds.
         if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -169,14 +169,14 @@ mod imp {
         PIPE_WR.store(fds[1], Ordering::SeqCst);
 
         for sig in SIGNALS {
-            // SAFETY: `sigaction` düz C struct'ıdır; sıfır başlangıç geçerli (SIG_DFL, boş maske,
-            // bayrak yok).
+            // SAFETY: `sigaction` is a plain C struct; zero initialisation is valid (SIG_DFL, empty
+            // mask, no flags).
             let mut sa: libc::sigaction = unsafe { core::mem::zeroed() };
-            // SAFETY: `sa_mask` geçerli, yazılabilir sigset_t.
+            // SAFETY: `sa_mask` is a valid, writable sigset_t.
             unsafe { libc::sigemptyset(&raw mut sa.sa_mask) };
             sa.sa_sigaction = handler as extern "C" fn(libc::c_int) as libc::sighandler_t;
-            sa.sa_flags = 0; // SA_RESTART bilinçli olarak YOK
-            // SAFETY: `sa` tam başlatılmış; `oldact` NULL; `sig` geçerli sinyal numarası.
+            sa.sa_flags = 0; // deliberately NO SA_RESTART
+            // SAFETY: `sa` is fully initialised; `oldact` is NULL; `sig` is a valid signal number.
             if unsafe { libc::sigaction(sig, &raw const sa, core::ptr::null_mut()) } != 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -194,15 +194,15 @@ mod imp {
     }
 
     pub(super) fn mask_signals_on_this_thread() -> io::Result<()> {
-        // SAFETY: sigset_t düz C türü; sıfır başlangıç `sigemptyset` ile normalize edilir.
+        // SAFETY: sigset_t is a plain C type; the zero initialisation is normalised by `sigemptyset`.
         let mut set: libc::sigset_t = unsafe { core::mem::zeroed() };
-        // SAFETY: `set` geçerli, yazılabilir.
+        // SAFETY: `set` is valid and writable.
         unsafe { libc::sigemptyset(&raw mut set) };
         for sig in SIGNALS {
-            // SAFETY: `set` geçerli; `sig` geçerli sinyal.
+            // SAFETY: `set` is valid; `sig` is a valid signal.
             unsafe { libc::sigaddset(&raw mut set, sig) };
         }
-        // SAFETY: `set` geçerli; `oldset` NULL.
+        // SAFETY: `set` is valid; `oldset` is NULL.
         let rc = unsafe {
             libc::pthread_sigmask(libc::SIG_BLOCK, &raw const set, core::ptr::null_mut())
         };
@@ -239,7 +239,7 @@ mod imp {
     fn cancel_main_io() {
         let h = MAIN_THREAD.load(Ordering::SeqCst);
         if !h.is_null() {
-            // SAFETY: `h` kurulumda DuplicateHandle ile alınmış, kapatılmamış iş parçacığı handle'ı.
+            // SAFETY: `h` is the thread handle obtained with DuplicateHandle during setup, not closed.
             let _ = unsafe { CancelSynchronousIo(h) };
         }
     }
@@ -248,7 +248,7 @@ mod imp {
         match ty {
             CTRL_C_EVENT | CTRL_BREAK_EVENT => {
                 if INTERRUPTED.swap(true, Ordering::SeqCst) {
-                    // SAFETY: ExitProcess yalnızca çıkış kodu alır.
+                    // SAFETY: ExitProcess takes only an exit code.
                     unsafe { ExitProcess(130) };
                 }
                 cancel_main_io();
@@ -257,12 +257,12 @@ mod imp {
             CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => {
                 INTERRUPTED.store(true, Ordering::SeqCst);
                 cancel_main_io();
-                // Sistem sınırı 5000 ms; ≤ ~4,5 s temizlik bekle.
+                // System limit 5000 ms; wait ≤ ~4.5 s for cleanup.
                 for _ in 0..90 {
                     if CLEANUP_DONE.load(Ordering::SeqCst) {
                         break;
                     }
-                    // SAFETY: Sleep yalnızca milisaniye alır.
+                    // SAFETY: Sleep takes only milliseconds.
                     unsafe { Sleep(50) };
                 }
                 TRUE
@@ -273,11 +273,11 @@ mod imp {
 
     pub(super) fn install() -> io::Result<()> {
         let mut dup: HANDLE = core::ptr::null_mut();
-        // SAFETY: sahte handle; argüman almaz, kapatılmaz.
+        // SAFETY: pseudo handle; takes no argument, not closed.
         let proc_h = unsafe { GetCurrentProcess() };
-        // SAFETY: sahte handle; argüman almaz, kapatılmaz.
+        // SAFETY: pseudo handle; takes no argument, not closed.
         let thread_h = unsafe { GetCurrentThread() };
-        // SAFETY: tüm handle'lar geçerli; `dup` geçerli çıktı işaretçisi; DUPLICATE_SAME_ACCESS.
+        // SAFETY: all handles are valid; `dup` is a valid output pointer; DUPLICATE_SAME_ACCESS.
         let ok = unsafe {
             DuplicateHandle(
                 proc_h,
@@ -293,7 +293,7 @@ mod imp {
             return Err(io::Error::last_os_error());
         }
         MAIN_THREAD.store(dup, Ordering::SeqCst);
-        // SAFETY: `ctrl_handler` doğru imzalı `extern "system"` fonksiyon; süreç ömrü boyunca canlı.
+        // SAFETY: `ctrl_handler` is an `extern "system"` function with the right signature, alive for the process lifetime.
         let ok = unsafe { SetConsoleCtrlHandler(Some(ctrl_handler), TRUE) };
         if ok == 0 {
             return Err(io::Error::last_os_error());
@@ -329,14 +329,14 @@ mod tests {
     fn raise_sets_flag_and_writes_self_pipe() {
         install().unwrap();
         reset_interrupted();
-        // SAFETY: SIGINT'i kendi sürecimize göndeririz; işleyici kurulu.
+        // SAFETY: we send SIGINT to our own process; the handler is installed.
         unsafe { libc::raise(libc::SIGINT) };
         assert!(interrupted());
         let rd = self_pipe_read_fd().unwrap();
         let mut b = [0u8; 8];
-        // SAFETY: `rd` geçerli non-blocking fd; `b` geçerli tampon.
+        // SAFETY: `rd` is a valid non-blocking fd; `b` is a valid buffer.
         let n = unsafe { libc::read(rd, b.as_mut_ptr().cast(), b.len()) };
-        assert!(n >= 1, "self-pipe'ta bayt bekleniyordu");
+        assert!(n >= 1, "expected a byte in the self-pipe");
         reset_interrupted();
     }
 }

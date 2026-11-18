@@ -1,8 +1,8 @@
-//! Maskeli parola alanı: metin doğrudan kilitli `SecretBytes` tamponuna yazılır
-//! (≤ 1024 B, büyütme yok); ekranda yalnızca `•` çizilir; pano (kopyala/kes/yapıştır) yok sayılır;
-//! AccessKit rolü `PasswordInput`, değer boş. egui/winit'in `Event::Text` kopyaları ve IME
-//! kompozisyonu arena dışındadır (THREAT-MODEL › Bellek); sıfırlayan global ayırıcı bunları
-//! serbest bırakılırken siler.
+//! Masked password field: the text is written straight into a locked `SecretBytes` buffer
+//! (≤ 1024 B, never grown); only `•` is drawn; clipboard events (copy/cut/paste) are ignored;
+//! AccessKit role `PasswordInput` with an empty value. egui/winit's `Event::Text` copies and IME
+//! composition are outside the arena (THREAT-MODEL › Memory); the zeroizing global allocator wipes
+//! them when freed.
 
 use eframe::egui::{self, Event, Key, Response, Sense, Ui, Vec2, WidgetInfo};
 use lephy_core::password::MAX_RAW_LEN;
@@ -10,20 +10,20 @@ use lephy_sys::mem::SecretBytes;
 
 use crate::theme;
 
-/// Bir olayın alan üzerindeki etkisi.
+/// Effect of an event on the field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effect {
-    /// İlgisiz olay (tüketilmez).
+    /// Unrelated event (not consumed).
     Ignored,
-    /// Tüketildi, içerik değişti.
+    /// Consumed, content changed.
     Changed,
-    /// Tüketildi, içerik değişmedi (pano olayları, kapasite aşımı).
+    /// Consumed, content unchanged (clipboard events, capacity exceeded).
     Swallowed,
-    /// Enter: gönder.
+    /// Enter: submit.
     Submit,
 }
 
-/// Saf olay işleme (test edilebilir).
+/// Pure event handling (testable).
 pub fn apply_event(buf: &mut SecretBytes, ev: &Event) -> Effect {
     match ev {
         Event::Text(t) => {
@@ -45,7 +45,7 @@ pub fn apply_event(buf: &mut SecretBytes, ev: &Event) -> Effect {
             if len == 0 {
                 return Effect::Swallowed;
             }
-            // Son Unicode scalar'ı sil (UTF-8 devam baytlarını geri al).
+            // Delete the last Unicode scalar (undo the UTF-8 continuation bytes).
             let bytes = buf.expose();
             let mut i = len - 1;
             while i > 0 && (bytes[i] & 0b1100_0000) == 0b1000_0000 {
@@ -64,25 +64,25 @@ pub fn apply_event(buf: &mut SecretBytes, ev: &Event) -> Effect {
     }
 }
 
-/// Parola alanı.
+/// Password field.
 pub struct SecretField {
     buf: SecretBytes,
     label_tr: &'static str,
     label_en: &'static str,
-    /// Alan odaktayken macOS güvenli klavye girişi açık (girdi izleme yapan süreçler okuyamaz).
+    /// While the field has focus, macOS Secure Event Input is on (input-monitoring processes cannot read it).
     secure: Option<lephy_sys::secure_input::SecureInputGuard>,
 }
 
 impl SecretField {
-    /// Yeni alan.
+    /// New field.
     ///
     /// # Panics
-    /// Kilitli arena kurulamazsa (süreç başında; gerçekte başarısız olmaz).
+    /// If the locked arena cannot be set up (at process start; does not fail in practice).
     #[must_use]
     #[allow(clippy::expect_used)]
     pub fn new(label_tr: &'static str, label_en: &'static str) -> Self {
         Self {
-            buf: SecretBytes::with_capacity(MAX_RAW_LEN).expect("kilitli arena"),
+            buf: SecretBytes::with_capacity(MAX_RAW_LEN).expect("locked arena"),
             label_tr,
             label_en,
             secure: None,
@@ -95,56 +95,56 @@ impl SecretField {
         self.label_en = label_en;
     }
 
-    /// Boş mu.
+    /// Whether it is empty.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
 
-    /// İçeriği alır (alan boşalır); kopya kilitli arenada kalır.
+    /// Takes the content (the field becomes empty); the copy stays in the locked arena.
     ///
     /// # Panics
-    /// Kilitli arena dolarsa.
+    /// If the locked arena is full.
     #[allow(clippy::expect_used)]
     pub fn take(&mut self) -> SecretBytes {
-        let fresh = SecretBytes::with_capacity(MAX_RAW_LEN).expect("kilitli arena");
+        let fresh = SecretBytes::with_capacity(MAX_RAW_LEN).expect("locked arena");
         std::mem::replace(&mut self.buf, fresh)
     }
 
-    /// Temizler.
+    /// Clears it.
     pub fn clear(&mut self) {
         self.buf.clear();
     }
 
-    /// İçeriği verilen baytlarla değiştirir (kilitli bellekten kilitli belleğe kopya).
+    /// Replaces the content with the given bytes (a copy from locked memory to locked memory).
     ///
     /// # Panics
-    /// Kilitli arena dolarsa.
+    /// If the locked arena is full.
     #[allow(clippy::expect_used)]
     pub fn set(&mut self, bytes: &[u8]) {
         self.buf.clear();
-        self.buf.push_slice(bytes).expect("kapasite");
+        self.buf.push_slice(bytes).expect("capacity");
     }
 
-    /// Kaba güç tahmini.
+    /// Rough strength estimate.
     #[must_use]
     pub fn strength(&self) -> lephy_core::strength::Estimate {
         lephy_core::strength::estimate(self.buf.expose())
     }
 
-    /// Unicode scalar sayısı (geçersiz UTF-8 → 0).
+    /// Number of Unicode scalar values (invalid UTF-8 → 0).
     #[must_use]
     pub fn char_count(&self) -> usize {
         std::str::from_utf8(self.buf.expose()).map_or(0, |s| s.chars().count())
     }
 
-    /// İki alanın içeriği aynı mı (bayt bayt; NFC denetimi işte yapılır).
+    /// Whether both fields have the same content (byte for byte; NFC is checked in the job).
     #[must_use]
     pub fn same_as(&self, other: &Self) -> bool {
         self.buf.expose() == other.buf.expose()
     }
 
-    /// Çizer ve odaktayken klavye olaylarını tüketir. `true`: Enter'a basıldı.
+    /// Draws the field and consumes keyboard events while focused. `true`: Enter was pressed.
     pub fn ui(&mut self, ui: &mut Ui, enabled: bool) -> (Response, bool) {
         let pal = theme::palette(ui.ctx());
         let width = ui.available_width();
@@ -256,7 +256,7 @@ mod tests {
             Effect::Swallowed
         );
         assert_eq!(apply_event(&mut b, &Event::Copy), Effect::Swallowed);
-        assert_eq!(b.expose(), b"a", "pano kapalı");
+        assert_eq!(b.expose(), b"a", "clipboard is off");
         assert_eq!(
             apply_event(&mut b, &Event::Text("1234567".into())),
             Effect::Changed
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(
             apply_event(&mut b, &Event::Text("x".into())),
             Effect::Swallowed,
-            "kapasite aşılmaz"
+            "capacity is not exceeded"
         );
         assert_eq!(b.capacity(), 8);
         assert_eq!(apply_event(&mut b, &key(Key::Enter)), Effect::Submit);
@@ -280,14 +280,14 @@ mod tests {
         let ctx = egui::Context::default();
         let mut field = SecretField::new("Parola", "Password");
         let mut id = None;
-        // Kare 1: çiz, odakla.
+        // Frame 1: draw, focus.
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             let (r, _) = field.ui(ui, true);
             r.request_focus();
             id = Some(r.id);
         });
         out.textures_delta.clear();
-        // Kare 2: metin olayı.
+        // Frame 2: text event.
         let mut input = egui::RawInput::default();
         input.events.push(Event::Text("şifre".into()));
         input.events.push(key(Key::Backspace));

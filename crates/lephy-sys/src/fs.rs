@@ -1,8 +1,8 @@
-//! Dosya sistemi FFI.
+//! File-system FFI.
 //!
-//! noclobber/replace rename, dizin fsync, boş alan / FS türü,
-//! `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED`, panik hook'u için tmp kaydı. Symlink
-//! (`CreateSymbolicLinkW`), bulut kökleri, `FILE_SHARE_DELETE`/`FileDispositionInfo`.
+//! No-clobber/replace rename, directory fsync, free space / file-system type,
+//! `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED`, the temp-file registry for the panic hook. Symlinks
+//! (`CreateSymbolicLinkW`), cloud roots, `FILE_SHARE_DELETE`/`FileDispositionInfo`.
 
 use std::io;
 use std::path::Path;
@@ -10,23 +10,23 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-/// Noclobber rename sonucu.
+/// No-clobber rename result.
 #[derive(Debug)]
 pub enum NoclobberError {
-    /// Hedef zaten var (kod 7).
+    /// The destination already exists (code 7).
     Exists,
-    /// Dosya sistemi atomik noclobber desteklemiyor; çağıran geri dönüş uygular ve uyarır.
+    /// The file system does not support atomic no-clobber; the caller falls back and warns.
     Unsupported,
-    /// Diğer G/Ç hatası.
+    /// Other I/O error.
     Io(io::Error),
 }
 
 impl std::fmt::Display for NoclobberError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NoclobberError::Exists => f.write_str("hedef zaten var"),
+            NoclobberError::Exists => f.write_str("the destination already exists"),
             NoclobberError::Unsupported => {
-                f.write_str("dosya sistemi noclobber rename desteklemiyor")
+                f.write_str("the file system does not support no-clobber rename")
             }
             NoclobberError::Io(e) => write!(f, "{e}"),
         }
@@ -35,9 +35,9 @@ impl std::fmt::Display for NoclobberError {
 
 impl std::error::Error for NoclobberError {}
 
-/// Hedef varsa başarısız olan atomik rename (macOS `renamex_np(RENAME_EXCL)`, Linux
+/// Atomic rename that fails if the destination exists (macOS `renamex_np(RENAME_EXCL)`, Linux
 /// `renameat2(RENAME_NOREPLACE)`, Windows `MoveFileExW` + `MOVEFILE_WRITE_THROUGH`).
-/// Windows'ta `ACCESS_DENIED`/`SHARING_VIOLATION` için 10 ms'den başlayan üstel geri çekilme,
+/// On Windows, exponential back-off from 10 ms for `ACCESS_DENIED`/`SHARING_VIOLATION`,
 /// ≤ 2 s.
 ///
 /// # Errors
@@ -46,33 +46,33 @@ pub fn rename_noclobber(from: &Path, to: &Path) -> Result<(), NoclobberError> {
     imp::rename_noclobber(from, to)
 }
 
-/// Hedefin üzerine yazan rename (`--force`). Unix `rename`, Windows
-/// `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)` (retry ile).
+/// Rename that overwrites the destination (`--force`). Unix `rename`, Windows
+/// `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)` (with retries).
 ///
 /// # Errors
-/// G/Ç hatası.
+/// I/O error.
 pub fn rename_replace(from: &Path, to: &Path) -> io::Result<()> {
     imp::rename_replace(from, to)
 }
 
-/// Dizin girdisini kalıcılaştırır: Unix dizin fd + Apple `F_FULLFSYNC`; Windows'ta no-op.
+/// Makes a directory entry durable: Unix directory fd + Apple `F_FULLFSYNC`; a no-op on Windows.
 ///
 /// # Errors
-/// G/Ç hatası.
+/// I/O error.
 pub fn fsync_dir(dir: &Path) -> io::Result<()> {
     imp::fsync_dir(dir)
 }
 
-/// Dosya içeriğini fiziksel ortama indirmeye çalışır: macOS'ta `F_FULLFSYNC` (sürücü önbelleği
-/// dahil), desteklenmezse ve diğer platformlarda `sync_all`.
+/// Tries to flush file content to the physical medium: `F_FULLFSYNC` on macOS (including the
+/// drive cache), `sync_all` where that is not supported and on other platforms.
 ///
 /// # Errors
-/// G/Ç hatası.
+/// I/O error.
 pub fn full_sync(f: &std::fs::File) -> io::Result<()> {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         use std::os::fd::AsRawFd;
-        // SAFETY: F_FULLFSYNC argüman almaz; `f` açık bir dosya.
+        // SAFETY: F_FULLFSYNC takes no argument; `f` is an open file.
         if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_FULLFSYNC) } == 0 {
             return Ok(());
         }
@@ -80,40 +80,40 @@ pub fn full_sync(f: &std::fs::File) -> io::Result<()> {
     f.sync_all()
 }
 
-/// Windows: `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED` (0x2000) koyar; diğerlerinde no-op.
+/// Windows: sets `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED` (0x2000); a no-op elsewhere.
 ///
 /// # Errors
-/// G/Ç hatası.
+/// I/O error.
 pub fn mark_not_content_indexed(path: &Path) -> io::Result<()> {
     imp::mark_not_content_indexed(path)
 }
 
-/// Yolun bulunduğu birimde kullanılabilir boş alan (bayt).
+/// Free space available on the volume of the path (bytes).
 ///
 /// # Errors
-/// G/Ç hatası.
+/// I/O error.
 pub fn free_space(path: &Path) -> io::Result<u64> {
     imp::free_space(path)
 }
 
-/// Dosya sistemi türü adı (küçük harf): `apfs`, `exfat`, `msdos`/`fat32`, `ntfs`, `ext4`…
+/// File-system type name (lowercase): `apfs`, `exfat`, `msdos`/`fat32`, `ntfs`, `ext4`…
 ///
 /// # Errors
-/// G/Ç hatası.
+/// I/O error.
 pub fn fs_type_name(path: &Path) -> io::Result<String> {
     imp::fs_type_name(path).map(|s| s.to_ascii_lowercase())
 }
 
-/// FAT12/16/32 mi (4 GiB dosya sınırı, kod 8 ön kontrolü).
+/// Whether it is FAT12/16/32 (4 GiB file limit, code 8 pre-check).
 ///
 /// # Errors
-/// G/Ç hatası.
+/// I/O error.
 pub fn is_fat(path: &Path) -> io::Result<bool> {
     let t = fs_type_name(path)?;
     Ok(t == "msdos" || t == "fat" || t == "fat32" || t == "fat16" || t == "vfat")
 }
 
-/// Windows'ta `MoveFileExW` için geri çekilmeli tekrar. Unix'te tek deneme.
+/// Retry with back-off for `MoveFileExW` on Windows. A single attempt on Unix.
 #[allow(dead_code)]
 fn retry_sharing<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     let start = Instant::now();
@@ -134,20 +134,20 @@ fn retry_sharing<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Tmp kaydı (panik hook'u (2) adımı)
+// Temp-file registry (panic hook step 2)
 // ---------------------------------------------------------------------------------------------
 
-/// Kayıt kimliği.
+/// Registration id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TmpId(u64);
 
 static TMP_NEXT: AtomicU64 = AtomicU64::new(1);
 static TMP: Mutex<Vec<(u64, imp::EncodedPath)>> = Mutex::new(Vec::new());
 
-/// Yolu önceden kodlayarak (`CString` / UTF-16) kayda alır; hook ayırma yapmadan siler.
+/// Registers the path pre-encoded (`CString` / UTF-16); the hook deletes it without allocating.
 ///
 /// # Errors
-/// Yol kodlanamıyorsa (iç NUL).
+/// The path cannot be encoded (interior NUL).
 pub fn tmp_register(path: &Path) -> io::Result<TmpId> {
     let enc = imp::encode(path)?;
     let id = TMP_NEXT.fetch_add(1, Ordering::Relaxed);
@@ -157,7 +157,7 @@ pub fn tmp_register(path: &Path) -> io::Result<TmpId> {
     Ok(TmpId(id))
 }
 
-/// Kaydı düşürür (dosya silinmez).
+/// Drops the registration (the file is not deleted).
 pub fn tmp_unregister(id: TmpId) {
     let mut g = TMP
         .lock()
@@ -165,8 +165,8 @@ pub fn tmp_unregister(id: TmpId) {
     g.retain(|(i, _)| *i != id.0);
 }
 
-/// Hook: kayıtlı tüm tmp yollarını siler. `try_lock`; kilit alınamazsa hiçbir şey yapmaz.
-/// Silinen sayı döner.
+/// Hook: deletes every registered temp path. Uses `try_lock`; does nothing if the lock is taken.
+/// Returns the number deleted.
 pub fn tmp_unlink_all_in_hook() -> usize {
     let Ok(g) = TMP.try_lock() else {
         return 0;
@@ -192,17 +192,17 @@ mod imp {
 
     pub(super) fn encode(path: &Path) -> io::Result<CString> {
         CString::new(path.as_os_str().as_bytes())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "yolda NUL"))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))
     }
 
     pub(super) fn unlink_encoded(p: &CString) -> bool {
-        // SAFETY: `p` NUL sonlu geçerli C dizgisi; unlink yalnızca okur.
+        // SAFETY: `p` is a valid NUL-terminated C string; unlink only reads it.
         unsafe { libc::unlink(p.as_ptr()) == 0 }
     }
 
     #[cfg(target_os = "macos")]
     fn rename_excl(from: &CString, to: &CString) -> io::Result<()> {
-        // SAFETY: iki NUL sonlu geçerli C dizgisi; RENAME_EXCL yalnızca bayrak.
+        // SAFETY: two valid NUL-terminated C strings; RENAME_EXCL is only a flag.
         let rc = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
         if rc == 0 {
             Ok(())
@@ -213,7 +213,7 @@ mod imp {
 
     #[cfg(target_os = "linux")]
     fn rename_excl(from: &CString, to: &CString) -> io::Result<()> {
-        // SAFETY: iki NUL sonlu geçerli C dizgisi; AT_FDCWD göreli; RENAME_NOREPLACE bayrak.
+        // SAFETY: two valid NUL-terminated C strings; AT_FDCWD relative; RENAME_NOREPLACE is a flag.
         let rc = unsafe {
             libc::renameat2(
                 libc::AT_FDCWD,
@@ -259,13 +259,13 @@ mod imp {
         let f = std::fs::File::open(dir)?;
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         {
-            // SAFETY: F_FULLFSYNC argüman almaz; `fd` açık dosya.
+            // SAFETY: F_FULLFSYNC takes no argument; `fd` is an open file.
             if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_FULLFSYNC) } == 0 {
                 return Ok(());
             }
-            // F_FULLFSYNC desteklenmeyen birimlerde fsync'e düş.
+            // Fall back to fsync on volumes without F_FULLFSYNC.
         }
-        // SAFETY: fsync yalnızca fd alır.
+        // SAFETY: fsync takes only an fd.
         if unsafe { libc::fsync(f.as_raw_fd()) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -279,9 +279,9 @@ mod imp {
 
     pub(super) fn free_space(path: &Path) -> io::Result<u64> {
         let p = encode(path)?;
-        // SAFETY: statvfs düz C struct'ı; sıfır başlangıç geçerli.
+        // SAFETY: statvfs is a plain C struct; zero initialisation is valid.
         let mut st: libc::statvfs = unsafe { core::mem::zeroed() };
-        // SAFETY: `p` NUL sonlu; `st` geçerli ve yazılabilir.
+        // SAFETY: `p` is NUL terminated; `st` is valid and writable.
         if unsafe { libc::statvfs(p.as_ptr(), &raw mut st) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -295,9 +295,9 @@ mod imp {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     pub(super) fn fs_type_name(path: &Path) -> io::Result<String> {
         let p = encode(path)?;
-        // SAFETY: statfs düz C struct'ı; sıfır başlangıç geçerli.
+        // SAFETY: statfs is a plain C struct; zero initialisation is valid.
         let mut st: libc::statfs = unsafe { core::mem::zeroed() };
-        // SAFETY: `p` NUL sonlu; `st` geçerli ve yazılabilir.
+        // SAFETY: `p` is NUL terminated; `st` is valid and writable.
         if unsafe { libc::statfs(p.as_ptr(), &raw mut st) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -313,9 +313,9 @@ mod imp {
     #[cfg(target_os = "linux")]
     pub(super) fn fs_type_name(path: &Path) -> io::Result<String> {
         let p = encode(path)?;
-        // SAFETY: statfs düz C struct'ı; sıfır başlangıç geçerli.
+        // SAFETY: statfs is a plain C struct; zero initialisation is valid.
         let mut st: libc::statfs = unsafe { core::mem::zeroed() };
-        // SAFETY: `p` NUL sonlu; `st` geçerli ve yazılabilir.
+        // SAFETY: `p` is NUL terminated; `st` is valid and writable.
         if unsafe { libc::statfs(p.as_ptr(), &raw mut st) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -358,19 +358,19 @@ mod imp {
     pub(super) fn encode(path: &Path) -> io::Result<Vec<u16>> {
         let mut v: Vec<u16> = path.as_os_str().encode_wide().collect();
         if v.contains(&0) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "yolda NUL"));
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"));
         }
         v.push(0);
         Ok(v)
     }
 
     pub(super) fn unlink_encoded(p: &[u16]) -> bool {
-        // SAFETY: `p` NUL sonlu UTF-16; DeleteFileW yalnızca okur.
+        // SAFETY: `p` is NUL-terminated UTF-16; DeleteFileW only reads it.
         unsafe { DeleteFileW(p.as_ptr()) != 0 }
     }
 
     fn move_file(from: &[u16], to: &[u16], flags: u32) -> io::Result<()> {
-        // SAFETY: iki NUL sonlu UTF-16 dizgi; bayraklar geçerli.
+        // SAFETY: two NUL-terminated UTF-16 strings; valid flags.
         if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), flags) } == 0 {
             return Err(io::Error::last_os_error());
         }
@@ -406,12 +406,12 @@ mod imp {
 
     pub(super) fn mark_not_content_indexed(path: &Path) -> io::Result<()> {
         let p = encode(path)?;
-        // SAFETY: `p` NUL sonlu UTF-16.
+        // SAFETY: `p` is NUL-terminated UTF-16.
         let attrs = unsafe { GetFileAttributesW(p.as_ptr()) };
         if attrs == INVALID_FILE_ATTRIBUTES {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: `p` NUL sonlu UTF-16; bayrak geçerli.
+        // SAFETY: `p` is NUL-terminated UTF-16; valid flag.
         if unsafe { SetFileAttributesW(p.as_ptr(), attrs | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED) }
             == 0
         {
@@ -424,7 +424,7 @@ mod imp {
         let p = encode(path)?;
         let mut root = vec![0u16; 261];
         let len = u32::try_from(root.len()).unwrap_or(260);
-        // SAFETY: `p` NUL sonlu; `root` `len` wchar'lık geçerli tampon.
+        // SAFETY: `p` is NUL terminated; `root` is a valid buffer of `len` wchars.
         if unsafe { GetVolumePathNameW(p.as_ptr(), root.as_mut_ptr(), len) } == 0 {
             return Err(io::Error::last_os_error());
         }
@@ -436,7 +436,7 @@ mod imp {
         let mut avail: u64 = 0;
         let mut total: u64 = 0;
         let mut free: u64 = 0;
-        // SAFETY: `root` NUL sonlu; üç çıktı işaretçisi geçerli.
+        // SAFETY: `root` is NUL terminated; the three output pointers are valid.
         let ok = unsafe {
             GetDiskFreeSpaceExW(root.as_ptr(), &raw mut avail, &raw mut total, &raw mut free)
         };
@@ -450,7 +450,7 @@ mod imp {
         let root = volume_root(path)?;
         let mut name = vec![0u16; 64];
         let len = u32::try_from(name.len()).unwrap_or(64);
-        // SAFETY: `root` NUL sonlu; `name` `len` wchar'lık geçerli tampon; diğer çıktılar NULL.
+        // SAFETY: `root` is NUL terminated; `name` is a valid buffer of `len` wchars; other outputs NULL.
         let ok = unsafe {
             GetVolumeInformationW(
                 root.as_ptr(),
@@ -472,16 +472,16 @@ mod imp {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Bulut senkron kökleri — sezgisel liste, tek yer
+// Cloud-sync roots — heuristic list, in one place
 // ---------------------------------------------------------------------------------------------
 
-/// Bilinen bulut senkron kökleri (var olanlar): macOS `~/Library/Mobile Documents`,
+/// Known cloud-sync roots (those that exist): macOS `~/Library/Mobile Documents`,
 /// `~/Library/CloudStorage/*`; Windows `%OneDrive%`, `%USERPROFILE%\OneDrive*`, `Dropbox`,
-/// `Google Drive`, `My Drive`. Liste sezgiseldir ve eksik olabilir.
+/// `Google Drive`, `My Drive`. The list is heuristic and may be incomplete.
 #[must_use]
-#[allow(clippy::disallowed_methods)] // yalnızca HOME/USERPROFILE/OneDrive okunur; sır değildir (D3 ihlali yok)
+#[allow(clippy::disallowed_methods)] // only HOME/USERPROFILE/OneDrive are read; not secrets
 pub fn cloud_sync_roots() -> Vec<std::path::PathBuf> {
-    #[allow(unused_mut)] // Linux: hiçbir kök bloğu derlenmez (best-effort platform)
+    #[allow(unused_mut)] // Linux: no root block is compiled (best-effort platform)
     let mut out: Vec<std::path::PathBuf> = Vec::new();
     #[cfg(target_os = "macos")]
     {
@@ -520,7 +520,7 @@ pub fn cloud_sync_roots() -> Vec<std::path::PathBuf> {
     out
 }
 
-/// `path` (kanonikleştirilmiş) bilinen bir bulut kökünün altındaysa o kökü döner.
+/// If `path` (canonicalised) is under a known cloud root, returns that root.
 #[must_use]
 pub fn cloud_root_of(path: &Path) -> Option<std::path::PathBuf> {
     let canon = path
@@ -552,8 +552,8 @@ mod tests {
         std::fs::write(&b, b"2").unwrap();
         match rename_noclobber(&a, &b) {
             Err(NoclobberError::Exists) => {}
-            Err(NoclobberError::Unsupported) => eprintln!("noclobber desteklenmiyor (FS)"),
-            other => panic!("beklenmeyen: {other:?}"),
+            Err(NoclobberError::Unsupported) => eprintln!("no-clobber not supported (file system)"),
+            other => panic!("unexpected: {other:?}"),
         }
         assert_eq!(std::fs::read(&b).unwrap(), b"2");
         let c = dir.join("c");

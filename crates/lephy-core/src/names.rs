@@ -1,16 +1,16 @@
-//! Ad işleme (FORMAT.md › Arşiv sınırları).
+//! Name handling (FORMAT.md › Archive limits).
 //!
-//! - Arşiv yolu: UTF-8, NFC, `/` ayırıcı; `..`, boş bileşen, `/` ile başlama, `\`, NUL, sürücü
-//!   harfi yasak; bileşen ≤ 255 B, yol ≤ 4096 B, derinlik ≤ 256.
-//! - Harf katlama **erken uyarıdır**; otorite dosya sistemidir (`create_new`). Katlama burada
-//!   `char::to_lowercase` (Unicode tam küçük harf eşlemesi) ile yapılır; CaseFolding.txt C+S ile
-//!   farkı küçük özel durumlardır (ß, son sigma) ve yalnızca uyarı kalitesini etkiler
-//!   (DOĞRULANMADI: tam eşdeğerlik). U+0130/U+0131 FS'ye bırakılır.
-//! - Windows ad kuralları: `: * ? " < > |`, kontrol karakterleri, sonda nokta/boşluk,
-//!   ayrılmış adlar (CON PRN AUX NUL COM1–9 LPT1–9 COM¹²³ CONIN$ CONOUT$), ADS → `_`.
-//! - Görüntüleme kaçışlaması: kontrol, ANSI, bidi, format karakterleri `\u{…}`.
-//! - Symlink hedefi sınıflandırması: `/` ile başlıyor, `\` içeriyor, `[A-Za-z]:` ile
-//!   başlıyor ya da bir bileşeni `..` ise **güvensiz**.
+//! - Archive path: UTF-8, NFC, `/` separator; `..`, empty components, a leading `/`, `\`, NUL and
+//!   drive letters are forbidden; component ≤ 255 B, path ≤ 4096 B, depth ≤ 256.
+//! - Case folding is an **early warning**; the file system is the authority (`create_new`).
+//!   Folding uses `char::to_lowercase` (full Unicode lowercase mapping); the difference from
+//!   CaseFolding.txt C+S is small special cases (ß, final sigma) and only affects the warning
+//!   (UNVERIFIED: full equivalence). U+0130/U+0131 are left to the file system.
+//! - Windows name rules: `: * ? " < > |`, control characters, trailing dot/space,
+//!   reserved names (CON PRN AUX NUL COM1–9 LPT1–9 COM¹²³ CONIN$ CONOUT$), ADS → `_`.
+//! - Display escaping: control, ANSI, bidi and format characters as `\u{…}`.
+//! - Symlink target classification: **unsafe** if it starts with `/`, contains `\`, starts with
+//!   `[A-Za-z]:` or has a `..` component.
 
 use std::path::{Component, Path};
 
@@ -18,72 +18,72 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::error::{Error, Result};
 
-/// Bileşen üst sınırı (bayt).
+/// Component upper limit (bytes).
 pub const MAX_COMPONENT: usize = 255;
-/// Yol üst sınırı (bayt).
+/// Path upper limit (bytes).
 pub const MAX_PATH: usize = 4096;
-/// Derinlik üst sınırı.
+/// Depth upper limit.
 pub const MAX_DEPTH: usize = 256;
-/// Giriş sayısı üst sınırı.
+/// Upper limit for the number of entries.
 pub const MAX_ENTRIES: usize = 1_000_000;
-/// Toplam yol baytı (symlink hedefleri dahil) üst sınırı.
+/// Upper limit for total path bytes (including symlink targets).
 pub const MAX_TOTAL_PATH_BYTES: u64 = 64 * 1024 * 1024;
-/// Symlink hedefi üst sınırı.
+/// Symlink target upper limit.
 pub const MAX_SYMLINK_TARGET: usize = 4096;
-/// Çerçeve üst sınırı.
+/// Frame upper limit.
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
-/// mtime aralığı.
+/// mtime range.
 pub const MAX_MTIME_ABS: i64 = 1 << 40;
 
 fn bad(detail: &str) -> Error {
     Error::Corrupt {
-        at: "arşiv".into(),
+        at: "archive".into(),
         detail: Some(detail.into()),
     }
 }
 
-/// Arşivden okunan yolu doğrular (FORMAT.md sınırları). Döner: doğrulanmış `&str`.
+/// Validates a path read from an archive (FORMAT.md limits). Returns the validated `&str`.
 ///
 /// # Errors
-/// Kod 4.
+/// Code 4.
 pub fn validate_archive_path(path: &[u8]) -> Result<&str> {
     if path.is_empty() {
-        return Err(bad("boş yol"));
+        return Err(bad("empty path"));
     }
     if path.len() > MAX_PATH {
-        return Err(bad("yol > 4096 B"));
+        return Err(bad("path > 4096 B"));
     }
     if path.contains(&0) {
         return Err(bad("yolda NUL"));
     }
     if path.contains(&b'\\') {
-        return Err(bad("yolda ters bölü"));
+        return Err(bad("backslash in path"));
     }
-    let s = std::str::from_utf8(path).map_err(|_| bad("yol UTF-8 değil"))?;
+    let s = std::str::from_utf8(path).map_err(|_| bad("path is not UTF-8"))?;
     if s.starts_with('/') {
-        return Err(bad("mutlak yol"));
+        return Err(bad("absolute path"));
     }
     let mut depth = 0;
     for comp in s.split('/') {
         depth += 1;
         if comp.is_empty() {
-            return Err(bad("boş bileşen"));
+            return Err(bad("empty component"));
         }
         if comp == "." || comp == ".." {
-            return Err(bad("`.`/`..` bileşeni"));
+            return Err(bad("`.`/`..` component"));
         }
         if comp.len() > MAX_COMPONENT {
-            return Err(bad("bileşen > 255 B"));
+            return Err(bad("component > 255 B"));
         }
     }
     if depth > MAX_DEPTH {
-        return Err(bad("derinlik > 256"));
+        return Err(bad("depth > 256"));
     }
     if is_drive_prefixed(s) {
-        return Err(bad("sürücü harfi"));
+        return Err(bad("drive letter"));
     }
-    // NFC şartı: yazıcı NFC yazar; okuyucu NFC olmayanı reddetmez (tolerans), ancak yinelenen
-    // denetimi NFC + katlama ile yapılır.
+    // NFC requirement: the writer writes NFC; the reader tolerates non-NFC, but the duplicate
+    // check uses NFC + folding.
     Ok(s)
 }
 
@@ -92,7 +92,7 @@ fn is_drive_prefixed(s: &str) -> bool {
     b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
 }
 
-/// Yinelenen-yol anahtarı: `BLAKE3(NFC + küçük harf)` ilk 16 B.
+/// Duplicate-path key: the first 16 B of `BLAKE3(NFC + lowercase)`.
 #[must_use]
 pub fn fold_key(path: &str) -> [u8; 16] {
     let folded: String = path.nfc().flat_map(char::to_lowercase).collect();
@@ -102,18 +102,18 @@ pub fn fold_key(path: &str) -> [u8; 16] {
     k
 }
 
-/// Kaynak dosya sisteminden alınan göreli yolu arşiv yoluna çevirir: bileşenler NFC, `/`
-/// ayırıcı (Windows `\` → `/`).
+/// Converts a relative path from the source file system to an archive path: NFC components, `/`
+/// separator (Windows `\` → `/`).
 ///
 /// # Errors
-/// Geçersiz bileşen (UTF-8 değil, `..`, mutlak) → kod 1.
+/// Invalid component (not UTF-8, `..`, absolute) → code 1.
 pub fn to_archive_path(rel: &Path) -> Result<String> {
     let mut out = String::new();
     for c in rel.components() {
         match c {
             Component::Normal(os) => {
                 let s = os.to_str().ok_or_else(|| {
-                    Error::Environment(format!("ad UTF-8 değil: {}", rel.display()))
+                    Error::Environment(format!("name is not UTF-8: {}", rel.display()))
                 })?;
                 if !out.is_empty() {
                     out.push('/');
@@ -123,20 +123,20 @@ pub fn to_archive_path(rel: &Path) -> Result<String> {
             Component::CurDir => {}
             _ => {
                 return Err(Error::Environment(format!(
-                    "arşivlenemeyen yol bileşeni: {}",
+                    "path component cannot be archived: {}",
                     rel.display()
                 )));
             }
         }
     }
     if out.is_empty() {
-        return Err(Error::Environment("boş arşiv yolu".into()));
+        return Err(Error::Environment("empty archive path".into()));
     }
     validate_archive_path(out.as_bytes()).map_err(|e| Error::Environment(e.to_string()))?;
     Ok(out)
 }
 
-/// Windows'ta geçersiz/ayrılmış ad bileşenini `_` ile düzeltir; `(yeni, değişti)`.
+/// Replaces an invalid/reserved Windows name component with `_`; returns `(new, changed)`.
 #[must_use]
 pub fn windows_sanitize(component: &str) -> (String, bool) {
     let mut s: String = component
@@ -175,8 +175,8 @@ pub fn windows_sanitize(component: &str) -> (String, bool) {
     (s, changed)
 }
 
-/// Görüntüleme kaçışlaması: kontrol, ANSI (`\x1b`), bidi (U+202A–202E, U+2066–2069),
-/// zero-width/format karakterleri `\u{…}`.
+/// Display escaping: control, ANSI (`\x1b`), bidi (U+202A–202E, U+2066–2069),
+/// zero-width/format characters as `\u{…}`.
 #[must_use]
 pub fn escape_display(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -194,16 +194,16 @@ pub fn escape_display(s: &str) -> String {
     out
 }
 
-/// Symlink hedefi sınıfı.
+/// Symlink target class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymlinkClass {
-    /// Göreli, yalnızca aşağı.
+    /// Relative, downward only.
     Safe,
-    /// Mutlak, `..`, `\` ya da sürücü harfi içeriyor.
+    /// Absolute, or contains `..`, `\` or a drive letter.
     Unsafe,
 }
 
-/// Hedefi sınıflandırır.
+/// Classifies the target.
 #[must_use]
 pub fn classify_symlink_target(target: &[u8]) -> SymlinkClass {
     if target.first() == Some(&b'/') || target.contains(&b'\\') {
@@ -218,16 +218,16 @@ pub fn classify_symlink_target(target: &[u8]) -> SymlinkClass {
     SymlinkClass::Safe
 }
 
-/// Symlink hedefinin biçim denetimi (1..=4096 B, NUL yok).
+/// Format check of a symlink target (1..=4096 B, no NUL).
 ///
 /// # Errors
-/// Kod 4.
+/// Code 4.
 pub fn validate_symlink_target(target: &[u8]) -> Result<()> {
     if target.is_empty() || target.len() > MAX_SYMLINK_TARGET {
-        return Err(bad("symlink hedefi 1..=4096 B olmalı"));
+        return Err(bad("symlink target must be 1..=4096 B"));
     }
     if target.contains(&0) {
-        return Err(bad("symlink hedefinde NUL"));
+        return Err(bad("NUL in symlink target"));
     }
     Ok(())
 }
@@ -274,7 +274,7 @@ mod tests {
         assert_eq!(fold_key("a.txt"), fold_key("A.TXT"));
         assert_eq!(fold_key("ş"), fold_key("s\u{0327}"));
         assert_ne!(fold_key("a.txt"), fold_key("b.txt"));
-        // U+0130: std küçük harf 'i̇' (i + U+0307); 'i' ile çakışmaz → FS'ye bırakılır.
+        // U+0130: std lowercase is 'i̇' (i + U+0307); it does not collide with 'i' → left to the file system.
         assert_ne!(fold_key("İ.txt"), fold_key("i.txt"));
     }
 

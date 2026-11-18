@@ -1,4 +1,4 @@
-# CI. Tüm `uses:` tam 40-hex SHA ile sabitlenir; üst düzey `permissions: {}`.
+# CI. Every `uses:` is pinned to a full 40-hex SHA; top-level `permissions: {}`.
 name: ci
 
 on:
@@ -68,8 +68,8 @@ jobs:
       - name: unsafe only in lephy-sys
         run: |
           set -euo pipefail
-          # Anahtar sözcük kullanımı ve lint gevşetme aranır; dizge içindeki "unsafe"
-          # (ör. --restore-symlinks unsafe) sayılmaz. Asıl zorlama #![forbid(unsafe_code)].
+          # Looks for the keyword and for lint relaxations; "unsafe" inside strings
+          # (e.g. --restore-symlinks unsafe) does not count. The real enforcement is #![forbid(unsafe_code)].
           if grep -rnE '\bunsafe[[:space:]]*(\{|fn\b|impl\b|trait\b|extern\b)|allow\(unsafe_code' crates --include='*.rs' | grep -v '^crates/lephy-sys/'; then
             echo "::error::unsafe outside lephy-sys"; exit 1; fi
       - name: workflow lint (SHA pin + permissions)
@@ -97,7 +97,7 @@ jobs:
         with:
           toolchain: "1.95.0"
       - run: cargo build --locked --workspace
-      # Unix'te sinyal/pty testleri (crates/lephy-cli/tests/signals.rs) ve fuzz regresyonları dahil.
+      # Includes the Unix signal/pty tests (crates/lephy-cli/tests/signals.rs) and fuzz regressions.
       - run: cargo test --locked --workspace
       - run: cargo test --locked -p lephy-core --features test-vectors
       - name: panic hook (fault-injection + release/panic=abort)
@@ -116,7 +116,7 @@ jobs:
         with:
           toolchain: "1.95.0"
       - run: cargo check --locked --workspace
-      - name: kanarya taraması (/proc/self/mem)
+      - name: canary scan (/proc/self/mem)
         run: cargo test --locked -p lephy-core --features test-vectors --test canary -- --nocapture
       - name: miri (lephy-sys, cfg(miri) arka ucu)
         run: |
@@ -135,7 +135,7 @@ jobs:
             mkdir -p "corpus/$t"
             cargo +nightly-2026-11-01 fuzz run --target x86_64-unknown-linux-gnu "$t" "corpus/$t" "seeds/$t" -- -max_total_time=60
           done
-      - name: fuzz çökme girdileri (başarısızlıkta)
+      - name: fuzz crash inputs (on failure)
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -157,11 +157,11 @@ jobs:
       - uses: taiki-e/install-action@328a871ad8f62ecac78390391f463ccabc974b72 # v2.69.9
         with:
           tool: cargo-deny@0.21.0,cargo-audit@0.23.0,cargo-vet@0.10.3
-      # İki kademe: sıkı (çekirdek/CLI/USB; FFI bütçesi, çift sürüm deny, GUI crate'leri yasak)
-      # ve GUI (egui/eframe zinciri; lisans/advisory/kaynak/sert yasaklar, çift sürüm uyarı).
-      - name: cargo deny — sıkı kademe (çekirdek, CLI, USB)
+      # Two tiers: strict (core/CLI/USB; FFI budget, duplicate versions denied, GUI crates banned)
+      # and GUI (egui/eframe tree; licences/advisories/sources/hard bans, duplicate versions warn).
+      - name: cargo deny — strict tier (core, CLI, USB)
         run: cargo deny --all-features --exclude lephy-gui check
-      - name: cargo deny — GUI kademesi
+      - name: cargo deny — GUI tier
         run: cargo deny --all-features --config deny-gui.toml check
       - run: cargo audit --deny warnings
       - name: cargo vet
@@ -226,13 +226,13 @@ jobs:
             if cargo build --locked -p "$p" --features lephy-core/test-vectors; then
               echo "::error::$p built with test-vectors"; exit 1; fi
           done
-      - name: zeroize kenarları mevcut, Vec döndüren AEAD ve test feature'ları yok
+      - name: zeroize edges present, no Vec-returning AEAD and no test features
         run: |
           set -euo pipefail
           cargo tree --locked -p lephy-cli -e features --prefix none --target all > /tmp/feat.txt
           for f in chacha20 aes ghash hmac sha2 digest blake3; do
-            grep -qF "$f feature \"zeroize\"" /tmp/feat.txt || { echo "::error::$f/zeroize eksik"; exit 1; }
+            grep -qF "$f feature \"zeroize\"" /tmp/feat.txt || { echo "::error::$f/zeroize missing"; exit 1; }
           done
           for f in 'aead feature "alloc"' 'lephy-core feature "test-vectors"' 'lephy-core feature "fault-injection"'; do
-            if grep -qF "$f" /tmp/feat.txt; then echo "::error::dağıtım grafiğinde olmamalı: $f"; exit 1; fi
+            if grep -qF "$f" /tmp/feat.txt; then echo "::error::must not be in the distribution graph: $f"; exit 1; fi
           done

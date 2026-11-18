@@ -1,6 +1,6 @@
-//! Arayüzden bağımsız mantık: mod tespiti, varsayılan çıktı yolu, arka plan işi.
-//! Yollar argv'ye gitmez (THREAT-MODEL › açık meta veri): GUI argümansız başlar, kaynak
-//! sürükle-bırak ya da dosya seçme penceresiyle gelir.
+//! UI-independent logic: mode detection, default output path, background job.
+//! Paths come from drag and drop, the file dialogs or the operating system's open requests
+//! (THREAT-MODEL › Desktop app).
 
 use crate::i18n::tr;
 use std::path::{Path, PathBuf};
@@ -14,16 +14,16 @@ use lephy_core::ops::{self, DecryptOptions, EncryptOptions, Identity, Input, Out
 use lephy_core::password;
 use lephy_sys::mem::SecretBytes;
 
-/// İşlem modu.
+/// Operation mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Dosya/klasör → `.lphy`.
+    /// File/folder → `.lphy`.
     Encrypt,
-    /// `.lphy` → dosya/klasör.
+    /// `.lphy` → file/folder.
     Decrypt,
 }
 
-/// Geçerli bir `.lphy` başlığı varsa çöz, yoksa şifrele.
+/// Decrypt if there is a valid `.lphy` header, otherwise encrypt.
 #[must_use]
 pub fn detect_mode(path: &Path) -> Mode {
     let Ok(md) = path.metadata() else {
@@ -43,7 +43,7 @@ pub fn detect_mode(path: &Path) -> Mode {
     }
 }
 
-/// Şifreli dosya anahtar dosyası gerektiriyor mu (başlık okunamazsa `false`).
+/// Whether the encrypted file needs a key file (`false` if the header cannot be read).
 #[must_use]
 pub fn needs_keyfile(path: &Path) -> bool {
     let mut h = [0u8; HEADER_LEN];
@@ -140,8 +140,8 @@ pub fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
     }
 }
 
-/// Varsayılan çıktı: şifrelemede aynı dizinde `<8 rastgele hex>.lphy` (D1); çözmede `.lphy`
-/// kaldırılmış ad ya da `<ad>.out`.
+/// Default output: when encrypting, `<8 random hex>.lphy` in the same directory; when decrypting,
+/// the name without `.lphy`, or `<name>.out`.
 #[must_use]
 pub fn default_output(input: &Path, mode: Mode) -> PathBuf {
     let dir = input.parent().unwrap_or(Path::new("."));
@@ -168,45 +168,45 @@ pub fn default_output(input: &Path, mode: Mode) -> PathBuf {
     }
 }
 
-/// Bir kaynak ve hedefi.
+/// A source and its destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
-    /// Kaynak.
+    /// Source.
     pub input: PathBuf,
-    /// Hedef.
+    /// Destination.
     pub output: PathBuf,
 }
 
-/// Arka plan işi. Parolalar kilitli `SecretBytes`'ta taşınır ve iş bitince düşer.
+/// Background job. Passwords travel in locked `SecretBytes` and are dropped when the job ends.
 #[allow(clippy::struct_excessive_bools)]
 pub struct Job {
-    /// Mod.
+    /// Mode.
     pub mode: Mode,
-    /// Kaynak/hedef çiftleri (toplu işte birden çok).
+    /// Source/destination pairs (several in a batch).
     pub items: Vec<Item>,
-    /// Parola (ham UTF-8).
+    /// Password (raw UTF-8).
     pub password: SecretBytes,
-    /// Şifrelemede tekrar.
+    /// Repeated password when encrypting.
     pub confirm: Option<SecretBytes>,
-    /// Argon2id belleği (MiB).
+    /// Argon2id memory (MiB).
     pub kdf_mib: u32,
-    /// AES-256-GCM (varsayılan XChaCha20-Poly1305).
+    /// AES-256-GCM (default XChaCha20-Poly1305).
     pub aes: bool,
-    /// Arşivde PADMÉ.
+    /// PADMÉ for archives.
     pub pad: bool,
-    /// Bulut senkron klasörüne çıkarmaya izin.
+    /// Allow extracting into a cloud-sync folder.
     pub allow_cloud: bool,
-    /// İsteğe bağlı anahtar dosyası (parolaya ek ikinci etken).
+    /// Optional key file (a second factor besides the password).
     pub keyfile: Option<PathBuf>,
-    /// Şifreleme doğrulandıktan sonra orijinali üzerine yazarak sil (kullanıcı onayladı).
+    /// Overwrite and delete the original after encryption is verified (confirmed by the user).
     pub secure_delete: bool,
-    /// Çıktıyı bu boyutta parçalara böl (bayt).
+    /// Split the output into parts of this size (bytes).
     pub split: Option<u64>,
-    /// Şifrelemeden önce sıkıştır.
+    /// Compress before encrypting.
     pub compress: bool,
-    /// Reed–Solomon hata düzeltme zarfı ekle.
+    /// Add a Reed–Solomon error-correction envelope.
     pub ecc: bool,
-    /// Çözmede kurtarma modu: bozuk dosyadan kurtarılabileni çıkar.
+    /// Recovery mode when decrypting: extract what can be saved from a damaged file.
     pub recover: bool,
     /// Encrypt to these public keys instead of the password (empty = password).
     pub recipients: Vec<PublicKey>,
@@ -214,24 +214,24 @@ pub struct Job {
     pub identity: Option<PathBuf>,
 }
 
-/// İşin sonucu.
+/// Job result.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Outcome {
-    /// Yazılan dosya ya da klasörler.
+    /// Files or folders written.
     pub outputs: Vec<PathBuf>,
-    /// Atlanan arşiv girişleri (özel dosyalar, kurulmayan symlink'ler).
+    /// Skipped archive entries (special files, symlinks not created).
     pub skipped: usize,
-    /// Başarısız öğeler: (görünen ad, hata metni).
+    /// Failed items: (display name, error text).
     pub failed: Vec<(String, String)>,
-    /// Orijinali silinen öğe sayısı.
+    /// Number of items whose original was deleted.
     pub deleted: usize,
-    /// Silinemeyen (arşivden sonra değişen) yol sayısı.
+    /// Number of paths not deleted (changed after archiving).
     pub kept: usize,
-    /// Hata düzeltmenin onardığı bayt sayısı (çözmede).
+    /// Bytes repaired by error correction (when decrypting).
     pub repaired: u64,
-    /// Kurtarmada doğrulanamayıp sıfırla doldurulan bölüm sayısı.
+    /// Number of parts zero-filled during recovery because they failed verification.
     pub damaged: usize,
-    /// Kurtarmada dosya kesikti ya da çıkarma yarıda kaldı.
+    /// During recovery the file was truncated or extraction stopped early.
     pub incomplete: bool,
 }
 
@@ -247,11 +247,11 @@ struct Ctx<'a> {
     recover: bool,
 }
 
-/// İşi yürütür. Tek öğede hata doğrudan döner; toplu işte başarısız öğeler `failed`'a yazılır,
-/// diğerleri işlenmeye devam eder (hepsi başarısızsa ilk hata döner).
+/// Runs the job. With a single item an error is returned directly; in a batch failed items go to
+/// `failed` and the rest continue (if all fail, the first error is returned).
 ///
 /// # Errors
-/// Çekirdek hataları (mesajı ve çıkış kodu kategorisi arayüzde gösterilir).
+/// Core errors (the message and exit-code category are shown in the UI).
 pub fn run(job: Job) -> Result<Outcome> {
     let mut nfc = password::normalize_nfc(&job.password)?;
     drop(job.password);
@@ -392,7 +392,7 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
         out.outputs.push(written.clone());
         out.skipped += rep.archive.as_ref().map_or(0, |a| a.skipped.len());
         if ctx.secure_delete {
-            // Silmeden önce yazılan dosya parolayla baştan sona doğrulanır.
+            // Before deleting, the written file is verified end to end with the password.
             let u = ops::UnlockOptions {
                 allow_large_kdf: true,
                 strict_memory: false,
@@ -441,8 +441,8 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
     Ok(())
 }
 
-/// İlerleme yüzdesi için tahmini toplam akış baytı: şifrelemede kaynak dosyaların toplam
-/// boyutu (symlink izlenmez), çözmede başlık sonrası dosya boyutu. Bilinmiyorsa 0.
+/// Estimated total stream bytes for the progress percentage: the total size of the source files
+/// when encrypting (symlinks not followed), the file size after the header when decrypting. 0 if unknown.
 #[must_use]
 pub fn estimate_total(mode: Mode, input: &Path) -> u64 {
     fn walk(p: &Path, depth: u32, acc: &mut u64) {
@@ -479,7 +479,7 @@ pub fn estimate_total(mode: Mode, input: &Path) -> u64 {
     }
 }
 
-/// Kullanıcıya gösterilecek hata metni: ne oldu ve ne yapılabilir.
+/// Error text shown to the user: what happened and what can be done.
 #[must_use]
 pub fn describe_error(e: &Error) -> String {
     match (e, e.exit_code()) {
@@ -498,7 +498,7 @@ pub fn describe_error(e: &Error) -> String {
             "This file was not encrypted for the chosen identity. Choose the right identity file.",
         )
         .into(),
-        (Error::Corrupt { at, .. }, _) if at == "anahtar dosyası" => tr(
+        (Error::Corrupt { at, .. }, _) if at == "identity file" => tr(
             "Seçilen dosya bir kimlik dosyası (.lphykey) değil.",
             "The chosen file is not an identity file (.lphykey).",
         )
@@ -542,7 +542,7 @@ pub fn describe_error(e: &Error) -> String {
     }
 }
 
-/// İlk harfi büyütür, sonuna nokta koyar.
+/// Capitalises the first letter and adds a full stop.
 fn sentence(s: &str) -> String {
     let mut c = s.trim().chars();
     let mut out: String = c
@@ -556,7 +556,7 @@ fn sentence(s: &str) -> String {
     out
 }
 
-/// Kaynak hakkında kısa bilgi: (görünen ad, açıklama).
+/// Short information about a source: (display name, description).
 #[must_use]
 pub fn describe_source(path: &Path, mode: Mode) -> (String, String) {
     let name = path.file_name().map_or_else(
@@ -577,8 +577,8 @@ pub fn describe_source(path: &Path, mode: Mode) -> (String, String) {
     (name, detail)
 }
 
-/// Şifreli dosyanın başlığından, parola sorulmadan okunabilen bilgiler (tek satır).
-/// Başlık okunamazsa `None`.
+/// Information from the encrypted file's header that can be read without a password (one line).
+/// `None` if the header cannot be read.
 #[must_use]
 pub fn header_summary(path: &Path) -> Option<String> {
     let h = ops::info(path).ok()?;
@@ -621,7 +621,7 @@ pub fn header_summary(path: &Path) -> Option<String> {
     Some(out)
 }
 
-/// İnsan okunur boyut (Türkçe ondalık virgül).
+/// Human-readable size (decimal comma in Turkish).
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
 pub fn human_size(n: u64) -> String {
@@ -645,7 +645,7 @@ pub fn human_size(n: u64) -> String {
     format!("{s} {}", UNITS[u])
 }
 
-/// Klasör yolunu kısaltır: ev dizini `~` olur.
+/// Shortens a folder path: the home directory becomes `~`.
 #[must_use]
 pub fn short_dir(dir: &Path) -> String {
     let home = home_dir();
@@ -656,15 +656,15 @@ pub fn short_dir(dir: &Path) -> String {
     }
 }
 
-/// Ev dizini (ortam değişkeni okunmaz; `std::env::home_dir`).
+/// Home directory (no environment variable is read; `std::env::home_dir`).
 fn home_dir() -> Option<PathBuf> {
     std::env::home_dir().filter(|h| h.is_absolute())
 }
 
-/// Dosya yöneticisinde gösterir (macOS Finder, Windows Gezgini). Araçlar mutlak yolla çağrılır.
+/// Shows it in the file manager (macOS Finder, Windows Explorer). Tools are called by absolute path.
 ///
 /// # Errors
-/// Araç başlatılamazsa.
+/// The tool could not be started.
 pub fn reveal_in_folder(path: &Path) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -683,7 +683,7 @@ pub fn reveal_in_folder(path: &Path) -> std::io::Result<()> {
             .map_or_else(|| sys.join("explorer.exe"), |w| w.join("explorer.exe"));
         let mut arg = std::ffi::OsString::from("/select,");
         arg.push(path);
-        // Ortam devralınmaz (DLL arama yolu vb.); Gezgin için gereken tek değişken geri verilir.
+        // The environment is not inherited (DLL search path etc.); the one variable Explorer needs is passed back.
         let mut cmd = std::process::Command::new(explorer);
         cmd.arg(arg).env_clear();
         if let Some(root) = sys.parent() {
@@ -751,7 +751,10 @@ mod tests {
             5 + std::fs::metadata(d.join("x.lphy")).unwrap().len()
         );
         assert!(estimate_total(Mode::Decrypt, &d.join("x.lphy")) > 0);
-        assert!(lephy_core::pipeline::progress() > 0, "hat ilerleme saymalı");
+        assert!(
+            lephy_core::pipeline::progress() > 0,
+            "the pipeline must count progress"
+        );
         assert_eq!(
             default_output(&d.join("x.lphy"), Mode::Decrypt),
             d.join("x")
@@ -781,7 +784,7 @@ mod tests {
         assert_eq!(out.outputs, vec![d.join("geri.txt")]);
         assert_eq!(out.skipped, 0);
         assert_eq!(std::fs::read(d.join("geri.txt")).unwrap(), b"hello");
-        // Uyuşmayan tekrar ve kısa parola
+        // Mismatched repeat and a short password
         for (p, c) in [("gui parola 1234", "başka parola 99"), ("kisa", "kisa")] {
             let job = Job {
                 mode: Mode::Encrypt,
@@ -808,7 +811,7 @@ mod tests {
             assert_eq!(e.exit_code(), ExitCode::Io);
             assert!(describe_error(&e).ends_with('.'));
         }
-        // Yanlış parola → kod 3
+        // Wrong password → code 3
         let job = Job {
             mode: Mode::Decrypt,
             items: vec![Item {
@@ -929,7 +932,7 @@ mod tests {
         assert_eq!(out.failed.len(), 1, "{:?}", out.failed);
         assert_eq!(out.deleted, 2);
         assert!(!d.join("a.txt").exists() && !d.join("b.txt").exists());
-        // Hepsi başarısızsa hata döner.
+        // If all fail, an error is returned.
         let job = Job {
             mode: Mode::Encrypt,
             items: vec![item("yok1", "4.lphy"), item("yok2", "5.lphy")],

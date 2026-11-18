@@ -1,11 +1,10 @@
-# cargo-audit yapılandırması.
+# cargo-audit configuration.
 #
-# cargo-audit Cargo.lock'un tamamını hedefe bakmadan tarar. Aşağıdakiler yalnızca Linux/BSD
-# erişilebilirlik kenarından gelir (eframe → egui-winit → accesskit_winit → accesskit_unix →
-# zbus/zvariant); lephy-gui Linux'ta eframe'e bağlanmaz, bu crate'ler macOS ve
-# Windows derlemelerine girmez. Tür: "unmaintained" (güvenlik açığı değil). deny-gui.toml aynı
-# kenarı `exclude = ["accesskit_unix"]` ile çıkarır. eframe/accesskit güncellendikçe yeniden
-# değerlendirilir.
+# cargo-audit scans the whole Cargo.lock regardless of target. The entries below come only from the
+# Linux/BSD accessibility edge (eframe → egui-winit → accesskit_winit → accesskit_unix →
+# zbus/zvariant); lephy-gui does not link eframe on Linux, so these crates are not part of the macOS
+# and Windows builds. Kind: "unmaintained" (not a vulnerability). deny-gui.toml removes the same
+# edge with `exclude = ["accesskit_unix"]`. Re-evaluated whenever eframe/accesskit are updated.
 # Last reviewed: 2026-11-17 (maintainer). Review again on every eframe/accesskit upgrade or by
 # 2027-05-17, whichever comes first.
 [advisories]

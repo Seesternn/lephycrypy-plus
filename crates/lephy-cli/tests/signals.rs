@@ -1,12 +1,12 @@
-//! Sinyal testleri — yalnızca Unix. Windows `CTRL_BREAK_EVENT` testi Windows
-//! CI'da ayrı adımdır (henüz yazılmadı).
+//! Signal tests — Unix only. A Windows `CTRL_BREAK_EVENT` test would be a separate Windows
+//! CI step (not written yet).
 //!
-//! 1. Parola isteminde SIGINT (pty): yankı geri açılır, çıkış kodu 130.
-//! 2. Akış ortasında SIGINT/SIGTERM (bitmeyen stdin): çıkış 130, tmp kalmaz, gecikme küçük.
-//! 3. KDF sırasında çift SIGINT: ikinci sinyalde hemen `_exit(130)`.
+//! 1. SIGINT at the password prompt (pty): echo comes back, exit code 130.
+//! 2. SIGINT/SIGTERM in the middle of a stream (endless stdin): exit 130, no temp file left, small delay.
+//! 3. Double SIGINT during key derivation: `_exit(130)` at once on the second signal.
 //!
-//! pty için `python3` (stdlib `pty`/`termios`) kullanılır: lephy-cli `unsafe` içeremez ve libc'ye
-//! doğrudan bağımlı olamaz (deny.toml).
+//! `python3` (stdlib `pty`/`termios`) is used for the pty: lephy-cli cannot contain `unsafe` and
+//! cannot depend on libc directly (deny.toml).
 
 #![cfg(unix)]
 #![allow(
@@ -70,11 +70,11 @@ fn have_python() -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// Parola istemindeyken SIGINT: istem sırasında yankı kapalı, sinyalden sonra açık; kod 130.
+/// SIGINT at the password prompt: echo off during the prompt, back on after the signal; code 130.
 #[test]
 fn sigint_at_password_prompt_restores_echo_and_exits_130() {
-    assert!(have_python(), "python3 (pty, termios) gerekli");
-    // Her adım zaman aşımlıdır: test hiçbir koşulda takılmaz (select + WNOHANG + üst süre).
+    assert!(have_python(), "python3 (pty, termios) required");
+    // Every step has a timeout: the test never hangs (select + WNOHANG + an upper limit).
     let script = r#"
 import os, pty, sys, termios, signal, time, select
 binp = sys.argv[1]
@@ -92,7 +92,7 @@ def pump(timeout):
     return out
 buf = b""
 deadline = time.time() + 15
-while b"Parola" not in buf and time.time() < deadline:
+while b"Password" not in buf and time.time() < deadline:
     buf += pump(0.1)
 time.sleep(0.2)
 echo_during = bool(termios.tcgetattr(fd)[3] & termios.ECHO)
@@ -115,7 +115,7 @@ try:
 except termios.error:
     echo_after = "unknown"
 code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
-print(f"prompt={b'Parola' in buf} echo_during={echo_during} echo_after={echo_after} code={code}")
+print(f"prompt={b'Password' in buf} echo_during={echo_during} echo_after={echo_after} code={code}")
 "#;
     let mut child = Command::new("python3")
         .args(["-c", script, BIN])
@@ -125,23 +125,23 @@ print(f"prompt={b'Parola' in buf} echo_during={echo_during} echo_after={echo_aft
         .spawn()
         .unwrap();
     let st = wait_timeout(&mut child, Duration::from_mins(1))
-        .expect("pty yardımcısı 60 sn içinde bitmedi");
+        .expect("the pty helper did not finish within 60 s");
     let mut s = String::new();
     child.stdout.take().unwrap().read_to_string(&mut s).unwrap();
     let mut e = String::new();
     child.stderr.take().unwrap().read_to_string(&mut e).unwrap();
     eprintln!("{s}{e}");
-    assert!(st.success(), "pty yardımcısı başarısız: {e}");
-    assert!(s.contains("prompt=True"), "istem görülmedi: {s}");
+    assert!(st.success(), "the pty helper failed: {e}");
+    assert!(s.contains("prompt=True"), "prompt not seen: {s}");
     assert!(
         s.contains("echo_during=False"),
-        "istem sırasında yankı kapalı olmalı: {s}"
+        "echo must be off during the prompt: {s}"
     );
-    assert!(s.contains("echo_after=True"), "yankı geri açılmalı: {s}");
-    assert!(s.contains("code=130"), "çıkış kodu 130 olmalı: {s}");
+    assert!(s.contains("echo_after=True"), "echo must come back: {s}");
+    assert!(s.contains("code=130"), "exit code must be 130: {s}");
 }
 
-/// Bitmeyen stdin akışını şifrelerken sinyal: kod 130, tmp yok, gecikme ≤ 2 s.
+/// Signal while encrypting an endless stdin stream: code 130, no temp file, delay ≤ 2 s.
 fn interrupt_streaming(sig: &str, tag: &str) {
     let d = tmpdir(tag);
     let mut child = Command::new(BIN)
@@ -168,24 +168,27 @@ fn interrupt_streaming(sig: &str, tag: &str) {
         .stdout(Stdio::null())
         .spawn()
         .unwrap();
-    // Sonsuz üretici: ayrı iş parçacığı stdin'e yazar (boru kırılınca durur).
+    // Endless producer: a separate thread writes to stdin (stops when the pipe breaks).
     let mut stdin = child.stdin.take().unwrap();
     let feeder = std::thread::spawn(move || {
         use std::io::Write;
         let block = vec![0x5Au8; 1 << 16];
         while stdin.write_all(&block).is_ok() {}
     });
-    // KDF bitip akış başlayana kadar bekle: tmp dosyası görünür.
+    // Wait until key derivation ends and the stream starts: the temp file appears.
     let start = Instant::now();
     while stale_tmp(&d).is_empty() {
-        assert!(start.elapsed() < Duration::from_secs(20), "akış başlamadı");
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "the stream did not start"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     std::thread::sleep(Duration::from_millis(300));
     let t0 = Instant::now();
     kill(child.id(), sig);
-    let st =
-        wait_timeout(&mut child, Duration::from_secs(10)).expect("süreç sinyalden sonra bitmedi");
+    let st = wait_timeout(&mut child, Duration::from_secs(10))
+        .expect("the process did not end after the signal");
     let latency = t0.elapsed();
     let mut err = String::new();
     child
@@ -195,17 +198,20 @@ fn interrupt_streaming(sig: &str, tag: &str) {
         .read_to_string(&mut err)
         .unwrap();
     let _ = feeder.join();
-    eprintln!("{sig}: gecikme {latency:?}, stderr:\n{err}");
-    assert_eq!(st.code(), Some(130), "çıkış kodu 130 olmalı ({sig})");
+    eprintln!("{sig}: delay {latency:?}, stderr:\n{err}");
+    assert_eq!(st.code(), Some(130), "exit code must be 130 ({sig})");
     assert!(
         stale_tmp(&d).is_empty(),
-        "tmp kalmamalı: {:?}",
+        "no temp file may remain: {:?}",
         stale_tmp(&d)
     );
-    assert!(!d.join("out.lphy").exists(), "yarım hedef oluşmamalı");
+    assert!(
+        !d.join("out.lphy").exists(),
+        "no partial output may be created"
+    );
     assert!(
         latency < Duration::from_secs(2),
-        "gecikme ≤ 1 chunk + 1 s olmalı: {latency:?}"
+        "the delay must be ≤ 1 chunk + 1 s: {latency:?}"
     );
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -220,7 +226,7 @@ fn sigterm_mid_stream_cleans_tmp_and_exits_130() {
     interrupt_streaming("-TERM", "term");
 }
 
-/// KDF (kesilemez) sırasında ilk SIGINT bekletilir, ikincisi `_exit(130)` ile hemen çıkar.
+/// During key derivation (not interruptible) the first SIGINT is held back; the second exits at once with `_exit(130)`.
 #[test]
 fn double_sigint_during_kdf_exits_immediately() {
     let d = tmpdir("kdf");
@@ -233,9 +239,9 @@ fn double_sigint_during_kdf_exits_immediately() {
             "in.bin",
             "-o",
             "out.lphy",
-            // Az bellek, çok yineleme: KDF uzun sürer ama büyük bellek ayırma/kilitleme
-            // (sinyal teslimini geciktiren uzun çekirdek çağrısı) küçük CI makinelerinde ölçümü
-            // bozmaz.
+            // Little memory, many iterations: key derivation takes long, but no large allocation/lock
+            // (a long kernel call that delays signal delivery) disturbs the measurement on small CI
+            // machines.
             "--kdf-memory",
             "128",
             "--kdf-time",
@@ -249,7 +255,7 @@ fn double_sigint_during_kdf_exits_immediately() {
         .stdout(Stdio::null())
         .spawn()
         .unwrap();
-    // "KDF:" satırını bekle (stderr'i ayrı iş parçacığında oku).
+    // Wait for the "KDF:" line (stderr is read on a separate thread).
     let mut stderr = child.stderr.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let reader = std::thread::spawn(move || {
@@ -270,7 +276,7 @@ fn double_sigint_during_kdf_exits_immediately() {
     loop {
         let s = rx
             .recv_timeout(Duration::from_secs(10))
-            .expect("KDF satırı gelmedi");
+            .expect("no KDF line arrived");
         if s.contains("KDF:") {
             break;
         }
@@ -281,20 +287,24 @@ fn double_sigint_during_kdf_exits_immediately() {
     std::thread::sleep(Duration::from_millis(200));
     assert!(
         child.try_wait().unwrap().is_none(),
-        "ilk SIGINT KDF'i kesmemeli (kesilemez)"
+        "the first SIGINT must not interrupt key derivation (not interruptible)"
     );
     let t0 = Instant::now();
     kill(child.id(), "-INT");
-    let st = wait_timeout(&mut child, Duration::from_secs(5)).expect("ikinci SIGINT ile çıkmadı");
+    let st = wait_timeout(&mut child, Duration::from_secs(5))
+        .expect("did not exit on the second SIGINT");
     let latency = t0.elapsed();
     let err = reader.join().unwrap();
-    eprintln!("çift SIGINT gecikmesi {latency:?}\n{err}");
+    eprintln!("double SIGINT delay {latency:?}\n{err}");
     assert_eq!(st.code(), Some(130));
     assert!(
         latency < Duration::from_millis(500),
-        "ikinci sinyal hemen çıkmalı: {latency:?}"
+        "the second signal must exit at once: {latency:?}"
     );
-    assert!(!err.contains("KDF tamamlandı"), "KDF bitmeden çıkılmalıydı");
+    assert!(
+        !err.contains("KDF done"),
+        "should have exited before the KDF finished"
+    );
     assert!(stale_tmp(&d).is_empty());
     let _ = std::fs::remove_dir_all(&d);
 }

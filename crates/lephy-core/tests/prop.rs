@@ -1,7 +1,7 @@
-//! Özellik tabanlı testler: STREAM sınırları, bozulma/kesme tespiti, PADMÉ, arşiv
-//! round-trip (boş dizin, Unicode/NFD ad), ayrıştırıcıların panik yokluğu.
+//! Property-based tests: STREAM boundaries, damage/truncation detection, PADMÉ, archive
+//! round trip (empty directories, Unicode/NFD names), parsers never panic.
 //!
-//! Vaka sayıları CI süresi için küçüktür; `PROPTEST_CASES` ile artırılabilir.
+//! Case counts are small for CI time; raise them with `PROPTEST_CASES`.
 
 #![allow(
     clippy::unwrap_used,
@@ -22,8 +22,8 @@ use lephy_core::pad::padme;
 use lephy_core::pipeline::{StreamParams, decrypt_stream, encrypt_stream, verify_stream};
 use proptest::prelude::*;
 
-/// Varsayılan vaka sayısı `cases`; `PROPTEST_CASES` ayarlıysa (proptest varsayılanı 256'dan
-/// farklıysa) o kullanılır — ortam değişkeni proptest'in kendisi tarafından okunur.
+/// Default case count `cases`; if `PROPTEST_CASES` is set (differs from proptest's default 256)
+/// that is used — the environment variable is read by proptest itself.
 fn cfg(cases: u32) -> ProptestConfig {
     let d = ProptestConfig::default();
     ProptestConfig {
@@ -37,7 +37,7 @@ fn alg_strategy() -> impl Strategy<Value = AlgId> {
     prop_oneof![Just(AlgId::XChaCha20Poly1305), Just(AlgId::Aes256Gcm)]
 }
 
-/// Chunk sınırı çevresinde uzunluk: k·chunk + {−1, 0, +1} ya da rastgele.
+/// Length around a chunk boundary: k·chunk + {−1, 0, +1}, or random.
 fn len_strategy(chunk: usize) -> impl Strategy<Value = usize> {
     prop_oneof![
         (0usize..6, 0usize..=2).prop_map(move |(k, d)| (k * chunk + d).saturating_sub(1)),
@@ -73,7 +73,7 @@ fn params(c: &SharedCipher, chunk: usize) -> StreamParams<'_> {
 proptest! {
     #![proptest_config(cfg(48))]
 
-    /// B1: kanonik son chunk; boyut formülü; round-trip.
+    /// Canonical last chunk; size formula; round trip.
     #[test]
     fn stream_roundtrip_and_size(
         alg in alg_strategy(),
@@ -92,7 +92,7 @@ proptest! {
         prop_assert_eq!(out, data);
     }
 
-    /// Herhangi bir bit çevirmesi, kesme ya da ek bayt kod 4 verir.
+    /// Any bit flip, truncation or extra byte gives code 4.
     #[test]
     fn stream_tamper_is_detected(alg in alg_strategy(), len in 0usize..400, pos in any::<usize>(), bit in 0u8..8, cut in 1usize..40, extra in any::<u8>()) {
         let chunk = 64;
@@ -119,7 +119,7 @@ proptest! {
         prop_assert!(corrupt);
     }
 
-    /// PADMÉ: P(L) ≥ L, idempotent, monoton, sızıntı sınırı.
+    /// PADMÉ: P(L) ≥ L, idempotent, monotonic, leakage bound.
     #[test]
     fn padme_properties(l in 0u64..(1u64 << 40), d in 0u64..1000) {
         let p = padme(l);
@@ -127,12 +127,12 @@ proptest! {
         prop_assert_eq!(padme(p), p);
         prop_assert!(padme(l + d) >= p);
         if l >= 2 {
-            // Yük ≤ ~%12 (E − S bitlik yuvarlama): P(L) − L < L / 2^(S−1) ≤ L/4, pratikte çok daha az.
+            // Overhead ≤ ~12 % (rounding of E − S bits): P(L) − L < L / 2^(S−1) ≤ L/4, much less in practice.
             prop_assert!(p - l <= l / 4 + 1);
         }
     }
 
-    /// Ayrıştırıcılar keyfi girdide panik yapmaz.
+    /// Parsers do not panic on arbitrary input.
     #[test]
     fn parsers_never_panic(h in proptest::collection::vec(any::<u8>(), HEADER_LEN), path in proptest::collection::vec(any::<u8>(), 0..300)) {
         let arr: [u8; HEADER_LEN] = h.try_into().unwrap();
@@ -147,7 +147,7 @@ proptest! {
         }
     }
 
-    /// `..` bileşeni içeren her hedef güvensizdir; doğrulanmış arşiv yolu `..` içermez.
+    /// Every target with a `..` component is unsafe; a validated archive path has no `..`.
     #[test]
     fn path_and_symlink_invariants(comps in proptest::collection::vec(prop_oneof![Just("..".to_string()), Just(".".to_string()), "[a-zş]{1,4}"], 1..6)) {
         let joined = comps.join("/");
@@ -161,7 +161,7 @@ proptest! {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Arşiv round-trip
+// Archive round trip
 // ---------------------------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
@@ -170,13 +170,13 @@ enum Node {
     Dir,
 }
 
-/// Benzersiz adlı rastgele ağaç: göreli yol → düğüm. Adlar NFC/katlama sonrası da benzersizdir
-/// (sıra numarası soneki), böylece yinelenen-ad reddi testin konusu olmaz.
+/// Random tree with unique names: relative path → node. Names stay unique after NFC/folding
+/// (sequence-number suffix), so rejecting duplicate names is not what the test exercises.
 fn tree_strategy() -> impl Strategy<Value = BTreeMap<String, Node>> {
     let name = prop_oneof![
         "[a-z]{1,6}",
         Just("ş".to_string()),
-        Just("s\u{0327}x".to_string()), // NFD; yazıcı NFC'ye çevirir
+        Just("s\u{0327}x".to_string()), // NFD; the writer converts it to NFC
         Just("çok uzun ad".to_string()),
         Just("ı".to_string()),
     ];
@@ -227,7 +227,7 @@ fn materialize(root: &Path, tree: &BTreeMap<String, Node>) {
     }
 }
 
-/// NFC'ye çevrilmiş göreli yol → (dizin mi, içerik).
+/// Relative path converted to NFC → (is directory, content).
 fn snapshot(root: &Path) -> BTreeMap<String, (bool, Vec<u8>)> {
     use unicode_normalization::UnicodeNormalization;
     let mut out = BTreeMap::new();
@@ -303,8 +303,8 @@ proptest! {
         roundtrip(&tree, padded)?;
     }
 
-    /// Arşiv akışındaki keyfi bozulma ya panik yapmadan hata verir ya da (veri baytına denk
-    /// gelirse) başarılı olur; hiçbir dosya çıkarma kökünün dışına yazılmaz.
+    /// Arbitrary damage in the archive stream either fails without panicking or (if it hits a
+    /// data byte) succeeds; no file is ever written outside the extraction root.
     #[test]
     fn archive_mutation_never_escapes(tree in tree_strategy(), pos in any::<usize>(), val in any::<u8>()) {
         let base = tmp("mut");
@@ -331,6 +331,6 @@ proptest! {
             .filter(|n| n != "src" && n != "dst")
             .collect();
         let _ = std::fs::remove_dir_all(&base);
-        prop_assert!(outside.is_empty(), "kök dışına yazıldı: {outside:?}");
+        prop_assert!(outside.is_empty(), "written outside the root: {outside:?}");
     }
 }

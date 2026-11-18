@@ -1,13 +1,13 @@
-//! Aygıt modeli, uygunluk ve kimlik.
+//! Device model, eligibility and identity.
 
 use std::path::PathBuf;
 
-/// Veriyolu.
+/// Bus.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Bus {
     /// USB.
     Usb,
-    /// Diğer (Thunderbolt, `PCIe`, SATA, `NVMe`, "Apple Fabric", sanal …).
+    /// Other (Thunderbolt, `PCIe`, SATA, `NVMe`, "Apple Fabric", virtual …).
     Other(String),
 }
 
@@ -20,85 +20,85 @@ impl std::fmt::Display for Bus {
     }
 }
 
-/// Bir adımdan önce yeniden okunan kimlik.
+/// Identity re-read before each step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
-    /// Fiziksel disk: macOS `MediaName|DiskUUID|ParentWholeDisk`; Windows `DeviceNumber|Seri`.
+    /// Physical disk: macOS `MediaName|DiskUUID|ParentWholeDisk`; Windows `DeviceNumber|Serial`.
     pub disk: String,
-    /// Birim: macOS `VolumeUUID`; Windows `\\?\Volume{GUID}\` + birim seri no.
+    /// Volume: macOS `VolumeUUID`; Windows `\\?\Volume{GUID}\` + volume serial number.
     pub volume: String,
-    /// Bayt cinsinden boyut.
+    /// Size in bytes.
     pub size_bytes: u64,
-    /// Bağlama noktasının birim kimliği (`st_dev` / birim seri no).
+    /// Volume identity of the mount point (`st_dev` / volume serial number).
     pub dev_id: u64,
 }
 
-/// Bir birim (bağlı bölüm) ve onu taşıyan fiziksel aygıt. Bayraklar OS sorgusunun ham
-/// yansımasıdır; uygunluk kararı [`Device::eligibility`] içinde tek yerde verilir.
+/// A volume (mounted partition) and the physical device that holds it. The flags mirror the OS
+/// query as is; the eligibility decision is made in one place, [`Device::eligibility`].
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Device {
-    /// Bağlama noktası / sürücü kökü.
+    /// Mount point / drive root.
     pub mount: PathBuf,
-    /// Birim etiketi.
+    /// Volume label.
     pub label: String,
-    /// Toplam bayt.
+    /// Total bytes.
     pub size_bytes: u64,
-    /// Dosya sistemi (küçük harf).
+    /// File system (lowercase).
     pub fs_type: String,
-    /// Veriyolu.
+    /// Bus.
     pub bus: Bus,
-    /// Çıkarılabilir ortam (macOS `RemovableMedia`; Windows `DRIVE_REMOVABLE` **ve**
+    /// Removable media (macOS `RemovableMedia`; Windows `DRIVE_REMOVABLE` **and**
     /// `RemovableMedia`).
     pub removable: bool,
-    /// Dahili aygıt.
+    /// Internal device.
     pub internal: bool,
-    /// Sanal/imaj aygıt.
+    /// Virtual/image device.
     pub virtual_device: bool,
-    /// Sistem/boot/Time Machine birimi.
+    /// System/boot/Time Machine volume.
     pub system: bool,
-    /// Aygıt seri numarası (macOS'ta `diskutil` vermez: `None`).
+    /// Device serial number (`diskutil` does not provide it on macOS: `None`).
     pub serial: Option<String>,
-    /// Üretici/ürün adı.
+    /// Vendor/product name.
     pub product: String,
-    /// Harici araçlara verilen tanıtıcı: macOS `diskXsY`; Windows `\\?\Volume{GUID}\`.
+    /// Identifier passed to external tools: macOS `diskXsY`; Windows `\\?\Volume{GUID}\`.
     pub tool_ref: String,
-    /// Kimlik.
+    /// Identity.
     pub identity: Identity,
 }
 
 impl Device {
-    /// Boyut, GiB tam sayı (`floor(bayt / 2^30)`) — onayda kullanıcının yazdığı değer.
+    /// Size as a whole number of GiB (`floor(bytes / 2^30)`) — the value the user types to confirm.
     #[must_use]
     pub const fn size_gib(&self) -> u64 {
         self.size_bytes >> 30
     }
 
-    /// Uygunluk. Bypass yoktur. `require_serial`: Windows.ta zorunlu.
+    /// Eligibility. There is no bypass. `require_serial`: required on Windows.
     ///
     /// # Errors
-    /// Reddetme nedeni (çağıran kod 1'e çevirir).
+    /// Reason for refusal (the caller turns it into code 1).
     pub fn eligibility(&self, require_serial: bool) -> Result<(), String> {
         if self.bus != Bus::Usb {
-            return Err(format!("veriyolu USB değil ({})", self.bus));
+            return Err(format!("the bus is not USB ({})", self.bus));
         }
         if !self.removable {
-            return Err("çıkarılabilir ortam değil (\"Fixed\" USB SSD/HDD desteklenmez)".into());
+            return Err("not removable media (\"fixed\" USB SSDs/HDDs are not supported)".into());
         }
         if self.internal {
-            return Err("dahili aygıt".into());
+            return Err("internal device".into());
         }
         if self.virtual_device {
-            return Err("sanal/imaj aygıtı".into());
+            return Err("virtual/image device".into());
         }
         if self.system {
-            return Err("sistem/boot/Time Machine birimi".into());
+            return Err("system/boot/Time Machine volume".into());
         }
         if require_serial && self.serial.as_deref().is_none_or(|s| s.trim().is_empty()) {
-            return Err("seri numarası boş".into());
+            return Err("empty serial number".into());
         }
         if self.size_bytes == 0 {
-            return Err("boyut okunamadı".into());
+            return Err("size could not be read".into());
         }
         Ok(())
     }
@@ -140,13 +140,13 @@ mod tests {
         assert_eq!(ok.size_gib(), 16);
         let mut d = ok.clone();
         d.bus = Bus::Other("SATA".into());
-        assert!(d.eligibility(false).unwrap_err().contains("USB değil"));
+        assert!(d.eligibility(false).unwrap_err().contains("not USB"));
         let mut d = ok.clone();
         d.bus = Bus::Other("Thunderbolt".into());
         assert!(d.eligibility(false).is_err());
         let mut d = ok.clone();
         d.removable = false;
-        assert!(d.eligibility(false).unwrap_err().contains("Fixed"));
+        assert!(d.eligibility(false).unwrap_err().contains("fixed"));
         let mut d = ok.clone();
         d.internal = true;
         assert!(d.eligibility(false).is_err());
@@ -158,7 +158,7 @@ mod tests {
         assert!(d.eligibility(false).is_err());
         let mut d = ok.clone();
         d.serial = Some("  ".into());
-        assert!(d.eligibility(true).unwrap_err().contains("seri"));
+        assert!(d.eligibility(true).unwrap_err().contains("serial"));
         assert!(d.eligibility(false).is_ok());
     }
 }
