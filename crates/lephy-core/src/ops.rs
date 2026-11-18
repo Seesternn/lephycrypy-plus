@@ -1110,6 +1110,12 @@ pub struct DecryptOptions<'a> {
     pub extract: ExtractOptions,
     /// Archives: extract only these paths (and everything below them); `None` = everything.
     pub only: Option<&'a [String]>,
+    /// Archives holding a single file: write it under its stored name, next to the destination
+    /// (`out.parent()/<stored name>`), instead of under the destination's name. If that name is
+    /// taken, ` (2)`, ` (3)`… is added before the extension; nothing is overwritten (a folder keeps
+    /// the destination's name, numbered the same way). Encrypted files usually carry random names,
+    /// so this is how `photo.png` comes back as `photo.png`.
+    pub restore_name: bool,
 }
 
 /// Creates a directory (0700) and excludes it from indexing on Windows.
@@ -1198,7 +1204,8 @@ pub fn decrypt(
             ));
         }
         (ContentType::Archive, Output::Path(out, force)) => {
-            if !force && out.symlink_metadata().is_ok() {
+            // With `restore_name` the destination may not be used (checked when placing).
+            if !force && !opts.restore_name && out.symlink_metadata().is_ok() {
                 return Err(Error::Exists(out.display().to_string()));
             }
             let total = in_len;
@@ -1236,10 +1243,18 @@ pub fn decrypt(
                 Some(name) if rep.entries == 1 && rep.symlinks_created == 0 => tmp.join(name),
                 _ => tmp.clone(),
             };
-            let fallback = move_into_place(&src, out, *force)?;
+            let own_name = out.file_name().map(|n| n.to_string_lossy().into_owned());
+            let (fallback, target) = match (&single, own_name) {
+                (Some(name), _) if opts.restore_name && src != tmp => {
+                    place_with_free_name(&src, parent, name)?
+                }
+                // A folder has no stored name: the destination's name, numbered if taken.
+                (_, Some(name)) if opts.restore_name => place_with_free_name(&src, parent, &name)?,
+                _ => (move_into_place(&src, out, *force)?, out.to_path_buf()),
+            };
             report.noclobber_fallback = fallback;
             report.archive = Some(rep);
-            report.target = out.to_path_buf();
+            report.target = target;
             if single.is_some() && src != tmp {
                 let _ = std::fs::remove_dir_all(&tmp);
             }
@@ -1331,6 +1346,31 @@ fn move_into_place(src: &Path, dst: &Path, force: bool) -> Result<bool> {
         }
     }
     r
+}
+
+/// `name`, or `stem (n).ext` for the first `n` in 2..=999 that is free.
+fn numbered_name(name: &str, n: u32) -> String {
+    if n < 2 {
+        return name.to_owned();
+    }
+    // A leading dot is part of the stem (`.profile` → `.profile (2)`).
+    match name.rfind('.').filter(|&i| i > 0) {
+        Some(i) => format!("{} ({n}){}", &name[..i], &name[i..]),
+        None => format!("{name} ({n})"),
+    }
+}
+
+/// Moves `src` into `dir` under `name`, numbering it if the name is taken (never overwrites).
+fn place_with_free_name(src: &Path, dir: &Path, name: &str) -> Result<(bool, PathBuf)> {
+    for n in 1..=999 {
+        let dst = dir.join(numbered_name(name, n));
+        match place(src, &dst) {
+            Ok(fallback) => return Ok((fallback, dst)),
+            Err(Error::Exists(_)) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(Error::Exists(dir.join(name).display().to_string()))
 }
 
 fn place(src: &Path, dst: &Path) -> Result<bool> {
@@ -2971,6 +3011,7 @@ mod tests {
             unlock: UnlockOptions::default(),
             extract: ExtractOptions::default(),
             only: None,
+            restore_name: false,
         };
         // A folder (even with a single file inside) comes back as a folder.
         let out = d.join("f.lphy");
@@ -3021,6 +3062,32 @@ mod tests {
         .unwrap();
         assert!(dst.is_file());
         assert_eq!(std::fs::read(&dst).unwrap(), b"one");
+        // With `restore_name` it gets its stored name next to the destination, numbered if taken.
+        let named = DecryptOptions {
+            restore_name: true,
+            ..dopts()
+        };
+        let to = Output::Path(&dst, false);
+        let r = decrypt(&out, &to, &p, None, named, &mut log).unwrap();
+        assert_eq!(r.target, d.join("only.txt"));
+        assert_eq!(std::fs::read(d.join("only.txt")).unwrap(), b"one");
+        let r = decrypt(&out, &to, &p, None, named, &mut log).unwrap();
+        assert_eq!(r.target, d.join("only (2).txt"));
+        assert!(std::fs::read_dir(&d).unwrap().all(|e| {
+            !e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".lphy-tmp-")
+        }));
+        // A folder keeps the destination's name, numbered when it is taken.
+        let fo = d.join("f.lphy");
+        let back = Output::Path(&d.join("back"), false);
+        let r = decrypt(&fo, &back, &p, None, named, &mut log).unwrap();
+        assert_eq!(r.target, d.join("back (2)"));
+        assert!(r.target.join("only.txt").is_file());
+        assert_eq!(numbered_name(".profile", 3), ".profile (3)");
+        assert_eq!(numbered_name("a.tar.gz", 2), "a.tar (2).gz");
+        assert_eq!(numbered_name("README", 1), "README");
         // An empty folder comes back as an empty folder.
         let empty = d.join("empty");
         std::fs::create_dir_all(&empty).unwrap();
@@ -3100,6 +3167,7 @@ mod tests {
                 ..Default::default()
             },
             only: None,
+            restore_name: false,
         };
         let r = decrypt(&out, &Output::Path(&dst, false), &p, None, dopts, &mut log).unwrap();
         assert_eq!(r.archive.as_ref().unwrap().entries, 5);

@@ -128,8 +128,8 @@ pub struct App {
     quit_confirm: bool,
     /// Quitting was confirmed (or a signal arrived): close once the job has stopped.
     quitting: bool,
-    /// Home: the encrypt card was clicked (file or folder?).
-    encrypt_choice: bool,
+    /// Welcome screen step (0-based).
+    welcome_step: u8,
     /// Keys page: identity to open, its password, the result and the background job.
     id_path: Option<PathBuf>,
     id_pw: SecretField,
@@ -148,6 +148,9 @@ pub struct App {
     sign_password: SecretField,
     /// The chosen encrypted file is an archive (its contents can be listed).
     is_archive: bool,
+    /// The user picked the destination with "Change" (single item): it is used as is; otherwise a
+    /// decrypted file gets its stored original name.
+    output_custom: bool,
     /// Contents of the chosen archive, after "List contents".
     listing: Option<Vec<lephy_core::archive::ListEntry>>,
     /// Paths chosen for extraction from `listing` (empty = everything).
@@ -212,7 +215,7 @@ impl Default for App {
             lock_edit: false,
             quit_confirm: false,
             quitting: false,
-            encrypt_choice: false,
+            welcome_step: 0,
             id_path: None,
             id_pw: SecretField::new("Kimlik parolası", "Identity password"),
             id_loaded: None,
@@ -227,6 +230,7 @@ impl Default for App {
                 "Signing identity password",
             ),
             is_archive: false,
+            output_custom: false,
             listing: None,
             selected: std::collections::BTreeSet::new(),
             list_filter: String::new(),
@@ -258,6 +262,7 @@ impl App {
         let mode = logic::detect_mode(p);
         let (name, detail) = logic::describe_source(p, mode);
         self.output = Some(logic::default_output(p, mode));
+        self.output_custom = false;
         let summary = (mode == Mode::Decrypt)
             .then(|| logic::header_summary(p))
             .flatten();
@@ -293,8 +298,6 @@ impl App {
 
     /// Several sources: all must suit the same operation (all encrypted or none).
     fn set_sources(&mut self, paths: &[PathBuf]) {
-        self.page = pages::Page::Home;
-        self.encrypt_choice = false;
         self.confirm_shell = false;
         // Every part of a split set stands for the set (its first part).
         let paths = logic::collapse_parts(paths);
@@ -346,6 +349,12 @@ impl App {
                     mode == Mode::Decrypt && many.iter().any(|p| logic::needs_identity(p));
             }
         }
+        // "Change" and "Another file" come back to the page that fits what was chosen.
+        self.page = match self.mode() {
+            Some(Mode::Encrypt) => pages::Page::Encrypt,
+            Some(Mode::Decrypt) => pages::Page::Decrypt,
+            None => pages::Page::Home,
+        };
     }
 
     fn batch(&self) -> bool {
@@ -479,6 +488,7 @@ impl App {
                 .then(|| self.sign_identity.clone())
                 .flatten(),
             sign_password: (mode == Mode::Encrypt && self.sign).then(|| self.sign_password.take()),
+            restore_name: mode == Mode::Decrypt && (src.paths.len() > 1 || !self.output_custom),
             list_only,
             only: if list_only || self.listing.is_none() {
                 Vec::new()
@@ -706,7 +716,7 @@ impl App {
             ))
             .pick_folder()
         {
-            self.set_source(&p);
+            self.set_sources(&[p]);
         }
     }
 
@@ -735,6 +745,7 @@ impl App {
         }
         if let Some(p) = d.save_file() {
             self.output = Some(p);
+            self.output_custom = true;
             self.allow_cloud = false;
             self.error = None;
         }
@@ -779,17 +790,21 @@ impl App {
                                         .font(fonts::semibold(15.0))
                                         .color(pal.ink),
                                 );
-                                if matches!(self.stage, Stage::Pick)
-                                    && !self.locked
-                                    && matches!(
-                                        self.page,
-                                        pages::Page::Keys | pages::Page::Settings
-                                    )
-                                {
+                                let home_link = !self.locked
+                                    && match self.stage {
+                                        Stage::Pick => !matches!(
+                                            self.page,
+                                            pages::Page::Home | pages::Page::Welcome
+                                        ),
+                                        Stage::Ready | Stage::Done(_) => true,
+                                        Stage::Running { .. } => false,
+                                    };
+                                if home_link {
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         if link_button(ui, pal, tr("‹ Ana sayfa", "‹ Home"))
                                             .clicked()
                                         {
+                                            self.reset();
                                             self.go_home();
                                         }
                                     });
@@ -806,6 +821,8 @@ impl App {
                                 Stage::Pick => match self.page {
                                     pages::Page::Welcome => self.welcome_view(ui, pal),
                                     pages::Page::Home => self.home_view(ui, pal),
+                                    pages::Page::Encrypt => self.encrypt_view(ui, pal),
+                                    pages::Page::Decrypt => self.decrypt_view(ui, pal),
                                     pages::Page::Keys => self.keys_view(ui, pal),
                                     pages::Page::Settings => self.settings_view(ui, pal),
                                 },
@@ -1733,11 +1750,20 @@ impl App {
 
     fn output_row(&mut self, ui: &mut Ui, pal: Palette) {
         let batch = self.batch();
+        // A decrypted file gets the name stored inside the encrypted file (not known before).
+        let restore = self.mode() == Some(Mode::Decrypt) && !self.output_custom && !self.recover;
         let Some(out) = &self.output else { return };
-        let name = out
-            .file_name()
-            .map(|f| escape_display(&f.to_string_lossy()))
-            .unwrap_or_default();
+        let name = if restore && !batch {
+            tr(
+                "Özgün adıyla, bu klasöre",
+                "Under its original name, in this folder",
+            )
+            .to_owned()
+        } else {
+            out.file_name()
+                .map(|f| escape_display(&f.to_string_lossy()))
+                .unwrap_or_default()
+        };
         let dir = if batch {
             // The folder itself: each item is written into it as its own file.
             escape_display(&logic::short_dir(out))
@@ -3127,12 +3153,29 @@ mod tests {
         frame(&ctx, &mut app);
         for page in [
             pages::Page::Welcome,
+            pages::Page::Encrypt,
+            pages::Page::Decrypt,
             pages::Page::Keys,
             pages::Page::Settings,
         ] {
             app.page = page;
             frame(&ctx, &mut app);
         }
+        for step in 0..3 {
+            app.page = pages::Page::Welcome;
+            app.welcome_step = step;
+            frame(&ctx, &mut app);
+        }
+        // Choosing something lands on its page, so "Change" comes back to the right one.
+        app.page = pages::Page::Home;
+        app.set_sources(&[d.join("a.txt")]);
+        assert_eq!(app.page, pages::Page::Encrypt);
+        app.reset();
+        assert!(matches!(app.stage, Stage::Pick) && app.page == pages::Page::Encrypt);
+        // The output is not custom until "Change" picks one: a decrypted file keeps its name.
+        assert!(!app.output_custom);
+        app.go_home();
+        assert_eq!((app.page, app.welcome_step), (pages::Page::Home, 0));
         // App lock: locked at start when a verifier is saved; the right password opens it.
         let pw = lephy_sys::mem::SecretBytes::from_slice(b"app lock 123").unwrap();
         let mut prefs = crate::settings::Settings {

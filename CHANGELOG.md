@@ -59,6 +59,13 @@ Fixes from the November 2026 internal review (not an independent audit):
   whose time range is narrower; the time is simply not applied.
 
 ### Changed
+- Decrypting a single file now restores the name stored inside the encrypted file, next to the
+  default destination: `7f3a9c2e.lphy` comes back as `photo.png`, not as `7f3a9c2e`. A taken name
+  gets ` (2)`, ` (3)`… and nothing is overwritten. Applies in the desktop app (unless a
+  destination was chosen with "Change") and in the CLI when no `-o` is given
+  (`DecryptOptions::restore_name`). A folder has no stored name and keeps the destination's name.
+- Desktop app: Encrypt and Decrypt open their own pages from the home screen, and the first-launch
+  welcome is a short three-step introduction.
 - Touch ID / Windows Hello unlock of identities was evaluated and not added: without a signed
   release the biometric check is not enforced (macOS legacy keychain) or not bound to the data
   (Windows DPAPI). See the threat model.

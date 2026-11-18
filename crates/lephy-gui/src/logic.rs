@@ -305,6 +305,9 @@ pub struct Job {
     pub sign_identity: Option<PathBuf>,
     /// Password of `sign_identity`.
     pub sign_password: Option<SecretBytes>,
+    /// Decrypting: a single file gets its stored (original) name next to the output, and nothing
+    /// is overwritten (see `DecryptOptions::restore_name`).
+    pub restore_name: bool,
 }
 
 /// Job result.
@@ -347,6 +350,7 @@ struct Ctx<'a> {
     recover: bool,
     list_only: bool,
     only: &'a [String],
+    restore_name: bool,
     signer: Option<&'a Identity>,
     hybrid: &'a [lephy_core::hybrid::HybridKey],
 }
@@ -483,6 +487,7 @@ pub fn run(job: Job) -> Result<Outcome> {
         } else {
             &[]
         },
+        restore_name: job.restore_name,
     };
     let single = job.items.len() == 1;
     let mut out = Outcome::default();
@@ -631,6 +636,7 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
             DecryptOptions {
                 unlock,
                 only: (!ctx.only.is_empty()).then_some(ctx.only),
+                restore_name: ctx.restore_name,
                 ..DecryptOptions::default()
             },
             &mut log,
@@ -929,6 +935,7 @@ mod tests {
             hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
+            restore_name: false,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -970,6 +977,7 @@ mod tests {
             hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
+            restore_name: false,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Decrypt,
@@ -996,12 +1004,46 @@ mod tests {
         assert_eq!(out.outputs, vec![d.join("geri.txt")]);
         assert_eq!(out.skipped, 0);
         assert_eq!(std::fs::read(d.join("geri.txt")).unwrap(), b"hello");
+        // Default destination: the file comes back under its own name (`a.txt` is still there,
+        // so it is numbered, not overwritten), not as the random `x`.
+        let job = Job {
+            hybrid: Vec::new(),
+            sign_identity: None,
+            sign_password: None,
+            restore_name: true,
+            list_only: false,
+            only: Vec::new(),
+            mode: Mode::Decrypt,
+            items: vec![Item {
+                input: d.join("x.lphy"),
+                output: default_output(&d.join("x.lphy"), Mode::Decrypt),
+            }],
+            password: secret("gui parola 1234"),
+            confirm: None,
+            kdf_mib: 0,
+            aes: false,
+            pad: true,
+            allow_cloud: false,
+            keyfile: None,
+            secure_delete: false,
+            split: None,
+            compress: false,
+            ecc: false,
+            recover: false,
+            recipients: Vec::new(),
+            identity: None,
+        };
+        let out = run(job).unwrap();
+        assert_eq!(out.outputs, vec![d.join("a (2).txt")]);
+        assert_eq!(std::fs::read(d.join("a (2).txt")).unwrap(), b"hello");
+        assert!(!d.join("x").exists());
         // Mismatched repeat and a short password
         for (p, c) in [("gui parola 1234", "başka parola 99"), ("kisa", "kisa")] {
             let job = Job {
                 hybrid: Vec::new(),
                 sign_identity: None,
                 sign_password: None,
+                restore_name: false,
                 list_only: false,
                 only: Vec::new(),
                 mode: Mode::Encrypt,
@@ -1033,6 +1075,7 @@ mod tests {
             hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
+            restore_name: false,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Decrypt,
@@ -1073,6 +1116,7 @@ mod tests {
             hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
+            restore_name: false,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -1131,6 +1175,7 @@ mod tests {
             hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
+            restore_name: false,
             list_only,
             only,
             mode,
@@ -1186,6 +1231,7 @@ mod tests {
             hybrid: Vec::new(),
             sign_identity: sign.then(|| d.join("me.lphykey")),
             sign_password: sign.then(|| secret("identity pass m")),
+            restore_name: false,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1233,6 +1279,7 @@ mod tests {
                 hybrid,
                 sign_identity: None,
                 sign_password: None,
+                restore_name: false,
                 list_only: false,
                 only: Vec::new(),
                 mode,
@@ -1286,6 +1333,7 @@ mod tests {
             hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
+            restore_name: false,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1368,6 +1416,7 @@ mod tests {
             hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
+            restore_name: false,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1426,6 +1475,7 @@ mod tests {
             hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
+            restore_name: false,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -1459,6 +1509,7 @@ mod tests {
             hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
+            restore_name: false,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -1493,6 +1544,7 @@ mod tests {
             hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
+            restore_name: false,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1540,6 +1592,7 @@ mod tests {
             hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
+            restore_name: false,
             list_only: false,
             only: Vec::new(),
             mode,

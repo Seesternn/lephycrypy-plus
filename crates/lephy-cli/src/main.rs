@@ -1112,6 +1112,8 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                     padded: false,
                 },
                 only: (!only.is_empty()).then_some(only.as_slice()),
+                // No `-o`: a single file gets its stored name (encrypted names are often random).
+                restore_name: output.is_none() && !*force,
             };
             if *stdout {
                 eprintln!(
