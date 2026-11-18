@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- Decrypted files keep the download mark of the `.lphy` file they came from (macOS quarantine,
+  Windows Mark of the Web), so Gatekeeper and SmartScreen still check programs inside an
+  encrypted file. Restored names have bidirectional and control characters replaced, and the app
+  warns when the output contains programs.
 - Identity files (`.lphykey`) are refused as decryption input in the app and the CLI; decrypting
   one would have written the secret key to disk unprotected.
 - Desktop app: an encrypted file with error correction (`--error-correction`) was offered for

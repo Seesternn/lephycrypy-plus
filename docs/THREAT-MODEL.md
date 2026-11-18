@@ -159,6 +159,22 @@ by default; `--restore-symlinks` restores only relative targets without `..`; li
 extraction (warning); on Windows without privilege or Developer Mode they cannot be created and
 the tree is incomplete.
 
+## Downloaded-file marks and stored names
+A `.lphy` file downloaded from the internet carries the operating system's download mark (macOS
+`com.apple.quarantine`, Windows `Zone.Identifier`, "Mark of the Web"). When such a file is
+decrypted to a path, the same mark is copied to every file (and, on macOS, every folder) that
+comes out of it, so Gatekeeper and SmartScreen still check a program before it runs. Before this,
+an encrypted file was a way to strip the mark. Limits: an unmarked `.lphy` file (made locally,
+copied from a USB stick, or received through a program that does not mark downloads) produces
+unmarked output; `--stdout` output is not marked; a failure to set the mark is reported as a
+warning, not an error.
+
+When a single file comes back under its stored name, the name was chosen by whoever encrypted
+it. Characters that reorder or hide text (bidirectional controls such as U+202E, zero-width
+marks) and control characters are replaced with `_`, so a name cannot pose as a different
+extension. The app warns when the output contains programs (by name, such as `.app`, `.command`,
+`.exe`, `.ps1`, or by the executable bit).
+
 ## Recipient (public-key) encryption
 A file encrypted to public keys can be opened by the holder of any listed identity; there is no
 password to guess, but the identity file is only as strong as its own password. Encryption is

@@ -1159,6 +1159,9 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             if let Some(a) = &r.archive {
                 print_report(a, log);
             }
+            if r.marked {
+                log("the download mark (quarantine) was copied to the output");
+            }
             log(&format!(
                 "{} bytes decrypted → {}",
                 r.plain_len,

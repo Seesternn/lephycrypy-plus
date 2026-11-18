@@ -2541,6 +2541,17 @@ impl App {
                 }
             };
             ui.label(RichText::new(name).color(pal.muted).size(14.0));
+            if out.executables > 0 {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(tr(
+                        "Çıkan dosyalar arasında çalıştırılabilir program var. Yalnızca güvendiğiniz birinden geldiyse açın.",
+                        "The output contains programs that can run. Open them only if they came from someone you trust.",
+                    ))
+                    .color(pal.danger)
+                    .size(12.5),
+                );
+            }
             if let Some(k) = &out.signer {
                 ui.add_space(6.0);
                 ui.label(

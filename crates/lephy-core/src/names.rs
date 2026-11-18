@@ -92,6 +92,22 @@ fn is_drive_prefixed(s: &str) -> bool {
     b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
 }
 
+/// A stored name made safe to show and to use as a file name: characters that reorder or hide
+/// text (bidirectional controls such as U+202E, zero-width marks) and control characters become
+/// `_`, so `photo\u{202E}gnp.exe` cannot pose as `photoexe.png`.
+#[must_use]
+pub fn sanitize_display_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            let hidden = matches!(
+                c,
+                '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}'
+            );
+            if hidden || c.is_control() { '_' } else { c }
+        })
+        .collect()
+}
+
 /// Duplicate-path key: the first 16 B of `BLAKE3(NFC + lowercase)`.
 #[must_use]
 pub fn fold_key(path: &str) -> [u8; 16] {
@@ -291,6 +307,12 @@ mod tests {
         assert_eq!(windows_sanitize("trail. ").0, "trail__");
         assert_eq!(windows_sanitize("normal.txt"), ("normal.txt".into(), false));
         assert_eq!(windows_sanitize("ads.txt:stream").0, "ads.txt_stream");
+        assert_eq!(
+            sanitize_display_name("photo\u{202E}gnp.exe"),
+            "photo_gnp.exe"
+        );
+        assert_eq!(sanitize_display_name("a\nb\u{200B}.txt"), "a_b_.txt");
+        assert_eq!(sanitize_display_name("foto.png"), "foto.png");
     }
 
     #[test]

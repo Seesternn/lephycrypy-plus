@@ -335,6 +335,66 @@ pub struct Outcome {
     pub recipients_set: Option<usize>,
     /// Decrypted file: who signed it (`lphysig1…`, verified).
     pub signer: Option<String>,
+    /// Decrypted items that can run as programs (by name, or by the executable bit).
+    pub executables: usize,
+}
+
+/// Names that run code when opened (double-click) on macOS or Windows.
+#[must_use]
+pub fn is_executable_name(name: &str) -> bool {
+    const EXT: [&str; 20] = [
+        "app", "command", "tool", "sh", "pkg", "mpkg", "dmg", "scpt", "terminal", "workflow",
+        "exe", "bat", "cmd", "ps1", "vbs", "js", "lnk", "msi", "jar", "scr",
+    ];
+    name.rsplit_once('.')
+        .is_some_and(|(_, e)| EXT.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+/// A regular file with an executable bit (Unix); never on Windows (the name decides there).
+fn is_executable_file(md: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        md.is_file() && md.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = md;
+        false
+    }
+}
+
+/// Executable items in `root` (a file or a folder); stops counting at 10 000 entries.
+#[must_use]
+pub fn count_executables(root: &Path) -> usize {
+    let mut n = 0;
+    let mut seen = 0;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        seen += 1;
+        if seen > 10_000 {
+            break;
+        }
+        let Ok(md) = p.symlink_metadata() else {
+            continue;
+        };
+        let by_name = p
+            .file_name()
+            .is_some_and(|f| is_executable_name(&f.to_string_lossy()));
+        if by_name {
+            // An .app bundle is one program: do not count its inside.
+            n += 1;
+            continue;
+        }
+        if md.is_dir() {
+            if let Ok(rd) = std::fs::read_dir(&p) {
+                stack.extend(rd.flatten().map(|e| e.path()));
+            }
+        } else if is_executable_file(&md) {
+            n += 1;
+        }
+    }
+    n
 }
 
 #[allow(clippy::struct_excessive_bools, reason = "independent job switches")]
@@ -641,6 +701,7 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
             },
             &mut log,
         )?;
+        out.executables += count_executables(&rep.target);
         out.outputs.push(rep.target);
         out.repaired += rep.repaired;
         out.signer = rep.signer.map(|k| k.to_string());
@@ -1625,6 +1686,23 @@ mod tests {
             std::fs::read(d.join("geri.txt")).unwrap(),
             b"anahtar dosyasi testi"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn executables_are_counted() {
+        assert!(is_executable_name("Run.COMMAND"));
+        assert!(is_executable_name("setup.exe"));
+        assert!(!is_executable_name("photo.png"));
+        assert!(!is_executable_name("exe"));
+        let d = std::env::temp_dir().join(format!("lphy-gui-exe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("Tool.app/Contents/MacOS")).unwrap();
+        std::fs::write(d.join("Tool.app/Contents/MacOS/tool"), b"x").unwrap();
+        std::fs::write(d.join("a.txt"), b"x").unwrap();
+        std::fs::write(d.join("go.sh"), b"x").unwrap();
+        assert_eq!(count_executables(&d), 2);
+        assert_eq!(count_executables(&d.join("a.txt")), 0);
         let _ = std::fs::remove_dir_all(&d);
     }
 

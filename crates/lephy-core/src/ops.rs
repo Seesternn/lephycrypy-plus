@@ -1099,6 +1099,8 @@ pub struct DecryptReport {
     pub repaired: u64,
     /// Who signed the file (verified); `None` for an unsigned file.
     pub signer: Option<crate::signature::SignerKey>,
+    /// The input carried a download mark (quarantine / Mark of the Web) and the output got it too.
+    pub marked: bool,
 }
 
 /// Decryption options (for archives).
@@ -1148,6 +1150,8 @@ pub fn decrypt(
 ) -> Result<DecryptReport> {
     let (input, u) =
         open_stream_and_unlock(path, pwd_nfc, keyfile_digest, opts.unlock, false, log)?;
+    // A downloaded `.lphy` file passes its download mark on to what comes out of it.
+    let mark = lephy_sys::quarantine::read(path);
     let signer_slot = input.signer.clone();
     let (mut f, in_len, stats) = (input.reader, input.total, input.stats);
     let cipher = SharedCipher::new(u.header.alg, key32(&u.data_key)?)?;
@@ -1266,6 +1270,15 @@ pub fn decrypt(
     if let Some(st) = stats {
         report.repaired = st.corrected.load(std::sync::atomic::Ordering::Relaxed);
     }
+    if let (Some(m), Output::Path(..)) = (&mark, output) {
+        let failed = lephy_sys::quarantine::apply_tree(&report.target, m);
+        if failed > 0 {
+            log(&format!(
+                "warning: the download mark could not be set on {failed} item(s)"
+            ));
+        }
+        report.marked = true;
+    }
     report.signer = signer_slot.lock().ok().and_then(|s| *s);
     Ok(report)
 }
@@ -1362,6 +1375,7 @@ fn numbered_name(name: &str, n: u32) -> String {
 
 /// Moves `src` into `dir` under `name`, numbering it if the name is taken (never overwrites).
 fn place_with_free_name(src: &Path, dir: &Path, name: &str) -> Result<(bool, PathBuf)> {
+    let name = &crate::names::sanitize_display_name(name);
     for n in 1..=999 {
         let dst = dir.join(numbered_name(name, n));
         match place(src, &dst) {
@@ -2997,6 +3011,74 @@ mod tests {
         .unwrap();
         assert!(list(&raw, &p, None, UnlockOptions::default(), &mut log).is_err());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(any(target_os = "macos", windows)),
+        ignore = "download marks exist on macOS and Windows only"
+    )]
+    fn download_mark_passes_to_the_output() {
+        let d = tmpdir("mark");
+        let src = d.join("folder");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub/run.command"), b"echo hi").unwrap();
+        let p = pwd("parola parola");
+        let mut log = |_: &str| {};
+        let out = d.join("m.lphy");
+        encrypt(
+            &Input::Path(&src),
+            &out,
+            &p,
+            None,
+            &opts(false, None),
+            &mut OsEntropy,
+            &mut log,
+        )
+        .unwrap();
+        let mark: &[u8] = if cfg!(windows) {
+            b"[ZoneTransfer]\r\nZoneId=3\r\n"
+        } else {
+            b"0083;6738a1c0;Safari;"
+        };
+        lephy_sys::quarantine::apply(&out, mark).unwrap();
+        let dst = d.join("back");
+        let r = decrypt(
+            &out,
+            &Output::Path(&dst, false),
+            &p,
+            None,
+            DecryptOptions::default(),
+            &mut log,
+        )
+        .unwrap();
+        assert!(r.marked);
+        let got = lephy_sys::quarantine::read(&dst.join("sub/run.command"));
+        assert_eq!(got.as_deref(), Some(mark));
+        // An unmarked input leaves the output unmarked.
+        let out2 = d.join("u.lphy");
+        encrypt(
+            &Input::Path(&src.join("sub/run.command")),
+            &out2,
+            &p,
+            None,
+            &opts(false, None),
+            &mut OsEntropy,
+            &mut log,
+        )
+        .unwrap();
+        let dst2 = d.join("plain");
+        let r = decrypt(
+            &out2,
+            &Output::Path(&dst2, false),
+            &p,
+            None,
+            DecryptOptions::default(),
+            &mut log,
+        )
+        .unwrap();
+        assert!(!r.marked);
+        assert_eq!(lephy_sys::quarantine::read(&dst2), None);
     }
 
     #[test]
