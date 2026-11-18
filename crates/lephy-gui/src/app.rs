@@ -466,9 +466,76 @@ impl App {
         if self.pending_open.is_empty() || self.running() || self.confirm_delete {
             return;
         }
+        // An item is already chosen (a password may be typed): another program must not swap it
+        // silently. The banner in `open_request_banner` asks first.
+        if self.awaits_open_confirmation() {
+            ctx.request_repaint();
+            return;
+        }
         let paths = std::mem::take(&mut self.pending_open);
         self.set_sources(&paths);
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
+    /// Items from the operating system wait for the user's decision (see `handle_open_requests`).
+    fn awaits_open_confirmation(&self) -> bool {
+        !self.pending_open.is_empty() && matches!(self.stage, Stage::Ready) && self.source.is_some()
+    }
+
+    /// Asks before replacing the chosen item with items sent by the operating system.
+    fn open_request_banner(&mut self, ui: &mut Ui, ctx: &egui::Context, pal: Palette) {
+        if !self.awaits_open_confirmation() || self.running() {
+            return;
+        }
+        let first = self.pending_open[0]
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let n = self.pending_open.len();
+        let mut replace = false;
+        let mut ignore = false;
+        egui::Frame::new()
+            .fill(pal.accent_soft)
+            .corner_radius(CornerRadius::same(theme::R_INPUT))
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    RichText::new(match (lang(), n) {
+                        (Lang::Tr, 1) => format!("“{first}” açılmak isteniyor."),
+                        (Lang::Tr, _) => {
+                            format!("“{first}” ve {} öğe daha açılmak isteniyor.", n - 1)
+                        }
+                        (Lang::En, 1) => format!("A request to open “{first}” arrived."),
+                        (Lang::En, _) => {
+                            format!("A request to open “{first}” and {} more arrived.", n - 1)
+                        }
+                    })
+                    .font(fonts::semibold(13.5))
+                    .color(pal.ink),
+                );
+                ui.label(
+                    RichText::new(tr(
+                        "Değiştirirseniz şu anki seçim ve yazdığınız parola silinir.",
+                        "Replacing clears the current choice and the password you typed.",
+                    ))
+                    .color(pal.muted)
+                    .size(12.5),
+                );
+                ui.horizontal(|ui| {
+                    replace = link_button(ui, pal, tr("Değiştir", "Replace")).clicked();
+                    ui.add_space(12.0);
+                    ignore = link_button(ui, pal, tr("Yoksay", "Ignore")).clicked();
+                });
+            });
+        ui.add_space(14.0);
+        if replace {
+            let paths = std::mem::take(&mut self.pending_open);
+            self.set_sources(&paths);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        } else if ignore {
+            self.pending_open.clear();
+        }
     }
 
     fn handle_drop(&mut self, ctx: &egui::Context) {
@@ -588,6 +655,7 @@ impl App {
                                 }
                             });
                             ui.add_space(18.0);
+                            self.open_request_banner(ui, &ctx, pal);
                             match self.stage {
                                 Stage::Pick if self.show_settings => self.settings_view(ui, pal),
                                 Stage::Pick => self.pick_view(ui, pal),
@@ -2606,6 +2674,23 @@ mod tests {
         frame(&ctx, &mut app);
         app.reset();
         assert!(matches!(app.stage, Stage::Pick));
+        frame(&ctx, &mut app);
+        // An open request while an item is chosen waits for confirmation.
+        app.set_source(&d.join("a.txt"));
+        app.password.set(b"typed password");
+        app.pending_open.push(d.join("other.txt"));
+        frame(&ctx, &mut app);
+        assert_eq!(
+            app.source.as_ref().map(|s| s.path.clone()),
+            Some(d.join("a.txt"))
+        );
+        assert!(
+            app.password.char_count() > 0,
+            "the typed password must stay"
+        );
+        assert!(app.awaits_open_confirmation());
+        app.pending_open.clear();
+        app.reset();
         frame(&ctx, &mut app);
         app.show_settings = true;
         app.confirm_shell = true;

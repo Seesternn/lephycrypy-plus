@@ -137,6 +137,9 @@ re-checking the identity and the call; system, boot and Time Machine volumes are
   path is then visible to other processes of the same user in the process list. A received path
   is only shown as the selected source; nothing is encrypted or decrypted without the user's
   password and click.
+  When an item is already chosen in the desktop app, a request from the operating system does
+  not replace it: the app shows the request and waits for **Replace** or **Ignore**, so another
+  program of the same user cannot swap the item after a password was typed.
 - The "Copy" link for a public key uses the system tool (`pbcopy`, `clip.exe`) with an empty
   environment; the app itself still has no clipboard access, so a password cannot reach it.
 - The app does not offer `--strict`, restoring symbolic links or `--rename-conflicts` (safe

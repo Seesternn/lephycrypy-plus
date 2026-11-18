@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- Desktop app: a request from the operating system to open items (double-click, Quick Action,
+  Explorer, `open`) no longer replaces an item that is already chosen; the app asks first, so
+  another program cannot swap the file after a password was typed.
 Fixes from the November 2026 internal review (not an independent audit):
 
 - `--delete-original` now deletes only the entries that were actually archived. If any entry was
