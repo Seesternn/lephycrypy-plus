@@ -33,6 +33,10 @@ VERSION_2 = 2
 FEATURE_COMPRESSED = 0x01
 FEATURE_RECIPIENTS = 0x02
 INFO_X25519 = b"lphy+/v2/x25519"
+FEATURE_SIGNED = 0x04
+INFO_ED25519 = b"lphy+/v2/ed25519"
+INFO_SIG_KEY = b"lphy+/v2/sig-key"
+SIG_CONTEXT = b"lphy+/v2/sig\0"
 INFO_KEK = b"lphy+/v1/kek"
 INFO_WRAP = b"lphy+/v1/wrap"
 INFO_COMMIT = b"lphy+/v1/commit"
@@ -186,7 +190,7 @@ def x25519_public(secret: bytes) -> bytes:
 
 
 def build_recipient_header(alg, content_type, padded, chunk_code, prefix, fk, stanzas_in,
-                           compressed=False) -> tuple[bytes, bytes, dict]:
+                           compressed=False, signed=False) -> tuple[bytes, bytes, dict]:
     """FORMAT.md › Recipients. stanzas_in: [(recipient_pk, eph_secret, wrap_nonce)]."""
     prefix24 = prefix[: prefix_len(alg)].ljust(24, b"\0")
     h = bytearray(256)
@@ -196,7 +200,7 @@ def build_recipient_header(alg, content_type, padded, chunk_code, prefix, fk, st
     h[9] = content_type
     h[10] = 1 if padded else 0
     h[11] = chunk_code
-    h[12] = FEATURE_RECIPIENTS | (FEATURE_COMPRESSED if compressed else 0)
+    h[12] = FEATURE_RECIPIENTS | (FEATURE_COMPRESSED if compressed else 0) | (FEATURE_SIGNED if signed else 0)
     h[13] = 0  # no password slot
     h[28:30] = struct.pack("<H", len(stanzas_in))
     h[64:88] = prefix24
@@ -231,6 +235,21 @@ def paper_words(secret: bytes) -> str:
         digits.append(d)
     assert n == 0
     return " ".join(words[d] for d in reversed(digits))
+
+
+def signature_trailer(alg, fk, prefix24, header, body, identity_secret, nonce) -> bytes:
+    """FORMAT.md › Format version 2 (signatures)."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives import serialization
+    seed = hkdf32(identity_secret, b"", INFO_ED25519)
+    sk = Ed25519PrivateKey.from_private_bytes(seed)
+    vk = sk.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    aad = chunk_aad(header)
+    sig = sk.sign(SIG_CONTEXT + aad + blake3.blake3(body).digest())
+    sig_key = hkdf32(fk, prefix24, INFO_SIG_KEY)
+    nl = nonce_len(alg)
+    n24 = nonce[:nl].ljust(24, b"\0")
+    return n24 + seal(alg, sig_key, n24[:nl], aad, vk + sig)
 
 
 def chunk_aad(header: bytes) -> bytes:
@@ -433,6 +452,17 @@ def vectors(outdir: str):
     with open(os.path.join(outdir, "v15.lphy"), "wb") as f:
         f.write(h15 + ext15 + body)
     meta["paper_words"] = paper_words(sk1)
+    # 16: like 14 but for the second recipient only, signed by identity sk1
+    pt16 = b"signed by sk1"
+    h16, ext16, k16 = build_recipient_header(
+        1, 0, False, 0, PREFIX, FK, [(x25519_public(sk2), e1, WRAP)], signed=True)
+    body16 = encrypt_stream(1, k16["data_key"], h16[64:88], chunk_aad(h16), CHUNK_SIZES[0], pt16)
+    sig_nonce = bytes(range(0x70, 0x88))
+    tr16 = signature_trailer(1, FK, h16[64:88], h16, body16, sk1, sig_nonce)
+    with open(os.path.join(outdir, "v16.lphy"), "wb") as f:
+        f.write(h16 + ext16 + body16 + tr16)
+    meta["v16"] = {"signer_identity": sk1.hex(), "identities": [sk2.hex()],
+                   "plaintext": pt16.decode()}
     meta["v15"] = {"from": "v14", "recipients": [x25519_public(sk2).hex()],
                    "identities": [sk2.hex()], "plaintext": pt14.decode()}
     # 7/8/11: equal KEKs

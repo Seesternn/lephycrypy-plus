@@ -120,6 +120,20 @@ lephycrypy recipients report.lphy -i me.lphykey -r me.pub -r new-colleague.pub
 The content is not re-encrypted; a removed recipient who kept a copy of the old file can still
 open that copy.
 
+Sign what you send, so recipients know it came from you and was not changed:
+
+```bash
+lephycrypy encrypt report.pdf -o report.lphy -r friend.pub --sign me.lphykey
+```
+
+```bash
+lephycrypy decrypt report.lphy -i friend.lphykey --expect-signer me.pub
+```
+
+The signer key (`lphysig1…`) is printed by `keygen` and stored as the second line of `me.pub`.
+Signing works for password files too; in the app it is **Sign with my identity** in the advanced
+settings, and the result screen shows who signed a file.
+
 Keep a paper backup of your identity: `lephycrypy identity backup me.lphykey` shows 22 words (the
 app shows them once, right after it creates a key pair), and
 `lephycrypy identity restore me.lphykey` recreates the identity file from them. Anyone with the

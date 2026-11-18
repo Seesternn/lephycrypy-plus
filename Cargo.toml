@@ -46,6 +46,7 @@ cap-std = "4"
 miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
 # X25519 for recipient (public-key) encryption. Pure Rust, no digest/rand features.
 curve25519-dalek = { version = "5.0.0", default-features = false, features = ["zeroize"] }
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["zeroize"] }
 
 # unsafe only in lephy-sys. lephy-sys uses its own [lints] table and does not write
 # `workspace = true`; every other crate inherits this table.

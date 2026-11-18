@@ -28,6 +28,7 @@ use lephy_core::ops::{
     UnlockOptions,
 };
 use lephy_core::password::{self, Source};
+use lephy_core::signature::SignerKey;
 use lephy_sys::mem::SecretBytes;
 
 #[derive(Parser)]
@@ -125,7 +126,47 @@ impl UnlockArgs {
             allow_large_kdf: self.allow_large_kdf,
             strict_memory: self.strict_memory,
             identity: None,
+            expect_signer: None,
         }
+    }
+}
+
+/// Who must have signed the file.
+#[derive(Args, Clone)]
+struct SignerArgs {
+    /// Fail (code 3, nothing written) unless the file is signed by this key: an `lphysig1…` key
+    /// or a `.pub` file that contains one.
+    #[arg(long, value_name = "KEY|FILE")]
+    expect_signer: Option<String>,
+}
+
+impl SignerArgs {
+    fn key(&self) -> Result<Option<SignerKey>> {
+        let Some(v) = &self.expect_signer else {
+            return Ok(None);
+        };
+        if v.trim_start()
+            .starts_with(lephy_core::signature::SIGNER_PREFIX)
+        {
+            return v.parse().map(Some);
+        }
+        let text = std::fs::read_to_string(v)
+            .map_err(|e| Error::Environment(format!("signer {}: {e}", escape_display(v))))?;
+        let keys = lephy_core::signature::parse_signer_keys(&text)?;
+        match keys.as_slice() {
+            [k] => Ok(Some(*k)),
+            _ => Err(Error::Environment(format!(
+                "{}: expected exactly one lphysig1… key",
+                escape_display(v)
+            ))),
+        }
+    }
+}
+
+/// Prints who signed a file (stderr).
+fn report_signer(signer: Option<SignerKey>) {
+    if let Some(k) = signer {
+        eprintln!("signed by {k} (signature verified)");
     }
 }
 
@@ -240,6 +281,13 @@ enum Command {
         /// Do not ask for confirmation for `--secure-delete` (scripts).
         #[arg(long, requires = "secure_delete")]
         yes: bool,
+        /// Sign with this identity (`.lphykey`): whoever opens the file sees and can check your
+        /// `lphysig1…` key. Its password is asked for separately.
+        #[arg(long, value_name = "IDENTITY")]
+        sign: Option<PathBuf>,
+        /// Read the signing identity's password from this file (scripts).
+        #[arg(long, value_name = "PATH", requires = "sign")]
+        sign_password_file: Option<PathBuf>,
     },
     /// Decrypts a `.lphy` file (archive → folder or single file; raw → file/stdout).
     Decrypt {
@@ -259,6 +307,8 @@ enum Command {
         pw: PasswordArgs,
         #[command(flatten)]
         unlock: UnlockArgs,
+        #[command(flatten)]
+        signer: SignerArgs,
         /// Overwrite an existing destination (a folder is deleted).
         #[arg(long)]
         force: bool,
@@ -319,6 +369,8 @@ enum Command {
         pw: PasswordArgs,
         #[command(flatten)]
         unlock: UnlockArgs,
+        #[command(flatten)]
+        signer: SignerArgs,
     },
     /// Verifies a file without writing anything.
     Verify {
@@ -332,6 +384,8 @@ enum Command {
         pw: PasswordArgs,
         #[command(flatten)]
         unlock: UnlockArgs,
+        #[command(flatten)]
+        signer: SignerArgs,
     },
     /// Shows the unencrypted header metadata (no key derivation).
     Info {
@@ -583,6 +637,8 @@ enum Remove {
 
 /// Settings shared by every source in batch encryption (the password is read once).
 struct EncryptJob<'a> {
+    /// Sign with this identity.
+    signer: Option<&'a Identity>,
     split: Option<u64>,
     /// Public keys; empty = password encryption.
     recipients: &'a [PublicKey],
@@ -606,7 +662,14 @@ fn encrypt_one(
     } else {
         Input::Path(input)
     };
-    let rep = if job.recipients.is_empty() {
+    let lock = if job.recipients.is_empty() {
+        ops::Lock::Password(job.nfc, job.keyfile)
+    } else {
+        ops::Lock::Recipients(job.recipients)
+    };
+    let rep = if let Some(id) = job.signer {
+        ops::encrypt_signed(&inp, out, lock, id, job.opts, &mut OsEntropy, log)?
+    } else if job.recipients.is_empty() {
         ops::encrypt(
             &inp,
             out,
@@ -655,6 +718,7 @@ fn encrypt_one(
         allow_large_kdf: true,
         strict_memory: job.opts.strict_memory,
         identity: None,
+        expect_signer: None,
     };
     ops::verify(out, job.nfc, job.keyfile, u, log)?;
     if let Some(d) = out.parent() {
@@ -786,6 +850,8 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             compress,
             error_correction,
             yes,
+            sign,
+            sign_password_file,
         } => {
             let is_stdin = inputs.iter().any(|i| i.as_os_str() == "-");
             if is_stdin && inputs.len() > 1 {
@@ -843,6 +909,23 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             } else {
                 (None, empty_secret()?)
             };
+            let signer = match sign {
+                Some(path) => {
+                    let src = sign_password_file
+                        .as_ref()
+                        .map_or(Source::Tty, |p| Source::File(p.clone()));
+                    let ipw = read_password(&src, "Signing identity password: ", false, is_stdin)?;
+                    let id = lephy_core::recipient::read_identity_file(
+                        path,
+                        &ipw,
+                        UnlockOptions::default(),
+                        log,
+                    )?;
+                    eprintln!("signing as {}", id.signer());
+                    Some(id)
+                }
+                None => None,
+            };
             memory_warning(*strict_memory)?;
             let opts = EncryptOptions {
                 alg: match alg {
@@ -871,6 +954,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 ));
             }
             let job = EncryptJob {
+                signer: signer.as_ref(),
                 split: *split_size,
                 recipients: &pks,
                 nfc: &nfc,
@@ -931,6 +1015,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             allow_cloud_dir,
             recover,
             only,
+            signer,
         } => {
             if input
                 .extension()
@@ -944,6 +1029,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             memory_warning(unlock.strict_memory)?;
             let unlock_opts = UnlockOptions {
                 identity: id.as_ref(),
+                expect_signer: signer.key()?,
                 ..unlock.opts()
             };
             if *recover {
@@ -1016,6 +1102,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                     "warning: --stdout: truncation cannot be detected until the last chunk is verified; output may be partial"
                 );
                 let r = ops::decrypt(input, &Output::Stdout, &nfc, keyfile.as_deref(), dopts, log)?;
+                report_signer(r.signer);
                 if r.repaired > 0 {
                     eprintln!("info: error correction repaired {} bytes", r.repaired);
                 }
@@ -1042,6 +1129,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 dopts,
                 log,
             )?;
+            report_signer(r.signer);
             if r.repaired > 0 {
                 eprintln!("info: error correction repaired {} bytes", r.repaired);
             }
@@ -1065,14 +1153,17 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             identity,
             pw,
             unlock,
+            signer,
         } => {
             let (keyfile, nfc, id) = unlock_material(input, identity.as_deref(), pw, *unlock, log)?;
             memory_warning(unlock.strict_memory)?;
             let u = UnlockOptions {
                 identity: id.as_ref(),
+                expect_signer: signer.key()?,
                 ..unlock.opts()
             };
-            let n = ops::verify(input, &nfc, keyfile.as_deref(), u, log)?;
+            let (n, who) = ops::verify_with_signer(input, &nfc, keyfile.as_deref(), u, log)?;
+            report_signer(who);
             println!("verified: {n} bytes");
             Ok(())
         }
@@ -1098,8 +1189,9 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             lephy_sys::term::write_all_raw(&std::io::stdout(), words.expose())?;
             lephy_sys::term::write_all_raw(&std::io::stdout(), b"\n")?;
             eprintln!(
-                "public key: {}\nwrite these {} words on paper and keep them safe and apart from this computer; anyone with them can open every file encrypted to this identity",
+                "public key: {}\nsigner key: {}\nwrite these {} words on paper and keep them safe and apart from this computer; anyone with them can open every file encrypted to this identity",
                 id.public(),
+                id.signer(),
                 lephy_core::paper::WORDS
             );
             Ok(())
@@ -1132,8 +1224,13 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 .write(true)
                 .create_new(true)
                 .open(&pub_path)?;
-            std::io::Write::write_all(&mut f, format!("{pk}\n").as_bytes())?;
+            // The signer key goes into the same file: `-r` ignores it, `--expect-signer` uses it.
+            std::io::Write::write_all(&mut f, format!("{pk}\n{}\n", id.signer()).as_bytes())?;
             println!("{pk}");
+            eprintln!(
+                "signer key: {} (others check your signatures with it)",
+                id.signer()
+            );
             eprintln!("identity: {} restored", disp(path));
             Ok(())
         }
@@ -1157,11 +1254,13 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             identity,
             pw,
             unlock,
+            signer,
         } => {
             let (keyfile, nfc, id) = unlock_material(input, identity.as_deref(), pw, *unlock, log)?;
             memory_warning(unlock.strict_memory)?;
             let u = UnlockOptions {
                 identity: id.as_ref(),
+                expect_signer: signer.key()?,
                 ..unlock.opts()
             };
             let entries = ops::list(input, &nfc, keyfile.as_deref(), u, log)?;
@@ -1190,7 +1289,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
         Command::Info { input } => {
             let h = ops::info(input)?;
             println!("file:         {}", disp(input));
-            let version = if h.compressed || h.recipients > 0 {
+            let version = if h.compressed || h.recipients > 0 || h.signed {
                 2
             } else {
                 lephy_core::FORMAT_VERSION
@@ -1208,6 +1307,9 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             println!("chunk:        {} KiB", h.chunk_size() / 1024);
             if h.compressed {
                 println!("compression:  DEFLATE");
+            }
+            if h.signed {
+                println!("signature:    yes (checked when the file is opened)");
             }
             if h.recipients > 0 {
                 println!(
@@ -1359,8 +1461,13 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 .write(true)
                 .create_new(true)
                 .open(&pub_path)?;
-            std::io::Write::write_all(&mut f, format!("{pk}\n").as_bytes())?;
+            // The signer key goes into the same file: `-r` ignores it, `--expect-signer` uses it.
+            std::io::Write::write_all(&mut f, format!("{pk}\n{}\n", id.signer()).as_bytes())?;
             println!("{pk}");
+            eprintln!(
+                "signer key: {} (others check your signatures with it)",
+                id.signer()
+            );
             eprintln!(
                 "identity: {} (keep it secret; back it up — losing it or its password makes files encrypted to this key unreadable)\npublic key: {} (share this one)",
                 disp(path),

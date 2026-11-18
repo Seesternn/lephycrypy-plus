@@ -78,6 +78,12 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Sender signatures (Ed25519): `encrypt --sign ID`, `decrypt/verify/list --expect-signer KEY|FILE`,
+  "Sign with my identity" in the app and the signer on its result screen. The signature and the
+  signer's `lphysig1…` key are encrypted in a trailer, checked before anything is written, and
+  survive `rekey` and replacing recipients. Vector 16 from the Python reference (signed with
+  `cryptography`'s Ed25519) is reproduced byte for byte. New dependency `ed25519-dalek` 3.0 (with
+  `ed25519` and `signature`), `cargo vet` exemptions until audits can be imported.
 - Paper backup of an identity (also shown once, masked until hovered, after the app creates a
   key pair): `lephycrypy identity backup ID` shows 22 words (EFF wordlist,
   2-byte checksum; the first word is always `abacus` or `abdomen`), `identity restore OUT`

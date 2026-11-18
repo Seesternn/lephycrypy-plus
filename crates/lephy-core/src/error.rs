@@ -64,6 +64,9 @@ pub enum Error {
     /// No recipient stanza is for the given identity (code 3).
     #[error("This file is not encrypted for this identity")]
     NoMatchingIdentity,
+    /// The file is unsigned or signed by someone other than the expected signer (code 3).
+    #[error("{0}")]
+    SignerMismatch(String),
     /// Damaged file (code 4). `at` = "header" or `chunk N`.
     #[error("The file is damaged ({at})")]
     Corrupt {
@@ -100,7 +103,8 @@ impl Error {
             | Error::KeyfileNotUsed
             | Error::IdentityRequired
             | Error::IdentityNotUsed
-            | Error::NoMatchingIdentity => ExitCode::WrongPassword,
+            | Error::NoMatchingIdentity
+            | Error::SignerMismatch(_) => ExitCode::WrongPassword,
             Error::Corrupt { .. } => ExitCode::Corrupt,
             Error::Cancelled(_) => ExitCode::Cancelled,
             Error::KdfBudget(_) => ExitCode::KdfBudget,
@@ -140,6 +144,18 @@ impl fmt::Display for FormatViolation {
 }
 
 impl std::error::Error for FormatViolation {}
+
+/// A signer mismatch carried through `io::Error` (from the signature reader).
+#[derive(Debug)]
+pub struct SignerMismatchIo(pub String);
+
+impl fmt::Display for SignerMismatchIo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SignerMismatchIo {}
 
 impl FormatViolation {
     /// A violation wrapped in `io::Error(InvalidData)`.
@@ -196,6 +212,9 @@ impl Error {
                     at: fv.at.clone(),
                     detail: Some(fv.detail.clone()),
                 };
+            }
+            if let Some(m) = inner.downcast_ref::<SignerMismatchIo>() {
+                return Error::SignerMismatch(m.0.clone());
             }
             if let Some(sv) = inner.downcast_ref::<StrictViolation>() {
                 return Error::Corrupt {

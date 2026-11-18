@@ -24,8 +24,11 @@ pub const FEATURE_COMPRESSED: u8 = 0x01;
 /// `kdf_id = 0`, the password fields are zero and `header[28..30]` holds the recipient count;
 /// the recipient stanzas follow the header (`recipient.rs`).
 pub const FEATURE_RECIPIENTS: u8 = 0x02;
+/// `feature_flags.bit2`: the file ends with a 136-byte sender-signature trailer after the last
+/// chunk (`signature.rs`).
+pub const FEATURE_SIGNED: u8 = 0x04;
 /// Known v2 feature bits.
-const KNOWN_FEATURES: u8 = FEATURE_COMPRESSED | FEATURE_RECIPIENTS;
+const KNOWN_FEATURES: u8 = FEATURE_COMPRESSED | FEATURE_RECIPIENTS | FEATURE_SIGNED;
 /// Most recipients one file can have.
 pub const MAX_RECIPIENTS: u16 = 64;
 /// One recipient stanza: `eph_pk 32 ‖ wrap_nonce 24 ‖ commit 32 ‖ wrapped_fk 48`.
@@ -48,6 +51,7 @@ pub enum ContentType {
 
 /// Parsed header.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools, reason = "independent format flags")]
 pub struct Header {
     /// Algorithm.
     pub alg: AlgId,
@@ -65,6 +69,8 @@ pub struct Header {
     pub compressed: bool,
     /// Recipient count (v2 `feature_flags.bit1`); 0 = password file.
     pub recipients: u16,
+    /// A sender-signature trailer follows the last chunk (v2 `feature_flags.bit2`).
+    pub signed: bool,
     /// Argon2 salt.
     pub salt: [u8; 32],
     /// STREAM nonce prefix (all 24 bytes; the tail is zero for AES).
@@ -147,6 +153,9 @@ impl Header {
         }
         if self.recipients > 0 {
             f |= FEATURE_RECIPIENTS;
+        }
+        if self.signed {
+            f |= FEATURE_SIGNED;
         }
         f
     }
@@ -272,6 +281,7 @@ impl Header {
             keyfile,
             compressed: features & FEATURE_COMPRESSED != 0,
             recipients,
+            signed: features & FEATURE_SIGNED != 0,
             salt,
             stream_nonce_prefix,
             wrap_nonce,
@@ -293,6 +303,7 @@ pub fn chunk_aad(b: &[u8; HEADER_LEN]) -> [u8; 32] {
 
 /// Variable fields the encryptor produces for a new header.
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools, reason = "independent format flags")]
 pub struct NewHeaderParams {
     /// Algorithm.
     pub alg: AlgId,
@@ -308,6 +319,8 @@ pub struct NewHeaderParams {
     pub keyfile: bool,
     /// Compression (format v2).
     pub compressed: bool,
+    /// A sender signature follows the chunks (format v2).
+    pub signed: bool,
 }
 
 #[cfg(test)]
@@ -329,6 +342,7 @@ mod tests {
             keyfile: false,
             compressed: false,
             recipients: 0,
+            signed: false,
             salt: [1; 32],
             stream_nonce_prefix: {
                 let mut p = [0u8; 24];

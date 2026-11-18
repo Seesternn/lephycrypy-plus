@@ -144,7 +144,9 @@ pub fn create_identity(
         .write(true)
         .create_new(true)
         .open(&pub_path)
-        .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{pk}\n").as_bytes()))?;
+        .and_then(|mut f| {
+            std::io::Write::write_all(&mut f, format!("{pk}\n{}\n", id.signer()).as_bytes())
+        })?;
     let paper = id.paper_backup()?;
     Ok((pk, paper))
 }
@@ -272,6 +274,10 @@ pub struct Job {
     pub list_only: bool,
     /// Decrypting an archive: extract only these paths (empty = everything).
     pub only: Vec<String>,
+    /// Encrypting: sign with this identity file; `sign_password` is its password.
+    pub sign_identity: Option<PathBuf>,
+    /// Password of `sign_identity`.
+    pub sign_password: Option<SecretBytes>,
 }
 
 /// Job result.
@@ -297,6 +303,8 @@ pub struct Outcome {
     pub listing: Option<Vec<lephy_core::archive::ListEntry>>,
     /// The recipient list was replaced with this many keys.
     pub recipients_set: Option<usize>,
+    /// Decrypted file: who signed it (`lphysig1…`, verified).
+    pub signer: Option<String>,
 }
 
 #[allow(clippy::struct_excessive_bools, reason = "independent job switches")]
@@ -312,6 +320,7 @@ struct Ctx<'a> {
     recover: bool,
     list_only: bool,
     only: &'a [String],
+    signer: Option<&'a Identity>,
 }
 
 /// Runs the job. With a single item an error is returned directly; in a batch failed items go to
@@ -399,7 +408,30 @@ pub fn run(job: Job) -> Result<Outcome> {
         }
         Mode::Decrypt => None,
     };
+    let signer = match (&job.sign_identity, job.mode) {
+        (Some(p), Mode::Encrypt) => {
+            let pw = job.sign_password.as_ref().ok_or_else(|| {
+                Error::Environment(
+                    tr(
+                        "imza kimliğinin parolası gerekli",
+                        "the signing identity's password is needed",
+                    )
+                    .into(),
+                )
+            })?;
+            let pw = password::normalize_nfc(pw)?;
+            Some(lephy_core::recipient::read_identity_file(
+                p,
+                &pw,
+                ops::UnlockOptions::default(),
+                &mut |_| {},
+            )?)
+        }
+        _ => None,
+    };
+    drop(job.sign_password);
     let ctx = Ctx {
+        signer: signer.as_ref(),
         nfc: &nfc,
         recipients: if key_mode { &job.recipients } else { &[] },
         identity: identity.as_ref(),
@@ -446,6 +478,50 @@ pub fn run(job: Job) -> Result<Outcome> {
     Ok(out)
 }
 
+/// Encrypts one item: password or recipients, signed if a signer is set.
+fn encrypt_item(
+    ctx: &Ctx<'_>,
+    item: &Item,
+    opts: &EncryptOptions,
+    log: &mut dyn FnMut(&str),
+) -> Result<ops::EncryptReport> {
+    if let Some(id) = ctx.signer {
+        let lock = if ctx.recipients.is_empty() {
+            ops::Lock::Password(ctx.nfc, ctx.kf)
+        } else {
+            ops::Lock::Recipients(ctx.recipients)
+        };
+        ops::encrypt_signed(
+            &Input::Path(&item.input),
+            &item.output,
+            lock,
+            id,
+            opts,
+            &mut OsEntropy,
+            log,
+        )
+    } else if ctx.recipients.is_empty() {
+        ops::encrypt(
+            &Input::Path(&item.input),
+            &item.output,
+            ctx.nfc,
+            ctx.kf,
+            opts,
+            &mut OsEntropy,
+            log,
+        )
+    } else {
+        ops::encrypt_to_recipients(
+            &Input::Path(&item.input),
+            &item.output,
+            ctx.recipients,
+            opts,
+            &mut OsEntropy,
+            log,
+        )
+    }
+}
+
 fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
     let mut log = |_: &str| {};
     let unlock = ops::UnlockOptions {
@@ -453,26 +529,7 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
         ..ops::UnlockOptions::default()
     };
     if let Some(opts) = &ctx.opts {
-        let rep = if ctx.recipients.is_empty() {
-            ops::encrypt(
-                &Input::Path(&item.input),
-                &item.output,
-                ctx.nfc,
-                ctx.kf,
-                opts,
-                &mut OsEntropy,
-                &mut log,
-            )?
-        } else {
-            ops::encrypt_to_recipients(
-                &Input::Path(&item.input),
-                &item.output,
-                ctx.recipients,
-                opts,
-                &mut OsEntropy,
-                &mut log,
-            )?
-        };
+        let rep = encrypt_item(ctx, item, opts, &mut log)?;
         let written = match ctx.split {
             Some(size) => lephy_core::split::split_file(&item.output, size)?
                 .into_iter()
@@ -488,6 +545,7 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
                 allow_large_kdf: true,
                 strict_memory: false,
                 identity: None,
+                expect_signer: None,
             };
             ops::verify(&written, ctx.nfc, ctx.kf, u, &mut log)?;
             if let Some(a) = &rep.archive {
@@ -533,6 +591,7 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
         )?;
         out.outputs.push(rep.target);
         out.repaired += rep.repaired;
+        out.signer = rep.signer.map(|k| k.to_string());
         out.skipped += rep.archive.as_ref().map_or(0, |a| a.skipped.len());
     }
     Ok(())
@@ -821,6 +880,8 @@ mod tests {
             "çıktı adı kaynak adını sızdırmamalı"
         );
         let job = Job {
+            sign_identity: None,
+            sign_password: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -859,6 +920,8 @@ mod tests {
             d.join("x")
         );
         let job = Job {
+            sign_identity: None,
+            sign_password: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Decrypt,
@@ -888,6 +951,8 @@ mod tests {
         // Mismatched repeat and a short password
         for (p, c) in [("gui parola 1234", "başka parola 99"), ("kisa", "kisa")] {
             let job = Job {
+                sign_identity: None,
+                sign_password: None,
                 list_only: false,
                 only: Vec::new(),
                 mode: Mode::Encrypt,
@@ -916,6 +981,8 @@ mod tests {
         }
         // Wrong password → code 3
         let job = Job {
+            sign_identity: None,
+            sign_password: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Decrypt,
@@ -953,6 +1020,8 @@ mod tests {
         OsEntropy.fill(&mut big).unwrap();
         std::fs::write(d.join("a.bin"), &big).unwrap();
         let job = |output: &str, ecc: bool, split: Option<u64>| Job {
+            sign_identity: None,
+            sign_password: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -1008,6 +1077,8 @@ mod tests {
         std::fs::write(d.join("src/a.txt"), b"a").unwrap();
         std::fs::write(d.join("src/sub/b.txt"), b"b").unwrap();
         let job = |mode, input: &str, output: &str, list_only, only: Vec<String>| Job {
+            sign_identity: None,
+            sign_password: None,
             list_only,
             only,
             mode,
@@ -1049,6 +1120,51 @@ mod tests {
     }
 
     #[test]
+    fn sign_from_the_app_and_show_the_signer() {
+        let d = std::env::temp_dir().join(format!("lphy-gui-sign-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("m.txt"), b"signed note").unwrap();
+        let (_, _) =
+            create_identity(&d.join("me.lphykey"), &secret("identity pass m"), 64).unwrap();
+        let pubtext = std::fs::read_to_string(d.join("me.pub")).unwrap();
+        let signer = pubtext.lines().nth(1).unwrap().to_string();
+        assert!(signer.starts_with("lphysig1"));
+        let job = |mode, input: &str, output: &str, sign: bool| Job {
+            sign_identity: sign.then(|| d.join("me.lphykey")),
+            sign_password: sign.then(|| secret("identity pass m")),
+            list_only: false,
+            only: Vec::new(),
+            mode,
+            items: vec![Item {
+                input: d.join(input),
+                output: d.join(output),
+            }],
+            password: secret("file pass 1234"),
+            confirm: (mode == Mode::Encrypt).then(|| secret("file pass 1234")),
+            kdf_mib: 64,
+            aes: false,
+            pad: true,
+            allow_cloud: true,
+            keyfile: None,
+            secure_delete: false,
+            split: None,
+            compress: false,
+            ecc: false,
+            recover: false,
+            recipients: Vec::new(),
+            identity: None,
+        };
+        run(job(Mode::Encrypt, "m.txt", "m.lphy", true)).unwrap();
+        let out = run(job(Mode::Decrypt, "m.lphy", "back.txt", false)).unwrap();
+        assert_eq!(out.signer.as_deref(), Some(signer.as_str()));
+        assert_eq!(std::fs::read(d.join("back.txt")).unwrap(), b"signed note");
+        // The public key list still parses with the signer line in the .pub file.
+        assert_eq!(parse_recipients(&pubtext).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn replace_recipients_from_the_app() {
         let d = std::env::temp_dir().join(format!("lphy-gui-rcp-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -1061,6 +1177,8 @@ mod tests {
             .unwrap()
             .0;
         let job = |mode, input: &str, output: &str, keys: &str, id: Option<&str>, pw: &str| Job {
+            sign_identity: None,
+            sign_password: None,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1140,6 +1258,8 @@ mod tests {
         assert_eq!(keys.len(), 1);
         assert!(parse_recipients("lphy1nope").is_err());
         let base = |mode, input: &str, output: &str| Job {
+            sign_identity: None,
+            sign_password: None,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1195,6 +1315,8 @@ mod tests {
             output: d.join("out").join(out),
         };
         let job = Job {
+            sign_identity: None,
+            sign_password: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -1225,6 +1347,8 @@ mod tests {
         assert!(!d.join("a.txt").exists() && !d.join("b.txt").exists());
         // If all fail, an error is returned.
         let job = Job {
+            sign_identity: None,
+            sign_password: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -1256,6 +1380,8 @@ mod tests {
         let data: Vec<u8> = (0..3_500_000u32).map(|i| (i % 253) as u8).collect();
         std::fs::write(d.join("a.bin"), &data).unwrap();
         let mk = |mode, input: &str, output: &str, split| Job {
+            sign_identity: None,
+            sign_password: None,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1300,6 +1426,8 @@ mod tests {
         std::fs::write(d.join("a.txt"), b"anahtar dosyasi testi").unwrap();
         std::fs::write(d.join("key.bin"), [7u8; 64]).unwrap();
         let job = |mode, input: &str, output: &str, kf: bool| Job {
+            sign_identity: None,
+            sign_password: None,
             list_only: false,
             only: Vec::new(),
             mode,

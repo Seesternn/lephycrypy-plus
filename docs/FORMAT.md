@@ -285,6 +285,34 @@ removed from the existing list individually.
 | 14 | 1 | 0 | 0 | `"to a public key"`, two recipients `sk1 = 80..9f`, `sk2 = a0..bf`; `e1 = c0..df`, `wrap_nonce1 = 40..57`; `e2 = e0..ff`, `wrap_nonce2 = 58..6f`; prefix and FK as above | byte-identical both ways |
 | 15 | 1 | 0 | 0 | vector 14 with its recipients replaced by `sk2` only: `e = 10..2f`, `wrap_nonce = 30..47`; same chunks | byte-identical |
 
+## Format version 2 (signatures)
+
+`feature_flags.bit2` marks a file signed by its sender. It works with password and recipient
+files alike. The file ends with a 136-byte trailer right after the last STREAM chunk (inside an
+error-correction envelope, if any; before splitting):
+
+```
+seed      = HKDF-SHA512(ikm = identity secret sk, salt = "", info = "lphy+/v2/ed25519", L = 32)
+vk        = Ed25519 public key of seed (RFC 8032)             text: "lphysig1" + base32(vk ‖ BLAKE3(vk)[0..4])
+sig_key   = HKDF-SHA512(ikm = FK, salt = stream_nonce_prefix (24 B), info = "lphy+/v2/sig-key", L = 32)
+message   = "lphy+/v2/sig\0" ‖ chunk_aad ‖ BLAKE3(all chunk ciphertext, in order)
+signature = Ed25519-Sign(seed, message)                        (deterministic)
+trailer   = nonce (24; AES: bytes 12..24 zero) ‖ AEAD_alg(sig_key, nonce, vk ‖ signature, AAD = chunk_aad)
+```
+
+A reader holds back the last 136 bytes while decrypting, opens the trailer, checks the signature
+with `verify_strict` and only then reports end of input: a missing or changed trailer, a changed
+chunk or a bad signature is code 4 and nothing is written; a signer other than the expected one
+(`--expect-signer`) is code 3. The flag is bound to every chunk through `chunk_aad`
+(`header[0..13]`), so the trailer cannot be stripped silently. The signature does not cover the
+password slot or the recipient stanzas: `rekey` and replacing the recipients keep it valid;
+`reencrypt` (new FK) drops it. The signer's key is inside the AEAD, so only those who can open
+the file learn who signed it.
+
+| # | alg | chunk_code | content_type | Input | Note |
+|---|---|---|---|---|---|
+| 16 | 1 | 0 | 0 | `"signed by sk1"` to recipient `sk2` (`e = c0..df`, `wrap_nonce = 40..57`), signed by identity `sk1`, trailer nonce `70..87`; prefix and FK as above | byte-identical both ways |
+
 ## Paper backup of an identity
 
 The 32-byte identity secret `sk` can be written down as 22 words of the EFF large wordlist (the

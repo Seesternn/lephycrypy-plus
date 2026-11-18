@@ -38,6 +38,8 @@ pub struct UnlockOptions<'a> {
     pub strict_memory: bool,
     /// Identity for files encrypted to public keys (`--identity`).
     pub identity: Option<&'a Identity>,
+    /// Decryption fails unless the file is signed by this key (`--expect-signer`).
+    pub expect_signer: Option<crate::signature::SignerKey>,
 }
 
 /// Opened header: FK and subkeys in the locked arena.
@@ -241,6 +243,7 @@ fn build_recipient_header_with(
         },
         keyfile: false,
         compressed: params.compressed,
+        signed: params.signed,
         recipients: count,
         salt: [0u8; 32],
         stream_nonce_prefix: prefix,
@@ -329,6 +332,7 @@ pub fn build_header(
         kdf: params.kdf,
         keyfile: keyfile_digest.is_some(),
         compressed: params.compressed,
+        signed: params.signed,
         recipients: 0,
         salt,
         stream_nonce_prefix: prefix,
@@ -587,6 +591,7 @@ pub fn encrypt(
         input,
         output,
         Lock::Password(pwd_nfc, keyfile_digest),
+        None,
         opts,
         entropy,
         log,
@@ -610,6 +615,7 @@ pub fn encrypt_to_recipients(
         input,
         output,
         Lock::Recipients(recipients),
+        None,
         opts,
         entropy,
         log,
@@ -617,10 +623,30 @@ pub fn encrypt_to_recipients(
 }
 
 /// How the file key is protected.
+/// How the file key is protected.
 #[derive(Clone, Copy)]
-enum Lock<'a> {
+pub enum Lock<'a> {
+    /// Password (NFC) and an optional key-file digest.
     Password(&'a SecretBytes, Option<&'a [u8; 32]>),
+    /// X25519 recipients.
     Recipients(&'a [PublicKey]),
+}
+
+/// Encrypts and signs with `signer` (FORMAT.md › Format version 2 (signatures)). Anyone who can
+/// open the file sees the signer's `lphysig1…` key; a file changed after signing fails.
+///
+/// # Errors
+/// As [`encrypt`] / [`encrypt_to_recipients`].
+pub fn encrypt_signed(
+    input: &Input<'_>,
+    output: &Path,
+    lock: Lock<'_>,
+    signer: &Identity,
+    opts: &EncryptOptions,
+    entropy: &mut dyn Entropy,
+    log: &mut dyn FnMut(&str),
+) -> Result<EncryptReport> {
+    encrypt_with(input, output, lock, Some(signer), opts, entropy, log)
 }
 
 #[allow(clippy::too_many_lines)] // keep the input kind × padding branching readable in one place
@@ -628,6 +654,7 @@ fn encrypt_with(
     input: &Input<'_>,
     output: &Path,
     lock: Lock<'_>,
+    signer: Option<&Identity>,
     opts: &EncryptOptions,
     entropy: &mut dyn Entropy,
     log: &mut dyn FnMut(&str),
@@ -669,6 +696,7 @@ fn encrypt_with(
         kdf: opts.kdf,
         keyfile: matches!(lock, Lock::Password(_, Some(_))),
         compressed: opts.compress,
+        signed: signer.is_some(),
     };
     // Free-space pre-check (files only; a folder's size is not known in advance).
     if let Input::Path(p) = input
@@ -713,6 +741,19 @@ fn encrypt_with(
     };
     sink.write_all(&unlocked.bytes)?;
     sink.write_all(&unlocked.ext)?;
+    let sig = signer
+        .map(|_| {
+            crate::signature::SigParams::new(
+                opts.alg,
+                &unlocked.fk,
+                &unlocked.header.stream_nonce_prefix,
+                aad,
+            )
+        })
+        .transpose()?;
+    // Every chunk passes through the hasher; a signed file gets its trailer after the last one.
+    let mut hw = crate::signature::HashWriter::new(&mut *sink);
+    let sink: &mut (dyn Write + Send) = &mut hw;
     let sp = StreamParams {
         cipher: &cipher,
         prefix: &unlocked.header.stream_nonce_prefix,
@@ -769,6 +810,11 @@ fn encrypt_with(
             n
         }
     };
+    if let (Some(id), Some(p)) = (signer, &sig) {
+        hw.finish(p, id.secret_bytes(), entropy)?;
+    } else {
+        drop(hw);
+    }
     if let Some(e) = ecc_w {
         e.finish()?;
     }
@@ -885,6 +931,8 @@ struct OpenedInput {
     total: u64,
     /// Repair counters if there is an envelope.
     stats: Option<std::sync::Arc<crate::envelope::Stats>>,
+    /// Filled in once a signed file's signature has been verified.
+    signer: crate::signature::SignerSlot,
 }
 
 fn open_input(path: &Path, lenient: bool) -> Result<OpenedInput> {
@@ -920,6 +968,7 @@ fn open_input(path: &Path, lenient: bool) -> Result<OpenedInput> {
             reader: Box::new(r),
             total,
             stats: Some(stats),
+            signer: crate::signature::SignerSlot::default(),
         });
     }
     let prefix = std::io::Cursor::new(area[..n].to_vec());
@@ -927,6 +976,7 @@ fn open_input(path: &Path, lenient: bool) -> Result<OpenedInput> {
         reader: Box::new(prefix.chain(raw)),
         total,
         stats: None,
+        signer: crate::signature::SignerSlot::default(),
     })
 }
 
@@ -954,6 +1004,25 @@ fn open_stream_and_unlock(
     let b = read_header(&mut input.reader)?;
     let ext = read_ext(&mut input.reader, &b)?;
     let u = unlock_header(&b, &ext, pwd_nfc, keyfile_digest, opts, log)?;
+    if u.header.signed {
+        let p = crate::signature::SigParams::new(
+            u.header.alg,
+            &u.fk,
+            &u.header.stream_nonce_prefix,
+            chunk_aad(&u.bytes),
+        )?;
+        let r = std::mem::replace(&mut input.reader, Box::new(std::io::empty()));
+        input.reader = Box::new(crate::signature::SignedReader::new(
+            r,
+            p,
+            opts.expect_signer,
+            input.signer.clone(),
+        ));
+    } else if let Some(want) = opts.expect_signer {
+        return Err(Error::SignerMismatch(format!(
+            "the file is not signed (expected {want})"
+        )));
+    }
     Ok((input, u))
 }
 
@@ -970,6 +1039,8 @@ pub struct DecryptReport {
     pub target: PathBuf,
     /// Bytes repaired by the error-correction envelope.
     pub repaired: u64,
+    /// Who signed the file (verified); `None` for an unsigned file.
+    pub signer: Option<crate::signature::SignerKey>,
 }
 
 /// Decryption options (for archives).
@@ -1013,6 +1084,7 @@ pub fn decrypt(
 ) -> Result<DecryptReport> {
     let (input, u) =
         open_stream_and_unlock(path, pwd_nfc, keyfile_digest, opts.unlock, false, log)?;
+    let signer_slot = input.signer.clone();
     let (mut f, in_len, stats) = (input.reader, input.total, input.stats);
     let cipher = SharedCipher::new(u.header.alg, key32(&u.data_key)?)?;
     let aad = chunk_aad(&u.bytes);
@@ -1121,6 +1193,7 @@ pub fn decrypt(
     if let Some(st) = stats {
         report.repaired = st.corrected.load(std::sync::atomic::Ordering::Relaxed);
     }
+    report.signer = signer_slot.lock().ok().and_then(|s| *s);
     Ok(report)
 }
 
@@ -1391,7 +1464,27 @@ pub fn verify(
     opts: UnlockOptions<'_>,
     log: &mut dyn FnMut(&str),
 ) -> Result<u64> {
+    verify_with_signer(path, pwd_nfc, keyfile_digest, opts, log).map(|(n, _)| n)
+}
+
+/// [`verify`] that also returns who signed the file (verified), if it is signed.
+///
+/// # Errors
+/// As [`verify`].
+pub fn verify_with_signer(
+    path: &Path,
+    pwd_nfc: &SecretBytes,
+    keyfile_digest: Option<&[u8; 32]>,
+    opts: UnlockOptions<'_>,
+    log: &mut dyn FnMut(&str),
+) -> Result<(u64, Option<crate::signature::SignerKey>)> {
     let (input, u) = open_stream_and_unlock(path, pwd_nfc, keyfile_digest, opts, false, log)?;
+    let slot = input.signer.clone();
+    let n = verify_opened(input, &u)?;
+    Ok((n, slot.lock().ok().and_then(|s| *s)))
+}
+
+fn verify_opened(input: OpenedInput, u: &Unlocked) -> Result<u64> {
     let mut f = input.reader;
     let cipher = SharedCipher::new(u.header.alg, key32(&u.data_key)?)?;
     let aad = chunk_aad(&u.bytes);
@@ -1521,6 +1614,7 @@ pub fn set_recipients(
         kdf: u.header.kdf,
         keyfile: false,
         compressed: u.header.compressed,
+        signed: u.header.signed,
     };
     let nu = build_recipient_header_with(
         &params,
@@ -1583,6 +1677,7 @@ pub fn rekey(
         kdf: new.kdf.unwrap_or(u.header.kdf),
         keyfile: new.keyfile_digest.is_some(),
         compressed: u.header.compressed,
+        signed: u.header.signed,
     };
     let nu = build_header(
         &params,
@@ -1653,7 +1748,7 @@ pub fn reencrypt(
     log: &mut dyn FnMut(&str),
 ) -> Result<u64> {
     let orig_md = require_plain_file(path)?;
-    let (mut f, u) = open_and_unlock(path, old_pwd, old_keyfile, opts, log)?;
+    let (f, u) = open_and_unlock(path, old_pwd, old_keyfile, opts, log)?;
     let params = NewHeaderParams {
         alg: u.header.alg,
         content_type: u.header.content_type,
@@ -1662,6 +1757,7 @@ pub fn reencrypt(
         kdf: new.kdf.unwrap_or(u.header.kdf),
         keyfile: new.keyfile_digest.is_some(),
         compressed: u.header.compressed,
+        signed: false,
     };
     let nu = build_header(
         &params,
@@ -1690,9 +1786,27 @@ pub fn reencrypt(
         aad: &new_aad,
         chunk_size: nu.header.chunk_size(),
     };
-    let n = crate::pipeline::reencrypt_stream(&old_sp, &new_sp, &mut f, w.file())?;
+    // A signed source: the trailer is checked and not copied (a new file key cannot keep it).
+    let mut src: Box<dyn Read + Send> = if u.header.signed {
+        log("warning: the new file is not signed; the old signature cannot cover a new file key");
+        let p = crate::signature::SigParams::new(
+            u.header.alg,
+            &u.fk,
+            &u.header.stream_nonce_prefix,
+            old_aad,
+        )?;
+        Box::new(crate::signature::SignedReader::new(
+            f,
+            p,
+            None,
+            crate::signature::SignerSlot::default(),
+        ))
+    } else {
+        Box::new(f)
+    };
+    let n = crate::pipeline::reencrypt_stream(&old_sp, &new_sp, &mut src, w.file())?;
     // Windows does not allow renaming over an open file: the source is closed first.
-    drop(f);
+    drop(src);
     w.commit(true)?;
     // The new file is created 0600; the original permissions are restored.
     let _ = std::fs::set_permissions(path, orig_md.permissions());
@@ -2593,6 +2707,88 @@ mod tests {
         )
         .unwrap();
         assert_eq!(std::fs::read(&dec2).unwrap(), vec![3u8; 1000]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn signed_password_files_through_every_path() {
+        let d = tmpdir("signed");
+        std::fs::create_dir_all(d.join("src/sub")).unwrap();
+        std::fs::write(d.join("src/a.txt"), vec![5u8; 300_000]).unwrap();
+        std::fs::write(d.join("src/sub/b.txt"), b"b").unwrap();
+        let me = Identity::generate(&mut OsEntropy).unwrap();
+        let p = pwd("parola parola");
+        let mut log = |_: &str| {};
+        for (compress, ecc) in [(false, false), (true, false), (false, true), (true, true)] {
+            let out = d.join(format!("s{compress}{ecc}.lphy"));
+            let mut o = opts(false, None);
+            o.compress = compress;
+            o.ecc = ecc;
+            encrypt_signed(
+                &Input::Path(&d.join("src")),
+                &out,
+                Lock::Password(&p, None),
+                &me,
+                &o,
+                &mut OsEntropy,
+                &mut log,
+            )
+            .unwrap();
+            assert!(info(&out).unwrap().signed);
+            let (_, who) =
+                verify_with_signer(&out, &p, None, UnlockOptions::default(), &mut log).unwrap();
+            assert_eq!(who, Some(me.signer()));
+            let entries = list(&out, &p, None, UnlockOptions::default(), &mut log).unwrap();
+            assert_eq!(entries.len(), 3);
+            let dst = d.join(format!("back{compress}{ecc}"));
+            let r = decrypt(
+                &out,
+                &Output::Path(&dst, false),
+                &p,
+                None,
+                DecryptOptions::default(),
+                &mut log,
+            )
+            .unwrap();
+            assert_eq!(r.signer, Some(me.signer()));
+            assert_eq!(std::fs::read(dst.join("sub/b.txt")).unwrap(), b"b");
+        }
+        // rekey keeps the signature; reencrypt drops it (new file key).
+        let f = d.join("sfalsefalse.lphy");
+        let p2 = pwd("yeni parola 2");
+        let nc = NewCredentials {
+            pwd_nfc: &p2,
+            keyfile_digest: None,
+            kdf: None,
+        };
+        rekey(
+            &f,
+            &p,
+            None,
+            &nc,
+            UnlockOptions::default(),
+            true,
+            &mut OsEntropy,
+            &mut log,
+        )
+        .unwrap();
+        let (_, who) =
+            verify_with_signer(&f, &p2, None, UnlockOptions::default(), &mut log).unwrap();
+        assert_eq!(who, Some(me.signer()));
+        reencrypt(
+            &f,
+            &p2,
+            None,
+            &nc,
+            UnlockOptions::default(),
+            &mut OsEntropy,
+            &mut log,
+        )
+        .unwrap();
+        assert!(!info(&f).unwrap().signed);
+        let (_, who) =
+            verify_with_signer(&f, &p2, None, UnlockOptions::default(), &mut log).unwrap();
+        assert_eq!(who, None);
         let _ = std::fs::remove_dir_all(&d);
     }
 

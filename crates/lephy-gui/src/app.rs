@@ -115,6 +115,12 @@ pub struct App {
     pending_open: Vec<PathBuf>,
     /// The settings page (language, system integration) is open instead of the drop zone.
     show_settings: bool,
+    /// Encrypting: sign with `sign_identity`.
+    sign: bool,
+    /// Signing identity file.
+    sign_identity: Option<PathBuf>,
+    /// Password of the signing identity.
+    sign_password: SecretField,
     /// The chosen encrypted file is an archive (its contents can be listed).
     is_archive: bool,
     /// Contents of the chosen archive, after "List contents".
@@ -173,6 +179,12 @@ impl Default for App {
             paper: None,
             pending_open: Vec::new(),
             show_settings: false,
+            sign: false,
+            sign_identity: None,
+            sign_password: SecretField::new(
+                "İmza kimliğinin parolası",
+                "Signing identity password",
+            ),
             is_archive: false,
             listing: None,
             selected: std::collections::BTreeSet::new(),
@@ -338,6 +350,11 @@ impl App {
             return false;
         }
         match src.mode {
+            Mode::Encrypt
+                if self.sign && (self.sign_identity.is_none() || self.sign_password.is_empty()) =>
+            {
+                false
+            }
             Mode::Encrypt if self.use_keys => {
                 !self.show_keygen
                     && logic::parse_recipients(&self.recipients_text).is_ok_and(|k| !k.is_empty())
@@ -419,6 +436,10 @@ impl App {
             compress: self.compress,
             ecc: self.ecc,
             recover: self.recover,
+            sign_identity: (mode == Mode::Encrypt && self.sign)
+                .then(|| self.sign_identity.clone())
+                .flatten(),
+            sign_password: (mode == Mode::Encrypt && self.sign).then(|| self.sign_password.take()),
             list_only,
             only: if list_only || self.listing.is_none() {
                 Vec::new()
@@ -1870,7 +1891,48 @@ impl App {
                     ui.add_space(12.0);
                     self.keyfile_row(ui, pal, false);
                 }
+                ui.add_space(12.0);
+                self.signing_row(ui, pal);
             });
+    }
+
+    /// Optional sender signature: an identity file and its password.
+    fn signing_row(&mut self, ui: &mut Ui, pal: Palette) {
+        ui.checkbox(
+            &mut self.sign,
+            tr("Kimliğimle imzala", "Sign with my identity"),
+        );
+        if !self.sign {
+            return;
+        }
+        ui.label(
+            RichText::new(tr(
+                "Dosyayı açan herkes kimin imzaladığını (lphysig1…) görür ve dosyanın sonradan değiştirilmediğini doğrular.",
+                "Whoever opens the file sees who signed it (lphysig1…) and can check that it was not changed afterwards.",
+            ))
+            .color(pal.muted)
+            .size(12.5),
+        );
+        ui.horizontal(|ui| {
+            let name = self.sign_identity.as_ref().map_or_else(
+                || tr("Kimlik dosyası seçilmedi", "No identity file selected").to_string(),
+                |p| {
+                    p.file_name()
+                        .map(|f| escape_display(&f.to_string_lossy()))
+                        .unwrap_or_default()
+                },
+            );
+            ui.label(RichText::new(name).color(pal.ink).size(13.5));
+            if link_button(ui, pal, tr("Seç", "Choose")).clicked()
+                && let Some(p) = rfd::FileDialog::new()
+                    .set_title(tr("İmza kimliğini seçin", "Choose the signing identity"))
+                    .add_filter("lephycrypy identity", &["lphykey"])
+                    .pick_file()
+            {
+                self.sign_identity = Some(p);
+            }
+        });
+        self.sign_password.ui(ui, true);
     }
 
     fn append_key(&mut self, text: &str) {
@@ -2416,6 +2478,15 @@ impl App {
                 }
             };
             ui.label(RichText::new(name).color(pal.muted).size(14.0));
+            if let Some(k) = &out.signer {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(tr("İmzalayan (doğrulandı):", "Signed by (verified):"))
+                        .color(pal.accent)
+                        .size(13.0),
+                );
+                ui.label(RichText::new(k).monospace().size(11.5).color(pal.ink));
+            }
             if out.damaged > 0 || out.incomplete {
                 ui.label(
                     RichText::new(match lang() {

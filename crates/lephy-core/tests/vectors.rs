@@ -32,6 +32,7 @@ const V13: &[u8] = include_bytes!("../../../tests/kat/vectors/v13.lphy");
 /// v2 recipient vector (X25519, two stanzas): byte-identical in both directions.
 const V14: &[u8] = include_bytes!("../../../tests/kat/vectors/v14.lphy");
 const V15: &[u8] = include_bytes!("../../../tests/kat/vectors/v15.lphy");
+const V16: &[u8] = include_bytes!("../../../tests/kat/vectors/v16.lphy");
 const META: &str = include_str!("../../../tests/kat/vectors/vectors.json");
 
 fn common_kdf() -> KdfParams {
@@ -250,6 +251,7 @@ fn marker_present_in_test_vectors_build() {
         kdf: common_kdf(),
         keyfile: false,
         compressed: false,
+        signed: false,
     };
     let u = ops::build_header(
         &params,
@@ -444,4 +446,110 @@ fn paper_backup_matches_reference() {
         lephy_core::paper::decode(want.as_bytes()).unwrap().expose(),
         &sk[..]
     );
+}
+
+#[test]
+fn v16_signed_matches_reference_and_is_checked() {
+    use lephy_core::error::Error;
+    use lephy_core::ops::{Identity, Lock, UnlockOptions};
+    let d = std::env::temp_dir().join(format!("lphy-v16-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let range = |a: u16, b: u16| -> Vec<u8> { (a..b).map(|x| x as u8).collect() };
+    let id1 = Identity::from_secret(SecretBytes::from_slice(&range(0x80, 0xA0)).unwrap()).unwrap();
+    let id2 = Identity::from_secret(SecretBytes::from_slice(&range(0xA0, 0xC0)).unwrap()).unwrap();
+    // Rust → same bytes (entropy: prefix, FK, e, wrap_nonce, then the trailer nonce).
+    let src = d.join("pt");
+    std::fs::write(&src, b"signed by sk1").unwrap();
+    let mut e = FixedEntropy::new(vec![
+        range(0x20, 0x20 + 19),
+        range(0x60, 0x80),
+        range(0xC0, 0xE0),
+        range(0x40, 0x58),
+        range(0x70, 0x88),
+    ]);
+    let out = d.join("v16.lphy");
+    ops::encrypt_signed(
+        &Input::Path(&src),
+        &out,
+        Lock::Recipients(&[id2.public()]),
+        &id1,
+        &opts(AlgId::XChaCha20Poly1305, 0, true, Some(false)),
+        &mut e,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), V16);
+    let open = |file: &std::path::Path, expect, n: u32| {
+        ops::decrypt(
+            file,
+            &ops::Output::Path(&d.join(format!("out{n}")), false),
+            &pwd(""),
+            None,
+            DecryptOptions {
+                unlock: UnlockOptions {
+                    identity: Some(&id2),
+                    expect_signer: expect,
+                    ..UnlockOptions::default()
+                },
+                ..DecryptOptions::default()
+            },
+            &mut |_| {},
+        )
+    };
+    // Reference → Rust: the signer is reported, and an expected signer is enforced.
+    let rep = open(&out, None, 1).unwrap();
+    assert_eq!(rep.signer, Some(id1.signer()));
+    assert_eq!(std::fs::read(d.join("out1")).unwrap(), b"signed by sk1");
+    assert!(open(&out, Some(id1.signer()), 2).is_ok());
+    assert!(matches!(
+        open(&out, Some(id2.signer()), 3),
+        Err(Error::SignerMismatch(_))
+    ));
+    assert!(
+        !d.join("out3").exists(),
+        "nothing is written when the signer does not match"
+    );
+    // Replacing the recipients keeps the signature valid.
+    ops::set_recipients(
+        &out,
+        &id2,
+        &[id2.public(), id1.public()],
+        UnlockOptions::default(),
+        &mut lephy_core::entropy::OsEntropy,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(
+        open(&out, Some(id1.signer()), 4).unwrap().signer,
+        Some(id1.signer())
+    );
+    // Any changed byte in a chunk or the trailer, or a cut trailer, fails (code 4).
+    let good = std::fs::read(&out).unwrap();
+    for (i, cut) in [
+        (good.len() - 150, false),
+        (good.len() - 3, false),
+        (0, true),
+    ] {
+        let mut b = good.clone();
+        if cut {
+            b.truncate(b.len() - 136);
+        } else {
+            b[i] ^= 1;
+        }
+        let f = d.join("bad.lphy");
+        std::fs::write(&f, &b).unwrap();
+        assert!(
+            matches!(open(&f, None, 5), Err(Error::Corrupt { .. })),
+            "{i} {cut}"
+        );
+        assert!(!d.join("out5").exists());
+    }
+    // An unsigned file with an expected signer.
+    std::fs::write(d.join("v14.lphy"), V14).unwrap();
+    assert!(matches!(
+        open(&d.join("v14.lphy"), Some(id1.signer()), 6),
+        Err(Error::SignerMismatch(_))
+    ));
+    let _ = std::fs::remove_dir_all(&d);
 }

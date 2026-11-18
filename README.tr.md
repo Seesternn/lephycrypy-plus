@@ -106,6 +106,20 @@ lephycrypy recipients rapor.lphy -i ben.lphykey -r ben.pub -r yeni-is-arkadasi.p
 
 İçerik yeniden şifrelenmez; çıkarılan biri eski dosyanın bir kopyasını sakladıysa onu açabilir.
 
+Gönderdiğinizi imzalayın; alıcı sizden geldiğini ve değiştirilmediğini bilsin:
+
+```bash
+lephycrypy encrypt rapor.pdf -o rapor.lphy -r arkadas.pub --sign ben.lphykey
+```
+
+```bash
+lephycrypy decrypt rapor.lphy -i arkadas.lphykey --expect-signer ben.pub
+```
+
+İmza anahtarı (`lphysig1…`) `keygen` tarafından yazdırılır ve `ben.pub` dosyasının ikinci
+satırında durur. İmza parolalı dosyalarda da çalışır; uygulamada gelişmiş ayarlardaki
+**Kimliğimle imzala** seçeneğidir, sonuç ekranı dosyayı kimin imzaladığını gösterir.
+
 Kimliğinizin kâğıt yedeğini alın: `lephycrypy identity backup ben.lphykey` 22 kelime gösterir
 (uygulama da anahtar çiftini oluşturduktan hemen sonra bir kez gösterir);
 `lephycrypy identity restore ben.lphykey` kimlik dosyasını bu kelimelerden yeniden oluşturur.

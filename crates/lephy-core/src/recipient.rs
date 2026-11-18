@@ -112,13 +112,35 @@ fn checksum(pk: &[u8; 32]) -> [u8; 4] {
     c
 }
 
+/// base32 of `key ‖ BLAKE3(key)[..4]` (the part after the prefix of a key text).
+pub(crate) fn key_text_body(key: &[u8; 32]) -> String {
+    let mut raw = [0u8; 36];
+    raw[..32].copy_from_slice(key);
+    raw[32..].copy_from_slice(&checksum(key));
+    base32_encode(&raw)
+}
+
+/// The key from the part after the prefix; `Err` is a short reason.
+pub(crate) fn key_from_text_body(body: &str) -> std::result::Result<[u8; 32], &'static str> {
+    let raw = base32_decode(body).ok_or("not base32")?;
+    if raw.len() != 36 {
+        return Err("wrong length");
+    }
+    let mut k = [0u8; 32];
+    k.copy_from_slice(&raw[..32]);
+    if checksum(&k) != raw[32..] {
+        return Err("checksum mismatch (typo?)");
+    }
+    if k.iter().all(|&b| b == 0) {
+        return Err("all-zero key");
+    }
+    Ok(k)
+}
+
 impl fmt::Display for PublicKey {
     /// `lphy1` followed by base32 (lowercase, no padding) of `pk ‖ BLAKE3(pk)[..4]`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut raw = [0u8; 36];
-        raw[..32].copy_from_slice(&self.0);
-        raw[32..].copy_from_slice(&checksum(&self.0));
-        write!(f, "{PUBLIC_PREFIX}{}", base32_encode(&raw))
+        write!(f, "{PUBLIC_PREFIX}{}", key_text_body(&self.0))
     }
 }
 
@@ -130,30 +152,21 @@ impl FromStr for PublicKey {
         let body = s
             .strip_prefix(PUBLIC_PREFIX)
             .ok_or_else(|| bad_key("must start with \"lphy1\""))?;
-        let raw = base32_decode(body).ok_or_else(|| bad_key("not base32"))?;
-        if raw.len() != 36 {
-            return Err(bad_key("wrong length"));
-        }
-        let mut pk = [0u8; 32];
-        pk.copy_from_slice(&raw[..32]);
-        if checksum(&pk) != raw[32..] {
-            return Err(bad_key("checksum mismatch (typo?)"));
-        }
-        if pk.iter().all(|&b| b == 0) {
-            return Err(bad_key("all-zero key"));
-        }
-        Ok(Self(pk))
+        Ok(Self(key_from_text_body(body).map_err(bad_key)?))
     }
 }
 
-/// Reads public keys from text: one per line; empty lines and `#` comments are skipped.
+/// Reads public keys from text: one per line; empty lines, `#` comments and signer keys
+/// (`lphysig1…`, also kept in `.pub` files) are skipped.
 ///
 /// # Errors
 /// An invalid key line.
 pub fn parse_public_keys(text: &str) -> Result<Vec<PublicKey>> {
     text.lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter(|l| {
+            !l.is_empty() && !l.starts_with('#') && !l.starts_with(crate::signature::SIGNER_PREFIX)
+        })
         .map(PublicKey::from_str)
         .collect()
 }
@@ -190,6 +203,17 @@ impl Identity {
         let mut s = Zeroizing::new([0u8; 32]);
         s.copy_from_slice(self.secret.expose());
         crate::paper::encode(&s)
+    }
+
+    /// The key others use to check this identity's signatures (`lphysig1…`).
+    #[must_use]
+    pub fn signer(&self) -> crate::signature::SignerKey {
+        crate::signature::signer_key(self.secret.expose())
+    }
+
+    /// The secret bytes, for signing inside the crate.
+    pub(crate) fn secret_bytes(&self) -> &[u8] {
+        self.secret.expose()
     }
 
     /// Restores an identity from its paper backup.
@@ -403,6 +427,7 @@ pub fn write_identity_file(
         kdf,
         keyfile: false,
         compressed: false,
+        signed: false,
     };
     let u = crate::ops::build_header(
         &params,

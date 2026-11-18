@@ -134,7 +134,8 @@ fn read_full(r: &mut dyn Read, dest: &mut [u8], shared: &Shared) -> Result<usize
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
                 shared.check()?;
             }
-            Err(e) => return Err(Error::Io(e)),
+            // A format violation from an input adapter (signature trailer) is code 4.
+            Err(e) => return Err(Error::from_io(e)),
         }
     }
     Ok(n)

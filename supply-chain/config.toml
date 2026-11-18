@@ -364,6 +364,16 @@ criteria = "safe-to-deploy"
 version = "0.37.0"
 criteria = "safe-to-deploy"
 
+[[exemptions.ed25519]]
+version = "3.0.0"
+criteria = "safe-to-deploy"
+notes = "Ed25519 signature types for sender signatures (RustCrypto); no audit imported yet"
+
+[[exemptions.ed25519-dalek]]
+version = "3.0.0"
+criteria = "safe-to-deploy"
+notes = "Ed25519 sender signatures; dalek-cryptography, same family as curve25519-dalek 5; no audit imported yet"
+
 [[exemptions.eframe]]
 version = "0.37.0"
 criteria = "safe-to-deploy"
@@ -948,6 +958,11 @@ criteria = "safe-to-deploy"
 [[exemptions.signal-hook-registry]]
 version = "1.4.8"
 criteria = "safe-to-deploy"
+
+[[exemptions.signature]]
+version = "3.0.0"
+criteria = "safe-to-deploy"
+notes = "RustCrypto signature traits used by ed25519-dalek; no audit imported yet"
 
 [[exemptions.simd-adler32]]
 version = "0.3.10"
