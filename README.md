@@ -224,6 +224,13 @@ error correction, splitting, secure deletion and an optional key file; the **?**
 the terms. For an encrypted archive, **List contents** shows what is inside without writing
 anything; tick entries to extract only those. The app follows the system light/dark theme.
 
+### Write to a USB stick (desktop app)
+
+Home › Write to a USB stick: choose an encrypted `.lphy` file and an eligible USB stick, check
+what will be deleted (or tick "Format as exFAT" and, optionally, "fill the free space"), type the
+stick's label and its size in GiB exactly, and press Wipe and write. The file is read back after
+remounting the stick. Everything else on the stick is lost.
+
 ## Building
 
 ```bash

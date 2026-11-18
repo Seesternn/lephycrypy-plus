@@ -1831,6 +1831,7 @@ dependencies = [
  "image",
  "lephy-core",
  "lephy-sys",
+ "lephy-usb",
  "rfd",
  "subtle",
  "winit",

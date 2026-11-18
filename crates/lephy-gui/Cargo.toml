@@ -34,6 +34,8 @@ rfd = { version = "0.18", default-features = false }
 # window library's delegate class between creating and running the loop. Pinned to the exact
 # version eframe uses because the delegate class name is an implementation detail.
 winit = { version = "=0.30.13", default-features = false }
+# Write to USB: the same engine as `lephycrypy usb write` (workspace crate).
+lephy-usb = { workspace = true }
 # Preview: PNG and JPEG only, decoded in memory with size and allocation limits (preview.rs).
 # `image` is already in the graph through eframe (PNG); this adds the JPEG decoder (zune-jpeg).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

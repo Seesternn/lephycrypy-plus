@@ -125,6 +125,11 @@ re-checking the identity and the call; system, boot and Time Machine volumes are
   checked.
 - Free-space filling uses a ChaCha20 key stream (a separate nonce per file, ≤ 64 GiB per file).
 
+
+The desktop app's "Write to a USB stick" page runs the same engine as `lephycrypy usb write`
+(eligibility, dry run, the exact label and whole GiB typed to confirm, identity re-read before
+each step, read-back). It adds no bypass: ineligible volumes are listed greyed out with the
+reason and cannot be chosen.
 ## Desktop app
 - The egui/winit event queue (`Event::Text`) and IME composition create heap copies of the
   password text; the zeroizing global allocator wipes them when freed, but nothing is guaranteed

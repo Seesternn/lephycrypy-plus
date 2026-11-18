@@ -29,6 +29,8 @@ pub(super) enum Page {
     Decrypt,
     /// Help: every help topic, unfolded.
     Help,
+    /// Write an encrypted file to a USB stick.
+    Usb,
     /// Key pairs: create one, show the keys of an identity, paper backup.
     Keys,
     /// Language, app lock, system integration, about.
@@ -138,6 +140,18 @@ fn action_card(
     );
     p.galley(rect.left_top() + vec2(16.0, 84.0), galley, pal.muted);
     resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// USB plug: a body with two contacts and a cable.
+fn draw_usb(p: &egui::Painter, c: egui::Pos2, color: egui::Color32) {
+    let st = Stroke::new(1.6, color);
+    let body = egui::Rect::from_center_size(c + vec2(0.0, 3.0), vec2(12.0, 12.0));
+    p.rect_stroke(body, 2.0, st, StrokeKind::Middle);
+    let head = egui::Rect::from_center_size(c + vec2(0.0, -6.5), vec2(8.0, 7.0));
+    p.rect_stroke(head, 1.0, st, StrokeKind::Middle);
+    p.line_segment([c + vec2(-1.8, -7.5), c + vec2(-1.8, -5.5)], st);
+    p.line_segment([c + vec2(1.8, -7.5), c + vec2(1.8, -5.5)], st);
+    p.line_segment([c + vec2(0.0, 9.0), c + vec2(0.0, 12.0)], st);
 }
 
 /// The small lock drawn smaller for the cards.
@@ -411,6 +425,7 @@ impl App {
 
     pub(super) fn go_home(&mut self) {
         self.page = Page::Home;
+        self.usb.reset();
         self.welcome_step = 0;
         self.settings_pane = super::settings_ui::Pane::Root;
         self.restore.reset();
@@ -618,6 +633,22 @@ impl App {
             )
             .clicked();
         });
+        ui.add_space(gap);
+        if action_card(
+            ui,
+            pal,
+            vec2(ui.available_width(), 114.0),
+            draw_usb,
+            tr("USB belleğe yaz", "Write to a USB stick"),
+            tr(
+                "Belleği silip üzerine yalnızca şifreli dosyayı yazar ve geri okuyarak doğrular.",
+                "Wipes the stick, writes only the encrypted file and reads it back to check.",
+            ),
+        )
+        .clicked()
+        {
+            self.page = Page::Usb;
+        }
         if clicked[0] {
             self.page = Page::Encrypt;
         }

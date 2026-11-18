@@ -103,6 +103,9 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Desktop app: "Write to a USB stick" page with the `lephy-usb` engine: eligible sticks only, dry
+  run, optional exFAT format and free-space fill, label + GiB typed to confirm, read-back check,
+  cancel. Quitting while it runs asks first.
 - Desktop app: preview a decrypted text, PNG or JPEG file without writing it to disk (in memory,
   32 MiB limit, bounded image decoding; per entry from the contents list). New dependency
   features: `image` with `jpeg` (adds `zune-jpeg`, `zune-core`; vet exemptions with notes);

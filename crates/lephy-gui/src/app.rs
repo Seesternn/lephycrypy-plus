@@ -186,6 +186,8 @@ pub struct App {
     tools: tools::Tools,
     /// In-memory preview window.
     preview: Option<preview_ui::PreviewState>,
+    /// Write to USB page.
+    usb: usb_ui::Usb,
 }
 
 impl Default for App {
@@ -267,6 +269,7 @@ impl Default for App {
             settings_pane: settings_ui::Pane::Root,
             tools: tools::Tools::default(),
             preview: None,
+            usb: usb_ui::Usb::default(),
         }
     }
 }
@@ -410,7 +413,7 @@ impl App {
     }
 
     fn running(&self) -> bool {
-        self.job.is_some()
+        self.job.is_some() || self.usb.busy()
     }
 
     fn mode(&self) -> Option<Mode> {
@@ -873,6 +876,7 @@ impl App {
                                     pages::Page::Encrypt => self.encrypt_view(ui, pal),
                                     pages::Page::Decrypt => self.decrypt_view(ui, pal),
                                     pages::Page::Help => self.help_view(ui, pal),
+                                    pages::Page::Usb => self.usb_view(ui, pal),
                                     pages::Page::Keys => self.keys_view(ui, pal),
                                     pages::Page::Settings => self.settings_view(ui, pal),
                                 },
@@ -2915,6 +2919,7 @@ mod preview_ui;
 mod restore;
 mod settings_ui;
 mod tools;
+mod usb_ui;
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -3466,6 +3471,7 @@ mod tests {
             pages::Page::Encrypt,
             pages::Page::Decrypt,
             pages::Page::Help,
+            pages::Page::Usb,
             pages::Page::Keys,
             pages::Page::Settings,
         ] {

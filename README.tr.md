@@ -193,6 +193,13 @@ adı ya da parola kaydedilmez.
 Şifreli bir arşivde **İçeriği listele**, hiçbir şey yazmadan içinde ne olduğunu gösterir; yalnızca
 işaretlediğiniz öğeler çıkarılır.
 
+### USB belleğe yazma (masaüstü uygulaması)
+
+Ana sayfa › USB belleğe yaz: şifreli bir `.lphy` dosyası ve uygun bir USB bellek seçin, nelerin
+silineceğine bakın (ya da "exFAT olarak biçimlendir" ve isterseniz "boş alanı doldur" seçeneklerini
+işaretleyin), belleğin adını ve GiB cinsinden boyutunu aynen yazıp "Sil ve yaz"a basın. Dosya,
+bellek yeniden bağlandıktan sonra geri okunarak denetlenir. Bellekteki diğer her şey silinir.
+
 ## Derleme
 
 ```bash
