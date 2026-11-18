@@ -10,7 +10,7 @@ use lephy_core::entropy::{Entropy, OsEntropy};
 use lephy_core::error::{Error, ExitCode, Result};
 use lephy_core::header::{HEADER_LEN, Header};
 use lephy_core::kdf::KdfParams;
-use lephy_core::ops::{self, DecryptOptions, EncryptOptions, Input, Output};
+use lephy_core::ops::{self, DecryptOptions, EncryptOptions, Identity, Input, Output, PublicKey};
 use lephy_core::password;
 use lephy_sys::mem::SecretBytes;
 
@@ -51,6 +51,55 @@ pub fn needs_keyfile(path: &Path) -> bool {
         .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut h))
         .is_ok()
         && Header::parse(&h).is_ok_and(|hd| hd.keyfile)
+}
+
+/// Is the file encrypted to public keys (header unreadable: `false`).
+#[must_use]
+pub fn needs_identity(path: &Path) -> bool {
+    ops::info(path).is_ok_and(|h| h.recipients > 0)
+}
+
+/// Public keys from text (one per line, `#` comments). `Err`: user-facing message.
+///
+/// # Errors
+/// An invalid line.
+pub fn parse_recipients(text: &str) -> std::result::Result<Vec<PublicKey>, String> {
+    let mut keys = lephy_core::recipient::parse_public_keys(text).map_err(|_| {
+        tr(
+            "Geçersiz açık anahtar. Anahtarlar \"lphy1\" ile başlar; her satıra bir tane yazın.",
+            "Invalid public key. Keys start with \"lphy1\"; put one per line.",
+        )
+        .to_string()
+    })?;
+    keys.dedup();
+    Ok(keys)
+}
+
+/// Creates a key pair: password-protected identity at `path`, public key next to it as
+/// `<name>.pub`. Returns the public key text.
+///
+/// # Errors
+/// Password policy, existing files, I/O.
+pub fn create_identity(path: &Path, password: &SecretBytes, kdf_mib: u32) -> Result<String> {
+    let nfc = password::normalize_nfc(password)?;
+    password::check_encrypt_policy(&nfc)?;
+    let pub_path = path.with_extension("pub");
+    if pub_path.exists() {
+        return Err(Error::Exists(pub_path.display().to_string()));
+    }
+    let id = Identity::generate(&mut OsEntropy)?;
+    let kdf = KdfParams {
+        m_kib: kdf_mib.saturating_mul(1024),
+        ..KdfParams::DEFAULT
+    };
+    lephy_core::recipient::write_identity_file(path, &id, &nfc, kdf, &mut OsEntropy, &mut |_| {})?;
+    let pk = id.public().to_string();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&pub_path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{pk}\n").as_bytes()))?;
+    Ok(pk)
 }
 
 /// Varsayılan çıktı: şifrelemede aynı dizinde `<8 rastgele hex>.lphy` (D1); çözmede `.lphy`
@@ -121,6 +170,10 @@ pub struct Job {
     pub ecc: bool,
     /// Çözmede kurtarma modu: bozuk dosyadan kurtarılabileni çıkar.
     pub recover: bool,
+    /// Encrypt to these public keys instead of the password (empty = password).
+    pub recipients: Vec<PublicKey>,
+    /// Decrypt with this identity file; `password` is then the identity's password.
+    pub identity: Option<PathBuf>,
 }
 
 /// İşin sonucu.
@@ -146,6 +199,8 @@ pub struct Outcome {
 
 struct Ctx<'a> {
     nfc: &'a SecretBytes,
+    recipients: &'a [PublicKey],
+    identity: Option<&'a Identity>,
     kf: Option<&'a [u8; 32]>,
     opts: Option<EncryptOptions>,
     allow_cloud: bool,
@@ -160,8 +215,23 @@ struct Ctx<'a> {
 /// # Errors
 /// Çekirdek hataları (mesajı ve çıkış kodu kategorisi arayüzde gösterilir).
 pub fn run(job: Job) -> Result<Outcome> {
-    let nfc = password::normalize_nfc(&job.password)?;
+    let mut nfc = password::normalize_nfc(&job.password)?;
     drop(job.password);
+    let key_mode = job.mode == Mode::Encrypt && !job.recipients.is_empty();
+    let identity = match (&job.identity, job.mode) {
+        (Some(p), Mode::Decrypt) => {
+            let id = lephy_core::recipient::read_identity_file(
+                p,
+                &nfc,
+                ops::UnlockOptions::default(),
+                &mut |_| {},
+            )?;
+            // The file itself needs no password.
+            nfc = SecretBytes::with_capacity(1).map_err(|e| Error::Environment(e.to_string()))?;
+            Some(id)
+        }
+        _ => None,
+    };
     let keyfile = job
         .keyfile
         .as_deref()
@@ -169,17 +239,21 @@ pub fn run(job: Job) -> Result<Outcome> {
         .transpose()?;
     let opts = match job.mode {
         Mode::Encrypt => {
-            let confirm = job.confirm.ok_or_else(|| {
-                Error::Environment(tr("parolayı tekrar girin", "enter the password again").into())
-            })?;
-            let c = password::normalize_nfc(&confirm)?;
-            drop(confirm);
-            if c.expose() != nfc.expose() {
-                return Err(Error::Environment(
-                    tr("parolalar eşleşmiyor", "passwords do not match").into(),
-                ));
+            if !key_mode {
+                let confirm = job.confirm.ok_or_else(|| {
+                    Error::Environment(
+                        tr("parolayı tekrar girin", "enter the password again").into(),
+                    )
+                })?;
+                let c = password::normalize_nfc(&confirm)?;
+                drop(confirm);
+                if c.expose() != nfc.expose() {
+                    return Err(Error::Environment(
+                        tr("parolalar eşleşmiyor", "passwords do not match").into(),
+                    ));
+                }
+                password::check_encrypt_policy(&nfc)?;
             }
-            password::check_encrypt_policy(&nfc)?;
             Some(EncryptOptions {
                 alg: if job.aes {
                     AlgId::Aes256Gcm
@@ -204,10 +278,13 @@ pub fn run(job: Job) -> Result<Outcome> {
     };
     let ctx = Ctx {
         nfc: &nfc,
+        recipients: if key_mode { &job.recipients } else { &[] },
+        identity: identity.as_ref(),
         kf: keyfile.as_deref(),
         opts,
         allow_cloud: job.allow_cloud,
-        secure_delete: job.secure_delete && job.mode == Mode::Encrypt,
+        // Deleting needs a verification that only the recipient can do.
+        secure_delete: job.secure_delete && job.mode == Mode::Encrypt && !key_mode,
         split: job.split.filter(|_| job.mode == Mode::Encrypt),
         recover: job.recover && job.mode == Mode::Decrypt,
     };
@@ -242,16 +319,31 @@ pub fn run(job: Job) -> Result<Outcome> {
 
 fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
     let mut log = |_: &str| {};
+    let unlock = ops::UnlockOptions {
+        identity: ctx.identity,
+        ..ops::UnlockOptions::default()
+    };
     if let Some(opts) = &ctx.opts {
-        let rep = ops::encrypt(
-            &Input::Path(&item.input),
-            &item.output,
-            ctx.nfc,
-            ctx.kf,
-            opts,
-            &mut OsEntropy,
-            &mut log,
-        )?;
+        let rep = if ctx.recipients.is_empty() {
+            ops::encrypt(
+                &Input::Path(&item.input),
+                &item.output,
+                ctx.nfc,
+                ctx.kf,
+                opts,
+                &mut OsEntropy,
+                &mut log,
+            )?
+        } else {
+            ops::encrypt_to_recipients(
+                &Input::Path(&item.input),
+                &item.output,
+                ctx.recipients,
+                opts,
+                &mut OsEntropy,
+                &mut log,
+            )?
+        };
         let written = match ctx.split {
             Some(size) => lephy_core::split::split_file(&item.output, size)?
                 .into_iter()
@@ -266,6 +358,7 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
             let u = ops::UnlockOptions {
                 allow_large_kdf: true,
                 strict_memory: false,
+                identity: None,
             };
             ops::verify(&written, ctx.nfc, ctx.kf, u, &mut log)?;
             if let Some(a) = &rep.archive {
@@ -285,14 +378,7 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
             ));
         }
         if ctx.recover {
-            let r = ops::recover(
-                &item.input,
-                &item.output,
-                ctx.nfc,
-                ctx.kf,
-                ops::UnlockOptions::default(),
-                &mut log,
-            )?;
+            let r = ops::recover(&item.input, &item.output, ctx.nfc, ctx.kf, unlock, &mut log)?;
             out.outputs.push(r.output.clone());
             out.repaired += r.repaired;
             out.damaged += r.bad_chunks.len();
@@ -304,7 +390,10 @@ fn run_one(ctx: &Ctx<'_>, item: &Item, out: &mut Outcome) -> Result<()> {
             &Output::Path(&item.output, false),
             ctx.nfc,
             ctx.kf,
-            DecryptOptions::default(),
+            DecryptOptions {
+                unlock,
+                ..DecryptOptions::default()
+            },
             &mut log,
         )?;
         out.outputs.push(rep.target);
@@ -359,6 +448,21 @@ pub fn describe_error(e: &Error) -> String {
         (Error::KeyfileRequired, _) => tr(
             "Bu dosya bir anahtar dosyasıyla şifrelenmiş. Anahtar dosyasını seçin.",
             "This file was encrypted with a key file. Choose the key file.",
+        )
+        .into(),
+        (Error::IdentityRequired, _) => tr(
+            "Bu dosya bir açık anahtara şifrelenmiş. Kimlik dosyanızı (.lphykey) seçin.",
+            "This file was encrypted to a public key. Choose your identity file (.lphykey).",
+        )
+        .into(),
+        (Error::NoMatchingIdentity, _) => tr(
+            "Bu dosya seçtiğiniz kimlik için şifrelenmemiş. Doğru kimlik dosyasını seçin.",
+            "This file was not encrypted for the chosen identity. Choose the right identity file.",
+        )
+        .into(),
+        (Error::Corrupt { at, .. }, _) if at == "anahtar dosyası" => tr(
+            "Seçilen dosya bir kimlik dosyası (.lphykey) değil.",
+            "The chosen file is not an identity file (.lphykey).",
         )
         .into(),
         (Error::KeyfileNotUsed, _) => tr(
@@ -444,11 +548,26 @@ pub fn header_summary(path: &Path) -> Option<String> {
         lephy_core::header::ContentType::Archive => tr("arşiv", "archive"),
         lephy_core::header::ContentType::Raw => tr("ham akış", "raw stream"),
     };
-    let mut out = format!(
-        "{}, Argon2id {} MiB, {kind}",
-        h.alg.name(),
-        h.kdf.memory_mib()
-    );
+    let mut out = if h.recipients > 0 {
+        match crate::i18n::lang() {
+            crate::i18n::Lang::Tr => format!(
+                "{}, açık anahtar ({} alıcı), {kind}",
+                h.alg.name(),
+                h.recipients
+            ),
+            crate::i18n::Lang::En => format!(
+                "{}, public key ({} recipients), {kind}",
+                h.alg.name(),
+                h.recipients
+            ),
+        }
+    } else {
+        format!(
+            "{}, Argon2id {} MiB, {kind}",
+            h.alg.name(),
+            h.kdf.memory_mib()
+        )
+    };
     if h.compressed {
         out.push_str(tr(", sıkıştırılmış", ", compressed"));
     }
@@ -584,6 +703,8 @@ mod tests {
             compress: false,
             ecc: false,
             recover: false,
+            recipients: Vec::new(),
+            identity: None,
         };
         run(job).unwrap();
         assert_eq!(detect_mode(&d.join("x.lphy")), Mode::Decrypt);
@@ -615,6 +736,8 @@ mod tests {
             compress: false,
             ecc: false,
             recover: false,
+            recipients: Vec::new(),
+            identity: None,
         };
         let out = run(job).unwrap();
         assert_eq!(out.outputs, vec![d.join("geri.txt")]);
@@ -640,6 +763,8 @@ mod tests {
                 compress: false,
                 ecc: false,
                 recover: false,
+                recipients: Vec::new(),
+                identity: None,
             };
             let e = run(job).unwrap_err();
             assert_eq!(e.exit_code(), ExitCode::Io);
@@ -664,10 +789,67 @@ mod tests {
             compress: false,
             ecc: false,
             recover: false,
+            recipients: Vec::new(),
+            identity: None,
         };
         let e = run(job).unwrap_err();
         assert_eq!(e.exit_code(), ExitCode::WrongPassword);
         assert!(describe_error(&e).starts_with("Parola yanlış"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn recipients_and_identity_roundtrip() {
+        let d = std::env::temp_dir().join(format!("lphy-gui-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("a.txt"), b"for my friend").unwrap();
+        let pk = create_identity(&d.join("me.lphykey"), &secret("identity pass 1"), 64).unwrap();
+        assert!(d.join("me.pub").exists());
+        // An existing identity is never overwritten.
+        assert!(create_identity(&d.join("me.lphykey"), &secret("identity pass 1"), 64).is_err());
+        let keys = parse_recipients(&format!("# me\n{pk}\n{pk}\n")).unwrap();
+        assert_eq!(keys.len(), 1);
+        assert!(parse_recipients("lphy1nope").is_err());
+        let base = |mode, input: &str, output: &str| Job {
+            mode,
+            items: vec![Item {
+                input: d.join(input),
+                output: d.join(output),
+            }],
+            password: secret(""),
+            confirm: None,
+            kdf_mib: 64,
+            aes: false,
+            pad: true,
+            allow_cloud: true,
+            keyfile: None,
+            secure_delete: true,
+            split: None,
+            compress: false,
+            ecc: false,
+            recover: false,
+            recipients: Vec::new(),
+            identity: None,
+        };
+        let mut enc = base(Mode::Encrypt, "a.txt", "x.lphy");
+        enc.recipients.clone_from(&keys);
+        run(enc).unwrap();
+        // Secure delete is skipped: it needs a verification only the recipient can do.
+        assert!(d.join("a.txt").exists());
+        assert!(needs_identity(&d.join("x.lphy")));
+        assert!(header_summary(&d.join("x.lphy")).unwrap().contains('1'));
+        let mut dec = base(Mode::Decrypt, "x.lphy", "back.txt");
+        assert!(matches!(run(dec), Err(Error::IdentityRequired)));
+        dec = base(Mode::Decrypt, "x.lphy", "back.txt");
+        dec.identity = Some(d.join("me.lphykey"));
+        dec.password = secret("wrong password");
+        assert!(matches!(run(dec), Err(Error::WrongPassword)));
+        dec = base(Mode::Decrypt, "x.lphy", "back.txt");
+        dec.identity = Some(d.join("me.lphykey"));
+        dec.password = secret("identity pass 1");
+        run(dec).unwrap();
+        assert_eq!(std::fs::read(d.join("back.txt")).unwrap(), b"for my friend");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -701,6 +883,8 @@ mod tests {
             compress: false,
             ecc: false,
             recover: false,
+            recipients: Vec::new(),
+            identity: None,
         };
         let out = run(job).unwrap();
         assert_eq!(out.outputs.len(), 2);
@@ -723,6 +907,8 @@ mod tests {
             compress: false,
             ecc: false,
             recover: false,
+            recipients: Vec::new(),
+            identity: None,
         };
         assert!(run(job).is_err());
         let _ = std::fs::remove_dir_all(&d);
@@ -753,6 +939,8 @@ mod tests {
             compress: false,
             ecc: false,
             recover: false,
+            recipients: Vec::new(),
+            identity: None,
         };
         let out = run(mk(Mode::Encrypt, "a.bin", "s.lphy", Some(1024 * 1024))).unwrap();
         assert_eq!(out.outputs, vec![d.join("s.lphy.001")]);
@@ -793,6 +981,8 @@ mod tests {
             compress: false,
             ecc: false,
             recover: false,
+            recipients: Vec::new(),
+            identity: None,
         };
         run(job(Mode::Encrypt, "a.txt", "k.lphy", true)).unwrap();
         assert!(needs_keyfile(&d.join("k.lphy")));

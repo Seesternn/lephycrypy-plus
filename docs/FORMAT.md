@@ -186,6 +186,52 @@ Compression is therefore off by default.
 | 12 | 1 | 0 | 0 | `"lephycrypy v2 "` × 40, compressed, padded | decrypt direction |
 | 13 | 2 | 0 | 1 | archive `a.txt = "hi"`, compressed, not padded | decrypt direction |
 
+## Format version 2 (recipients)
+
+`feature_flags.bit1` marks a file whose file key `FK` is wrapped for one or more X25519 public
+keys (RFC 7748) instead of a password. Such a file has **no password slot**:
+
+| Offset | Value in a recipient file |
+|---|---|
+| 12 `feature_flags` | bit1 set (bit0 may also be set) |
+| 13 `kdf_id` | `0` |
+| 14 `kdf_flags`, 16..28 Argon2 parameters, 30..64, 88..192 | all `0` |
+| 28..30 | recipient count `n`, u16, `1 ≤ n ≤ 64` |
+
+A reader rejects (code 4) a recipient file with any of these fields non-zero, `n` out of range,
+or `kdf_id ≠ 0`, and a password file (bit1 clear) with `kdf_id ≠ 1` or `header[28..32] ≠ 0`.
+
+Right after the 256-byte header come `n` stanzas of 136 bytes each; the STREAM chunks start at
+`256 + 136·n`.
+
+```
+stanza     = E (32) ‖ wrap_nonce (24; AES: bytes 12..24 zero) ‖ commit (32) ‖ wrapped_fk (48)
+
+E          = X25519(e, 9)                          e: 32 random bytes per recipient
+ss         = X25519(e, pk)                         all-zero → reject
+kek        = HKDF-SHA512(ikm=ss,  salt=E ‖ pk, info="lphy+/v2/x25519", L=32)
+wrap_key   = HKDF-SHA512(ikm=kek, salt=E,      info="lphy+/v1/wrap",   L=32)
+commit     = HKDF-SHA512(ikm=kek, salt=E,      info="lphy+/v1/commit", L=32)
+wrapped_fk = AEAD_alg(wrap_key, wrap_nonce, FK, AAD = header[0..144] ‖ E)
+header_mac = BLAKE3-keyed(header_mac_key, header[0..224] ‖ stanzas)
+```
+
+`data_key`, `header_mac_key` and `chunk_aad` are derived exactly as in v1. To open the file, a
+reader with secret key `sk` and public key `pk = X25519(sk, 9)` computes `ss = X25519(sk, E)` for
+each stanza, derives `commit` and compares it in constant time; on the first match it unwraps
+`FK` (failure after a matching commit: code 4) and then checks `header_mac`. No match: code 3.
+Public keys are not stored in the file.
+
+**Public key text.** `lphy1` followed by base32 (RFC 4648 alphabet, lowercase, no padding) of
+`pk ‖ BLAKE3(pk)[0..4]` — 63 characters. The checksum catches typing mistakes.
+
+**Identity file (`.lphykey`).** An ordinary password-protected v1 file (raw stream, no padding,
+no compression) whose 40-byte content is `"LPHYID1\0" ‖ sk`.
+
+| # | alg | chunk_code | content_type | Input | Note |
+|---|---|---|---|---|---|
+| 14 | 1 | 0 | 0 | `"to a public key"`, two recipients `sk1 = 80..9f`, `sk2 = a0..bf`; `e1 = c0..df`, `wrap_nonce1 = 40..57`; `e2 = e0..ff`, `wrap_nonce2 = 58..6f`; prefix and FK as above | byte-identical both ways |
+
 ## Split output (informative)
 
 Splitting is a container below the format and has no header flag. A file `name.lphy` is cut into

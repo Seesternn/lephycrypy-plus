@@ -21,6 +21,7 @@ fault-injection = []
 [dependencies]
 lephy-sys = { workspace = true }
 miniz_oxide = { workspace = true }
+curve25519-dalek = { workspace = true }
 zeroize = { workspace = true }
 thiserror = { workspace = true }
 subtle = { workspace = true }

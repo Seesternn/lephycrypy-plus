@@ -97,6 +97,18 @@ pub struct App {
     close_after_job: bool,
     /// İşin tahmini toplam akış baytı (0: bilinmiyor).
     total: Arc<AtomicU64>,
+    /// Encrypt to public keys instead of a password.
+    use_keys: bool,
+    /// Recipient public keys, one per line.
+    recipients_text: String,
+    /// Identity file for opening a file encrypted to a public key.
+    identity: Option<PathBuf>,
+    /// The chosen encrypted file needs an identity.
+    identity_required: bool,
+    /// The key-pair creation card is open.
+    show_keygen: bool,
+    /// Public key of the key pair created in this session (shown with a copy link).
+    created_pub: Option<String>,
 }
 
 impl Default for App {
@@ -129,6 +141,12 @@ impl Default for App {
             ram_mib: lephy_sys::platform::physical_memory_bytes().map_or(0, |b| b / (1024 * 1024)),
             close_after_job: false,
             total: Arc::new(AtomicU64::new(0)),
+            use_keys: false,
+            recipients_text: String::new(),
+            identity: None,
+            identity_required: false,
+            show_keygen: false,
+            created_pub: None,
         }
     }
 }
@@ -160,6 +178,9 @@ impl App {
         self.generated = None;
         self.recover = false;
         self.keyfile_required = mode == Mode::Decrypt && logic::needs_keyfile(p);
+        self.identity = None;
+        self.identity_required = mode == Mode::Decrypt && logic::needs_identity(p);
+        self.show_keygen = false;
         self.password.clear();
         self.confirm.clear();
     }
@@ -210,6 +231,8 @@ impl App {
                 self.output = many[0].parent().map(Path::to_path_buf);
                 self.keyfile_required =
                     mode == Mode::Decrypt && many.iter().any(|p| logic::needs_keyfile(p));
+                self.identity_required =
+                    mode == Mode::Decrypt && many.iter().any(|p| logic::needs_identity(p));
             }
         }
     }
@@ -226,6 +249,9 @@ impl App {
         self.allow_cloud = false;
         self.keyfile = None;
         self.keyfile_required = false;
+        self.identity = None;
+        self.identity_required = false;
+        self.show_keygen = false;
         self.generated = None;
         self.password.clear();
         self.confirm.clear();
@@ -252,17 +278,25 @@ impl App {
         let Some(src) = &self.source else {
             return false;
         };
-        if self.running() || self.output.is_none() || self.password.is_empty() {
-            return false;
-        }
-        if self.keyfile_required && self.keyfile.is_none() {
+        if self.running() || self.output.is_none() {
             return false;
         }
         match src.mode {
-            Mode::Encrypt => {
-                self.password.char_count() >= MIN_SCALARS && self.password.same_as(&self.confirm)
+            Mode::Encrypt if self.use_keys => {
+                !self.show_keygen
+                    && logic::parse_recipients(&self.recipients_text).is_ok_and(|k| !k.is_empty())
             }
-            Mode::Decrypt => self.cloud_root().is_none() || self.allow_cloud,
+            Mode::Encrypt => {
+                !self.password.is_empty()
+                    && self.password.char_count() >= MIN_SCALARS
+                    && self.password.same_as(&self.confirm)
+            }
+            Mode::Decrypt => {
+                !self.password.is_empty()
+                    && (!self.keyfile_required || self.keyfile.is_some())
+                    && (!self.identity_required || self.identity.is_some())
+                    && (self.cloud_root().is_none() || self.allow_cloud)
+            }
         }
     }
 
@@ -291,17 +325,29 @@ impl App {
                 output: output.clone(),
             }]
         };
+        let key_mode = mode == Mode::Encrypt && self.use_keys;
+        let recipients = if key_mode {
+            logic::parse_recipients(&self.recipients_text).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let job = Job {
+            recipients,
+            identity: if mode == Mode::Decrypt && self.identity_required {
+                self.identity.clone()
+            } else {
+                None
+            },
             mode,
             items,
             password: self.password.take(),
-            confirm: (mode == Mode::Encrypt).then(|| self.confirm.take()),
+            confirm: (mode == Mode::Encrypt && !key_mode).then(|| self.confirm.take()),
             kdf_mib: self.kdf_mib,
             aes: self.aes,
             pad: self.pad,
             allow_cloud: self.allow_cloud,
             keyfile: self.keyfile.clone(),
-            secure_delete: self.secure_delete,
+            secure_delete: self.secure_delete && !key_mode,
             split: (self.split_mib > 0).then_some(self.split_mib * 1024 * 1024),
             compress: self.compress,
             ecc: self.ecc,
@@ -690,7 +736,40 @@ impl App {
         let Some(mode) = self.mode() else { return };
         self.source_card(ui, pal, true);
         ui.add_space(22.0);
+        if mode == Mode::Encrypt {
+            let before = self.use_keys;
+            segmented(
+                ui,
+                pal,
+                &mut self.use_keys,
+                &[
+                    (false, tr("Parolayla", "With a password"), true),
+                    (true, tr("Açık anahtarla", "With public keys"), true),
+                ],
+            );
+            if before != self.use_keys {
+                self.password.clear();
+                self.confirm.clear();
+                self.show_keygen = false;
+                self.error = None;
+            }
+            ui.add_space(16.0);
+        }
+        let mut submit = false;
+        if mode == Mode::Encrypt && self.use_keys {
+            self.recipients_view(ui, pal);
+        } else if mode == Mode::Decrypt && self.identity_required {
+            self.identity_view(ui, pal, &mut submit);
+        } else {
+            self.password_view(ui, pal, mode, &mut submit);
+        }
+        self.after_credentials(ui, ctx, pal, mode, submit);
+    }
 
+    fn password_view(&mut self, ui: &mut Ui, pal: Palette, mode: Mode, submit: &mut bool) {
+        self.password.set_label("Parola", "Password");
+        self.confirm
+            .set_label("Parolayı tekrar girin", "Repeat the password");
         let (title, sub) = match mode {
             Mode::Encrypt => (
                 tr("Bir parola belirleyin", "Choose a password"),
@@ -722,11 +801,11 @@ impl App {
         if self.source.is_some() && ui.memory(|m| m.focused().is_none()) {
             r1.request_focus();
         }
-        let mut submit = s1;
+        *submit = s1;
         if mode == Mode::Encrypt {
             ui.add_space(2.0);
             let (_, s2) = self.confirm.ui(ui, true);
-            submit |= s2;
+            *submit |= s2;
             self.password_hint(ui, pal);
         }
 
@@ -734,7 +813,16 @@ impl App {
             ui.add_space(12.0);
             self.keyfile_row(ui, pal, true);
         }
+    }
 
+    fn after_credentials(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &egui::Context,
+        pal: Palette,
+        mode: Mode,
+        submit: bool,
+    ) {
         ui.add_space(14.0);
         self.output_row(ui, pal);
         if let Some(root) = self.cloud_root() {
@@ -777,7 +865,7 @@ impl App {
         if self.confirm_delete && mode == Mode::Encrypt {
             self.delete_confirmation(ui, ctx, pal);
         } else if primary_button(ui, pal, label, enabled).clicked() || (submit && enabled) {
-            if self.secure_delete && mode == Mode::Encrypt {
+            if self.secure_delete && mode == Mode::Encrypt && !self.use_keys {
                 // Geri alınamaz adım: önce açık onay.
                 self.confirm_delete = true;
             } else {
@@ -1178,17 +1266,281 @@ impl App {
                         (4095, tr("FAT32 (4 GB)", "FAT32 (4 GB)"), true),
                     ],
                 );
-                ui.add_space(8.0);
-                ui.checkbox(
-                    &mut self.secure_delete,
-                    tr(
-                        "Şifreledikten sonra orijinali güvenli sil",
-                        "Securely delete the original after encryption",
-                    ),
-                );
-                ui.add_space(12.0);
-                self.keyfile_row(ui, pal, false);
+                if !self.use_keys {
+                    ui.add_space(8.0);
+                    ui.checkbox(
+                        &mut self.secure_delete,
+                        tr(
+                            "Şifreledikten sonra orijinali güvenli sil",
+                            "Securely delete the original after encryption",
+                        ),
+                    );
+                    ui.add_space(12.0);
+                    self.keyfile_row(ui, pal, false);
+                }
             });
+    }
+
+    fn append_key(&mut self, text: &str) {
+        if !self.recipients_text.is_empty() && !self.recipients_text.ends_with('\n') {
+            self.recipients_text.push('\n');
+        }
+        self.recipients_text.push_str(text.trim());
+        self.recipients_text.push('\n');
+    }
+
+    /// Encrypt to public keys: the recipients list and key-pair creation.
+    #[allow(clippy::too_many_lines)] // one screen section, read top to bottom
+    fn recipients_view(&mut self, ui: &mut Ui, pal: Palette) {
+        ui.label(
+            RichText::new(tr("Kimler açabilsin?", "Who can open it?"))
+                .font(fonts::semibold(16.5))
+                .color(pal.ink),
+        );
+        ui.label(
+            RichText::new(tr(
+                "Alıcıların açık anahtarlarını yapıştırın, her satıra bir tane. Dosyayı yalnızca bu anahtarların sahipleri açabilir; parola gerekmez.",
+                "Paste the recipients' public keys, one per line. Only the owners of these keys can open the file; no password is needed.",
+            ))
+            .color(pal.muted)
+            .size(13.0),
+        );
+        ui.add_space(10.0);
+        egui::Frame::new()
+            .fill(pal.surface)
+            .stroke(Stroke::new(1.0, pal.line))
+            .corner_radius(CornerRadius::same(theme::R_INPUT))
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.recipients_text)
+                        .hint_text("lphy1…")
+                        .font(egui::TextStyle::Monospace)
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY)
+                        .frame(egui::Frame::NONE),
+                );
+            });
+        let (status, color) = match logic::parse_recipients(&self.recipients_text) {
+            Ok(k) if k.is_empty() => (
+                tr("Henüz anahtar yok.", "No keys yet.").to_string(),
+                pal.muted,
+            ),
+            Ok(k) => (
+                match lang() {
+                    Lang::Tr => format!("{} geçerli anahtar.", k.len()),
+                    Lang::En => format!("{} valid key(s).", k.len()),
+                },
+                pal.ok,
+            ),
+            Err(e) => (e, pal.danger),
+        };
+        ui.label(RichText::new(status).color(color).size(13.0));
+        let mut add = false;
+        let mut toggle = false;
+        ui.horizontal(|ui| {
+            add = link_button(ui, pal, tr("Dosyadan ekle…", "Add from file…")).clicked();
+            ui.add_space(12.0);
+            let label = if self.show_keygen {
+                tr("Anahtar çifti oluşturmayı kapat", "Close key-pair creation")
+            } else {
+                tr("Kendi anahtar çiftimi oluştur", "Create my own key pair")
+            };
+            toggle = link_button(ui, pal, label).clicked();
+        });
+        if add
+            && let Some(p) = rfd::FileDialog::new()
+                .set_title(tr("Açık anahtar dosyası (.pub)", "Public key file (.pub)"))
+                .pick_file()
+        {
+            match std::fs::read_to_string(&p) {
+                Ok(t) if logic::parse_recipients(&t).is_ok_and(|k| !k.is_empty()) => {
+                    self.append_key(&t);
+                    self.error = None;
+                }
+                _ => {
+                    self.error = Some(
+                        tr(
+                            "Bu dosyada geçerli bir açık anahtar yok.",
+                            "This file has no valid public key.",
+                        )
+                        .to_string(),
+                    );
+                }
+            }
+        }
+        if toggle {
+            self.show_keygen = !self.show_keygen;
+            self.password.clear();
+            self.confirm.clear();
+        }
+        if let Some(pk) = self.created_pub.clone() {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(tr(
+                    "Açık anahtarınız (paylaşabilirsiniz):",
+                    "Your public key (safe to share):",
+                ))
+                .color(pal.muted)
+                .size(13.0),
+            );
+            ui.horizontal(|ui| {
+                let w = (ui.available_width() - 70.0).max(60.0);
+                ui.allocate_ui_with_layout(
+                    vec2(w, 20.0),
+                    Layout::left_to_right(Align::Center),
+                    |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&pk).monospace().size(12.0).color(pal.ink),
+                            )
+                            .truncate(),
+                        );
+                    },
+                );
+                if link_button(ui, pal, tr("Kopyala", "Copy")).clicked() {
+                    ui.ctx().copy_text(pk.clone());
+                }
+            });
+        }
+        if self.show_keygen {
+            ui.add_space(10.0);
+            self.keygen_card(ui, pal);
+        }
+    }
+
+    fn keygen_card(&mut self, ui: &mut Ui, pal: Palette) {
+        self.password
+            .set_label("Kimlik parolası", "Identity password");
+        self.confirm.set_label(
+            "Kimlik parolasını tekrar girin",
+            "Repeat the identity password",
+        );
+        let mut save = false;
+        egui::Frame::new()
+            .fill(pal.surface)
+            .stroke(Stroke::new(1.0, pal.line))
+            .corner_radius(CornerRadius::same(theme::R_CARD))
+            .inner_margin(egui::Margin::same(16))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    RichText::new(tr(
+                        "Gizli anahtarınız parolayla korunan bir kimlik dosyasına (.lphykey) yazılır; açık anahtar yanına .pub olarak kaydedilir ve listeye eklenir. Kimlik dosyasını ya da parolasını kaybederseniz bu anahtara şifrelenen dosyalar açılamaz.",
+                        "Your secret key is written to a password-protected identity file (.lphykey); the public key is saved next to it as .pub and added to the list. If you lose the identity file or its password, files encrypted to this key cannot be opened.",
+                    ))
+                    .color(pal.muted)
+                    .size(12.5),
+                );
+                ui.add_space(8.0);
+                self.password.ui(ui, true);
+                ui.add_space(2.0);
+                self.confirm.ui(ui, true);
+                self.password_hint(ui, pal);
+                ui.add_space(8.0);
+                let ok = self.password.char_count() >= MIN_SCALARS
+                    && self.password.same_as(&self.confirm);
+                save = primary_button(ui, pal, tr("Kaydet…", "Save…"), ok).clicked();
+            });
+        if save
+            && let Some(path) = rfd::FileDialog::new()
+                .set_title(tr("Kimlik dosyasını kaydedin", "Save the identity file"))
+                .set_file_name("lephycrypy.lphykey")
+                .save_file()
+        {
+            let pwd = self.password.take();
+            self.confirm.clear();
+            match logic::create_identity(&path, &pwd, self.kdf_mib) {
+                Ok(pk) => {
+                    self.append_key(&pk);
+                    self.created_pub = Some(pk);
+                    self.show_keygen = false;
+                    self.error = None;
+                }
+                Err(e) => self.error = Some(logic::describe_error(&e)),
+            }
+        }
+    }
+
+    /// Decrypt a file encrypted to a public key: identity file and its password.
+    fn identity_view(&mut self, ui: &mut Ui, pal: Palette, submit: &mut bool) {
+        self.password
+            .set_label("Kimlik parolası", "Identity password");
+        ui.label(
+            RichText::new(tr("Kimliğinizi seçin", "Choose your identity"))
+                .font(fonts::semibold(16.5))
+                .color(pal.ink),
+        );
+        ui.label(
+            RichText::new(tr(
+                "Bu dosya bir açık anahtara şifrelenmiş. Kimlik dosyanızı (.lphykey) seçip parolasını girin.",
+                "This file was encrypted to a public key. Choose your identity file (.lphykey) and enter its password.",
+            ))
+            .color(pal.muted)
+            .size(13.0),
+        );
+        ui.add_space(10.0);
+        let name = self.identity.as_ref().map(|k| {
+            k.file_name()
+                .map(|f| escape_display(&f.to_string_lossy()))
+                .unwrap_or_default()
+        });
+        let mut pick = false;
+        egui::Frame::new()
+            .fill(pal.surface)
+            .stroke(Stroke::new(
+                1.0,
+                if name.is_none() { pal.accent } else { pal.line },
+            ))
+            .corner_radius(CornerRadius::same(theme::R_INPUT))
+            .inner_margin(egui::Margin::symmetric(12, 4))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.set_min_height(32.0);
+                    let text_w = (ui.available_width() - 120.0).max(60.0);
+                    ui.allocate_ui_with_layout(
+                        vec2(text_w, 32.0),
+                        Layout::left_to_right(Align::Center),
+                        |ui| {
+                            match &name {
+                                Some(n) => ui.add(
+                                    egui::Label::new(RichText::new(n).color(pal.ink).size(14.0))
+                                        .truncate(),
+                                ),
+                                None => ui.label(
+                                    RichText::new(tr(
+                                        "Kimlik dosyası seçilmedi",
+                                        "No identity file selected",
+                                    ))
+                                    .color(pal.muted)
+                                    .size(14.0),
+                                ),
+                            };
+                        },
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let label = if name.is_some() {
+                            tr("Değiştir", "Change")
+                        } else {
+                            tr("Seç", "Choose")
+                        };
+                        pick = link_button(ui, pal, label).clicked();
+                    });
+                });
+            });
+        if pick
+            && let Some(p) = rfd::FileDialog::new()
+                .set_title(tr("Kimlik dosyasını seçin", "Choose the identity file"))
+                .add_filter("lephycrypy identity", &["lphykey"])
+                .pick_file()
+        {
+            self.identity = Some(p);
+            self.error = None;
+        }
+        ui.add_space(10.0);
+        let (_, s) = self.password.ui(ui, true);
+        *submit = s;
     }
 
     fn keyfile_row(&mut self, ui: &mut Ui, pal: Palette, required: bool) {
@@ -1878,6 +2230,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn renders_every_stage_headless() {
         let ctx = egui::Context::default();
         theme::apply(&ctx);
@@ -1916,6 +2269,27 @@ mod tests {
         app.reset();
         assert!(matches!(app.stage, Stage::Pick));
         frame(&ctx, &mut app);
+
+        // Public-key mode: the list decides, no password is needed.
+        app.set_source(&d.join("a.txt"));
+        app.use_keys = true;
+        app.show_keygen = true;
+        app.created_pub = Some("lphy1example".into());
+        frame(&ctx, &mut app);
+        assert!(!app.can_start(), "anahtar yokken başlamamalı");
+        app.show_keygen = false;
+        let pk = crate::logic::create_identity(
+            &d.join("me.lphykey"),
+            &lephy_sys::mem::SecretBytes::from_slice(b"identity pass 1").unwrap(),
+            64,
+        )
+        .unwrap();
+        app.recipients_text = format!("{pk}\n");
+        frame(&ctx, &mut app);
+        assert!(app.can_start());
+        app.recipients_text.push_str("lphy1bozuk\n");
+        frame(&ctx, &mut app);
+        assert!(!app.can_start(), "geçersiz anahtarla başlamamalı");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

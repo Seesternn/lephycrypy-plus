@@ -23,6 +23,7 @@ use crate::io::AtomicWriter;
 use crate::kdf::{self, KEY_LEN, KdfParams};
 use crate::pad::{RawPadReader, RawPadWriter};
 use crate::pipeline::{StreamParams, decrypt_stream, encrypt_stream, verify_stream};
+pub use crate::recipient::{Identity, PublicKey};
 
 fn arena_err(e: impl std::fmt::Display) -> Error {
     Error::Environment(format!("kilitli bellek: {e}"))
@@ -30,11 +31,13 @@ fn arena_err(e: impl std::fmt::Display) -> Error {
 
 /// Çözme/doğrulama politikası seçenekleri.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct UnlockOptions {
+pub struct UnlockOptions<'a> {
     /// Bütçe aşımına izin (`--allow-large-kdf`); RAM eşiği yine de uygulanır.
     pub allow_large_kdf: bool,
     /// Kilit başarısızlığı hata (`--strict-memory`).
     pub strict_memory: bool,
+    /// Identity for files encrypted to public keys (`--identity`).
+    pub identity: Option<&'a Identity>,
 }
 
 /// Açılmış başlık: FK ve alt anahtarlar kilitli arenada.
@@ -43,6 +46,8 @@ pub struct Unlocked {
     pub header: Header,
     /// Ham başlık baytları.
     pub bytes: [u8; HEADER_LEN],
+    /// Recipient stanzas that follow the header (empty for password files).
+    pub ext: Vec<u8>,
     /// Dosya anahtarı.
     pub fk: SecretBytes,
     /// `data_key`.
@@ -72,13 +77,33 @@ fn strict_memory_check(strict: bool) -> Result<()> {
 /// 3 (parola/keyfile/bayrak), 4 (başlık), 6 (bütçe), 1.
 pub fn unlock_header(
     bytes: &[u8; HEADER_LEN],
+    ext: &[u8],
     pwd_nfc: &SecretBytes,
     keyfile_digest: Option<&[u8; 32]>,
-    opts: UnlockOptions,
+    opts: UnlockOptions<'_>,
     log: &mut dyn FnMut(&str),
 ) -> Result<Unlocked> {
     // 1
     let header = Header::parse(bytes)?;
+    if ext.len() != header.ext_len() {
+        return Err(Error::Corrupt {
+            at: "başlık".into(),
+            detail: Some("recipient stanzas truncated".into()),
+        });
+    }
+    if header.recipients > 0 {
+        if keyfile_digest.is_some() {
+            return Err(Error::KeyfileNotUsed);
+        }
+        let Some(id) = opts.identity else {
+            return Err(Error::IdentityRequired);
+        };
+        let fk = crate::recipient::unwrap_with(bytes, header.alg, ext, id)?;
+        return finish_unlock(header, bytes, ext, fk);
+    }
+    if opts.identity.is_some() {
+        return Err(Error::IdentityNotUsed);
+    }
     // 2 keyfile bayrak/argüman tutarlılığı (KDF'siz)
     match (header.keyfile, keyfile_digest.is_some()) {
         (true, false) => return Err(Error::KeyfileRequired),
@@ -125,9 +150,26 @@ pub fn unlock_header(
             detail: Some("wrapped_fk doğrulanamadı (commit geçti)".into()),
         });
     }
-    // 7 türet, 8 header_mac
+    finish_unlock(header, bytes, ext, fk)
+}
+
+/// `header_mac` input: `header[0..224] ‖ recipient stanzas`.
+fn mac_input(bytes: &[u8; HEADER_LEN], ext: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(MAC_END + ext.len());
+    v.extend_from_slice(&bytes[..MAC_END]);
+    v.extend_from_slice(ext);
+    v
+}
+
+/// Steps 7–8: FK subkeys and `header_mac`.
+fn finish_unlock(
+    header: Header,
+    bytes: &[u8; HEADER_LEN],
+    ext: &[u8],
+    fk: SecretBytes,
+) -> Result<Unlocked> {
     let (data_key, mac_key) = kdf::derive_fk_subkeys(&fk, &header.stream_nonce_prefix)?;
-    let mac = kdf::header_mac(&mac_key, &bytes[..MAC_END])?;
+    let mac = kdf::header_mac(&mac_key, &mac_input(bytes, ext))?;
     drop(mac_key);
     if mac.ct_eq(&header.header_mac).unwrap_u8() != 1 {
         return Err(Error::Corrupt {
@@ -138,6 +180,66 @@ pub fn unlock_header(
     Ok(Unlocked {
         header,
         bytes: *bytes,
+        ext: ext.to_vec(),
+        fk,
+        data_key,
+    })
+}
+
+/// New header for a file encrypted to `recipients` (no password slot). Entropy order:
+/// `stream_nonce_prefix`, FK, then per recipient the ephemeral secret and `wrap_nonce`.
+///
+/// # Errors
+/// 1 (RNG, locked memory, too many or invalid recipients).
+pub fn build_recipient_header(
+    params: &NewHeaderParams,
+    recipients: &[PublicKey],
+    entropy: &mut dyn Entropy,
+) -> Result<Unlocked> {
+    let count = u16::try_from(recipients.len())
+        .ok()
+        .filter(|n| (1..=crate::header::MAX_RECIPIENTS).contains(n))
+        .ok_or_else(|| {
+            Error::Environment(format!(
+                "1 to {} recipients are allowed",
+                crate::header::MAX_RECIPIENTS
+            ))
+        })?;
+    let mut prefix = [0u8; 24];
+    entropy.fill(&mut prefix[..params.alg.prefix_len()])?;
+    let mut fk = SecretBytes::with_capacity(KEY_LEN).map_err(arena_err)?;
+    fk.set_len(KEY_LEN).map_err(arena_err)?;
+    entropy.fill(fk.expose_mut())?;
+    let mut header = Header {
+        alg: params.alg,
+        content_type: params.content_type,
+        padded: params.padded,
+        chunk_code: params.chunk_code,
+        kdf: KdfParams {
+            m_kib: 0,
+            t: 0,
+            p: 0,
+        },
+        keyfile: false,
+        compressed: params.compressed,
+        recipients: count,
+        salt: [0u8; 32],
+        stream_nonce_prefix: prefix,
+        wrap_nonce: [0u8; 24],
+        commit_tag: [0u8; 32],
+        wrapped_fk: [0u8; 48],
+        header_mac: [0u8; 32],
+    };
+    let partial = header.to_bytes();
+    let ext = crate::recipient::wrap_for(&partial, params.alg, &fk, recipients, entropy)?;
+    let (data_key, mac_key) = kdf::derive_fk_subkeys(&fk, &prefix)?;
+    header.header_mac = kdf::header_mac(&mac_key, &mac_input(&partial, &ext))?;
+    drop(mac_key);
+    let bytes = header.to_bytes();
+    Ok(Unlocked {
+        header,
+        bytes,
+        ext,
         fk,
         data_key,
     })
@@ -208,6 +310,7 @@ pub fn build_header(
         kdf: params.kdf,
         keyfile: keyfile_digest.is_some(),
         compressed: params.compressed,
+        recipients: 0,
         salt,
         stream_nonce_prefix: prefix,
         wrap_nonce,
@@ -235,6 +338,7 @@ pub fn build_header(
     Ok(Unlocked {
         header,
         bytes,
+        ext: Vec::new(),
         fk,
         data_key,
     })
@@ -449,12 +553,60 @@ fn output_inside_source(src: &Path, out: &Path) -> bool {
 ///
 /// # Errors
 /// 1, 4 (`--strict`), 6, 7, 8, 130.
-#[allow(clippy::too_many_lines)] // giriş türü × dolgu dallanması tek yerde okunur kalsın
 pub fn encrypt(
     input: &Input<'_>,
     output: &Path,
     pwd_nfc: &SecretBytes,
     keyfile_digest: Option<&[u8; 32]>,
+    opts: &EncryptOptions,
+    entropy: &mut dyn Entropy,
+    log: &mut dyn FnMut(&str),
+) -> Result<EncryptReport> {
+    encrypt_with(
+        input,
+        output,
+        Lock::Password(pwd_nfc, keyfile_digest),
+        opts,
+        entropy,
+        log,
+    )
+}
+
+/// Like [`encrypt`], but the file key is wrapped for X25519 `recipients` instead of a
+/// password (format v2). `opts.kdf` is not used.
+///
+/// # Errors
+/// As [`encrypt`].
+pub fn encrypt_to_recipients(
+    input: &Input<'_>,
+    output: &Path,
+    recipients: &[PublicKey],
+    opts: &EncryptOptions,
+    entropy: &mut dyn Entropy,
+    log: &mut dyn FnMut(&str),
+) -> Result<EncryptReport> {
+    encrypt_with(
+        input,
+        output,
+        Lock::Recipients(recipients),
+        opts,
+        entropy,
+        log,
+    )
+}
+
+/// How the file key is protected.
+#[derive(Clone, Copy)]
+enum Lock<'a> {
+    Password(&'a SecretBytes, Option<&'a [u8; 32]>),
+    Recipients(&'a [PublicKey]),
+}
+
+#[allow(clippy::too_many_lines)] // giriş türü × dolgu dallanması tek yerde okunur kalsın
+fn encrypt_with(
+    input: &Input<'_>,
+    output: &Path,
+    lock: Lock<'_>,
     opts: &EncryptOptions,
     entropy: &mut dyn Entropy,
     log: &mut dyn FnMut(&str),
@@ -494,7 +646,7 @@ pub fn encrypt(
         padded,
         chunk_code: opts.chunk_code,
         kdf: opts.kdf,
-        keyfile: keyfile_digest.is_some(),
+        keyfile: matches!(lock, Lock::Password(_, Some(_))),
         compressed: opts.compress,
     };
     // Boş alan ön kontrolü (yalnızca dosya; klasörde boyut önceden bilinmez).
@@ -504,22 +656,29 @@ pub fn encrypt(
     {
         let size = md.len();
         let chunk = crate::header::chunk_size_for(opts.chunk_code).unwrap_or(1 << 20) as u64;
-        let est = HEADER_LEN as u64 + size + 64 + (size / chunk + 1) * TAG_LEN as u64;
+        let ext = match lock {
+            Lock::Recipients(r) => (r.len() * crate::header::STANZA_LEN) as u64,
+            Lock::Password(..) => 0,
+        };
+        let est = HEADER_LEN as u64 + ext + size + 64 + (size / chunk + 1) * TAG_LEN as u64;
         let dir = output
             .parent()
             .filter(|d| !d.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         crate::io::precheck_space(dir, est)?;
     }
-    let unlocked = build_header(
-        &params,
-        pwd_nfc,
-        keyfile_digest,
-        Reuse::default(),
-        entropy,
-        opts.strict_memory,
-        log,
-    )?;
+    let unlocked = match lock {
+        Lock::Password(pwd_nfc, keyfile_digest) => build_header(
+            &params,
+            pwd_nfc,
+            keyfile_digest,
+            Reuse::default(),
+            entropy,
+            opts.strict_memory,
+            log,
+        )?,
+        Lock::Recipients(r) => build_recipient_header(&params, r, entropy)?,
+    };
     let cipher = SharedCipher::new(opts.alg, key32(&unlocked.data_key)?)?;
     let aad = chunk_aad(&unlocked.bytes);
     let mut w = AtomicWriter::create(output, opts.force)?;
@@ -532,6 +691,7 @@ pub fn encrypt(
         file
     };
     sink.write_all(&unlocked.bytes)?;
+    sink.write_all(&unlocked.ext)?;
     let sp = StreamParams {
         cipher: &cipher,
         prefix: &unlocked.header.stream_nonce_prefix,
@@ -624,6 +784,28 @@ fn read_header(f: &mut dyn Read) -> Result<[u8; HEADER_LEN]> {
     Ok(b)
 }
 
+/// Reads the recipient stanzas that follow a header (none for password files). A header that
+/// does not parse yields no stanzas; `unlock_header` then reports it.
+fn read_ext(f: &mut dyn Read, b: &[u8; HEADER_LEN]) -> Result<Vec<u8>> {
+    let Ok(h) = Header::parse(b) else {
+        return Ok(Vec::new());
+    };
+    let mut ext = vec![0u8; h.ext_len()];
+    let mut n = 0;
+    while n < ext.len() {
+        match f.read(&mut ext[n..]) {
+            Ok(0) => {
+                ext.truncate(n);
+                break;
+            }
+            Ok(k) => n += k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(Error::Io(e)),
+        }
+    }
+    Ok(ext)
+}
+
 /// Açık meta veri (KDF çalıştırmadan).
 ///
 /// # Errors
@@ -658,12 +840,19 @@ fn open_and_unlock(
     path: &Path,
     pwd_nfc: &SecretBytes,
     keyfile_digest: Option<&[u8; 32]>,
-    opts: UnlockOptions,
+    opts: UnlockOptions<'_>,
     log: &mut dyn FnMut(&str),
 ) -> Result<(File, Unlocked)> {
     let mut f = File::open(path)?;
     let b = read_header(&mut f)?;
-    let u = unlock_header(&b, pwd_nfc, keyfile_digest, opts, log)?;
+    // rekey/reencrypt only: they replace the password slot.
+    if Header::parse(&b).is_ok_and(|h| h.recipients > 0) {
+        return Err(Error::Environment(
+            "this file is encrypted to public keys; rekey and reencrypt work only on password files"
+                .into(),
+        ));
+    }
+    let u = unlock_header(&b, &[], pwd_nfc, keyfile_digest, opts, log)?;
     Ok((f, u))
 }
 
@@ -737,13 +926,14 @@ fn open_stream_and_unlock(
     path: &Path,
     pwd_nfc: &SecretBytes,
     keyfile_digest: Option<&[u8; 32]>,
-    opts: UnlockOptions,
+    opts: UnlockOptions<'_>,
     lenient: bool,
     log: &mut dyn FnMut(&str),
 ) -> Result<(OpenedInput, Unlocked)> {
     let mut input = open_input(path, lenient)?;
     let b = read_header(&mut input.reader)?;
-    let u = unlock_header(&b, pwd_nfc, keyfile_digest, opts, log)?;
+    let ext = read_ext(&mut input.reader, &b)?;
+    let u = unlock_header(&b, &ext, pwd_nfc, keyfile_digest, opts, log)?;
     Ok((input, u))
 }
 
@@ -764,9 +954,9 @@ pub struct DecryptReport {
 
 /// Çözme seçenekleri (arşiv için).
 #[derive(Debug, Clone, Copy, Default)]
-pub struct DecryptOptions {
+pub struct DecryptOptions<'a> {
     /// Kilit/bütçe.
-    pub unlock: UnlockOptions,
+    pub unlock: UnlockOptions<'a>,
     /// Çıkarma politikası (`padded` başlıktan doldurulur).
     pub extract: ExtractOptions,
 }
@@ -796,7 +986,7 @@ pub fn decrypt(
     output: &Output<'_>,
     pwd_nfc: &SecretBytes,
     keyfile_digest: Option<&[u8; 32]>,
-    opts: DecryptOptions,
+    opts: DecryptOptions<'_>,
     log: &mut dyn FnMut(&str),
 ) -> Result<DecryptReport> {
     let (input, u) =
@@ -1042,7 +1232,7 @@ pub fn recover(
     output: &Path,
     pwd_nfc: &SecretBytes,
     keyfile_digest: Option<&[u8; 32]>,
-    opts: UnlockOptions,
+    opts: UnlockOptions<'_>,
     log: &mut dyn FnMut(&str),
 ) -> Result<RecoverReport> {
     use crate::compress::InflateWriter;
@@ -1173,7 +1363,7 @@ pub fn verify(
     path: &Path,
     pwd_nfc: &SecretBytes,
     keyfile_digest: Option<&[u8; 32]>,
-    opts: UnlockOptions,
+    opts: UnlockOptions<'_>,
     log: &mut dyn FnMut(&str),
 ) -> Result<u64> {
     let (input, u) = open_stream_and_unlock(path, pwd_nfc, keyfile_digest, opts, false, log)?;
@@ -1239,7 +1429,7 @@ pub fn rekey(
     old_pwd: &SecretBytes,
     old_keyfile: Option<&[u8; 32]>,
     new: &NewCredentials<'_>,
-    opts: UnlockOptions,
+    opts: UnlockOptions<'_>,
     verify_after: bool,
     entropy: &mut dyn Entropy,
     log: &mut dyn FnMut(&str),
@@ -1319,7 +1509,7 @@ pub fn reencrypt(
     old_pwd: &SecretBytes,
     old_keyfile: Option<&[u8; 32]>,
     new: &NewCredentials<'_>,
-    opts: UnlockOptions,
+    opts: UnlockOptions<'_>,
     entropy: &mut dyn Entropy,
     log: &mut dyn FnMut(&str),
 ) -> Result<u64> {
@@ -1422,6 +1612,171 @@ mod tests {
         )
         .unwrap();
         rep.archive.unwrap()
+    }
+
+    #[test]
+    fn recipients_roundtrip_and_errors() {
+        let d = tmpdir("recipients");
+        let src = d.join("kaynak");
+        std::fs::create_dir_all(src.join("alt")).unwrap();
+        std::fs::write(src.join("a.txt"), b"for several people").unwrap();
+        std::fs::write(src.join("alt/b.txt"), vec![7u8; 200_000]).unwrap();
+        let ids: Vec<Identity> = (0..2)
+            .map(|_| Identity::generate(&mut OsEntropy).unwrap())
+            .collect();
+        let pks: Vec<PublicKey> = ids.iter().map(Identity::public).collect();
+        let none = pwd("");
+        for (i, (compress, ecc)) in [(false, false), (true, false), (false, true)]
+            .into_iter()
+            .enumerate()
+        {
+            let mut o = opts(false, None);
+            o.compress = compress;
+            o.ecc = ecc;
+            let out = d.join(format!("r{i}.lphy"));
+            encrypt_to_recipients(
+                &Input::Path(&src),
+                &out,
+                &pks,
+                &o,
+                &mut OsEntropy,
+                &mut |_| {},
+            )
+            .unwrap();
+            let h = info(&out).unwrap();
+            assert_eq!(h.recipients, 2);
+            for (j, id) in ids.iter().enumerate() {
+                let u = UnlockOptions {
+                    identity: Some(id),
+                    ..UnlockOptions::default()
+                };
+                verify(&out, &none, None, u, &mut |_| {}).unwrap();
+                let back = d.join(format!("geri-{i}-{j}"));
+                let dopts = DecryptOptions {
+                    unlock: u,
+                    ..DecryptOptions::default()
+                };
+                decrypt(
+                    &out,
+                    &Output::Path(&back, false),
+                    &none,
+                    None,
+                    dopts,
+                    &mut |_| {},
+                )
+                .unwrap();
+                assert_eq!(
+                    std::fs::read(back.join("a.txt")).unwrap(),
+                    b"for several people"
+                );
+                assert_eq!(
+                    std::fs::read(back.join("alt/b.txt")).unwrap().len(),
+                    200_000
+                );
+            }
+        }
+        let out = d.join("r0.lphy");
+        // No identity, a stranger, a key file: code 3, before any output.
+        let u = UnlockOptions::default();
+        assert!(matches!(
+            verify(&out, &none, None, u, &mut |_| {}),
+            Err(Error::IdentityRequired)
+        ));
+        let stranger = Identity::generate(&mut OsEntropy).unwrap();
+        let u = UnlockOptions {
+            identity: Some(&stranger),
+            ..UnlockOptions::default()
+        };
+        assert!(matches!(
+            verify(&out, &none, None, u, &mut |_| {}),
+            Err(Error::NoMatchingIdentity)
+        ));
+        let u = UnlockOptions {
+            identity: Some(&ids[0]),
+            ..UnlockOptions::default()
+        };
+        assert!(matches!(
+            verify(&out, &none, Some(&[1; 32]), u, &mut |_| {}),
+            Err(Error::KeyfileNotUsed)
+        ));
+        // Tampering with a stanza or truncating the stanzas is code 4.
+        let orig = std::fs::read(&out).unwrap();
+        for pos in [
+            HEADER_LEN + 3,
+            HEADER_LEN + 2 * crate::header::STANZA_LEN - 1,
+        ] {
+            let mut bad = orig.clone();
+            bad[pos] ^= 1;
+            let t = d.join("bad.lphy");
+            std::fs::write(&t, &bad).unwrap();
+            let r = verify(&t, &none, None, u, &mut |_| {});
+            assert!(
+                matches!(r, Err(Error::Corrupt { .. } | Error::NoMatchingIdentity)),
+                "{pos}: {r:?}"
+            );
+            // The other recipient's stanza is untouched; the header MAC still catches it.
+            let u1 = UnlockOptions {
+                identity: Some(&ids[1]),
+                ..UnlockOptions::default()
+            };
+            let r = verify(&t, &none, None, u1, &mut |_| {});
+            assert!(matches!(r, Err(Error::Corrupt { .. })), "{pos}: {r:?}");
+        }
+        let t = d.join("short.lphy");
+        std::fs::write(&t, &orig[..HEADER_LEN + 100]).unwrap();
+        assert!(matches!(
+            verify(&t, &none, None, u, &mut |_| {}),
+            Err(Error::Corrupt { .. })
+        ));
+        // A password file refuses an identity; rekey refuses a recipient file.
+        let pw_out = d.join("pw.lphy");
+        let p = pwd("parola parola 1");
+        encrypt(
+            &Input::Path(&src),
+            &pw_out,
+            &p,
+            None,
+            &opts(false, None),
+            &mut OsEntropy,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(matches!(
+            verify(&pw_out, &p, None, u, &mut |_| {}),
+            Err(Error::IdentityNotUsed)
+        ));
+        let newc = NewCredentials {
+            pwd_nfc: &p,
+            keyfile_digest: None,
+            kdf: None,
+        };
+        assert!(
+            rekey(
+                &out,
+                &none,
+                None,
+                &newc,
+                u,
+                false,
+                &mut OsEntropy,
+                &mut |_| {}
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&out).unwrap(), orig);
+        // Too many / no recipients.
+        assert!(
+            encrypt_to_recipients(
+                &Input::Path(&src),
+                &d.join("none.lphy"),
+                &[],
+                &opts(false, None),
+                &mut OsEntropy,
+                &mut |_| {},
+            )
+            .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -2208,14 +2563,14 @@ mod tests {
         b[24..28].copy_from_slice(&1u32.to_le_bytes());
         b[12] = 1;
         let p = pwd("parola parola");
-        match unlock_header(&b, &p, None, UnlockOptions::default(), &mut |_| {}) {
+        match unlock_header(&b, &[], &p, None, UnlockOptions::default(), &mut |_| {}) {
             Err(Error::Corrupt { at, .. }) => assert_eq!(at, "başlık"),
             Err(o) => panic!("{o:?}"),
             Ok(_) => panic!("başlık kabul edildi"),
         }
         b[12] = 0;
         assert!(matches!(
-            unlock_header(&b, &p, None, UnlockOptions::default(), &mut |_| {}),
+            unlock_header(&b, &[], &p, None, UnlockOptions::default(), &mut |_| {}),
             Err(Error::KdfBudget(_))
         ));
     }

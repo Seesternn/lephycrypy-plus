@@ -89,6 +89,12 @@ impl SecretField {
         }
     }
 
+    /// Changes the field's label.
+    pub const fn set_label(&mut self, label_tr: &'static str, label_en: &'static str) {
+        self.label_tr = label_tr;
+        self.label_en = label_en;
+    }
+
     /// Boş mu.
     #[must_use]
     pub const fn is_empty(&self) -> bool {

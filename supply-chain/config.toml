@@ -326,6 +326,16 @@ criteria = "safe-to-deploy"
 version = "1.2.0"
 criteria = "safe-to-deploy"
 
+[[exemptions.curve25519-dalek]]
+version = "5.0.0"
+criteria = "safe-to-deploy"
+notes = "X25519 for recipient encryption; widely used dalek-cryptography crate, no audit imported yet"
+
+[[exemptions.curve25519-dalek-derive]]
+version = "0.1.1"
+criteria = "safe-to-deploy"
+notes = "X25519 for recipient encryption; widely used dalek-cryptography crate, no audit imported yet (proc macro, x86_64 SIMD backend)"
+
 [[exemptions.digest]]
 version = "0.11.3"
 criteria = "safe-to-deploy"
@@ -417,6 +427,11 @@ criteria = "safe-to-deploy"
 [[exemptions.fearless_simd]]
 version = "0.4.1"
 criteria = "safe-to-deploy"
+
+[[exemptions.fiat-crypto]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+notes = "X25519 for recipient encryption; widely used dalek-cryptography crate, no audit imported yet (formally verified field arithmetic, fiat backend)"
 
 [[exemptions.find-msvc-tools]]
 version = "0.1.0"

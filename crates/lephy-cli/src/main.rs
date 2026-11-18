@@ -24,7 +24,8 @@ use lephy_core::header::ContentType;
 use lephy_core::kdf::KdfParams;
 use lephy_core::names::escape_display;
 use lephy_core::ops::{
-    self, DecryptOptions, EncryptOptions, Input, NewCredentials, Output, UnlockOptions,
+    self, DecryptOptions, EncryptOptions, Identity, Input, NewCredentials, Output, PublicKey,
+    UnlockOptions,
 };
 use lephy_core::password::{self, Source};
 use lephy_sys::mem::SecretBytes;
@@ -119,10 +120,11 @@ struct UnlockArgs {
 }
 
 impl UnlockArgs {
-    const fn opts(self) -> UnlockOptions {
+    const fn opts(self) -> UnlockOptions<'static> {
         UnlockOptions {
             allow_large_kdf: self.allow_large_kdf,
             strict_memory: self.strict_memory,
+            identity: None,
         }
     }
 }
@@ -194,6 +196,10 @@ enum Command {
         kdf: KdfArgs,
         #[command(flatten)]
         pw: PasswordArgs,
+        /// Encrypt to a public key instead of a password (`lphy1…`, or a file with one key per
+        /// line). Repeat for several recipients; any one of them can decrypt.
+        #[arg(short = 'r', long = "recipient", value_name = "KEY|FILE")]
+        recipients: Vec<String>,
         /// Dosyayı arşiv yerine ham akış olarak yaz (ad gizlenmez; stdin her zaman ham).
         #[arg(long)]
         raw: bool,
@@ -239,6 +245,10 @@ enum Command {
     Decrypt {
         /// Şifreli dosya.
         input: PathBuf,
+        /// Identity file (`.lphykey`) for files encrypted to a public key; the password asked
+        /// for is the identity file's.
+        #[arg(short = 'i', long, value_name = "YOL")]
+        identity: Option<PathBuf>,
         /// Çıktı yolu (varsayılan: giriş adından `.lphy` kaldırılmış ya da `<giriş>.out`).
         #[arg(short, long, value_name = "YOL", conflicts_with = "stdout")]
         output: Option<PathBuf>,
@@ -273,6 +283,10 @@ enum Command {
     Verify {
         /// Şifreli dosya.
         input: PathBuf,
+        /// Identity file (`.lphykey`) for files encrypted to a public key; the password asked
+        /// for is the identity file's.
+        #[arg(short = 'i', long, value_name = "YOL")]
+        identity: Option<PathBuf>,
         #[command(flatten)]
         pw: PasswordArgs,
         #[command(flatten)]
@@ -319,6 +333,17 @@ enum Command {
         /// Kelime ayracı.
         #[arg(long, default_value = "-")]
         separator: char,
+    },
+    /// Creates a new identity (X25519 key pair) for recipient encryption. The secret key is
+    /// written password-protected to the given `.lphykey` file, the public key to `<name>.pub`
+    /// and to standard output. Share only the public key.
+    Keygen {
+        /// Identity file to create (never overwritten).
+        path: PathBuf,
+        #[command(flatten)]
+        kdf: KdfArgs,
+        #[command(flatten)]
+        pw: PasswordArgs,
     },
     /// Yeni bir anahtar dosyası oluşturur (rastgele bayt, 0600, üzerine yazmaz).
     KeyfileGen {
@@ -493,6 +518,8 @@ enum Remove {
 /// Toplu şifrelemede her kaynak için ortak ayarlar (parola bir kez okunur).
 struct EncryptJob<'a> {
     split: Option<u64>,
+    /// Public keys; empty = password encryption.
+    recipients: &'a [PublicKey],
     nfc: &'a SecretBytes,
     keyfile: Option<&'a [u8; 32]>,
     opts: &'a EncryptOptions,
@@ -513,15 +540,19 @@ fn encrypt_one(
     } else {
         Input::Path(input)
     };
-    let rep = ops::encrypt(
-        &inp,
-        out,
-        job.nfc,
-        job.keyfile,
-        job.opts,
-        &mut OsEntropy,
-        log,
-    )?;
+    let rep = if job.recipients.is_empty() {
+        ops::encrypt(
+            &inp,
+            out,
+            job.nfc,
+            job.keyfile,
+            job.opts,
+            &mut OsEntropy,
+            log,
+        )?
+    } else {
+        ops::encrypt_to_recipients(&inp, out, job.recipients, job.opts, &mut OsEntropy, log)?
+    };
     if rep.noclobber_fallback {
         eprintln!(
             "uyarı: dosya sistemi atomik noclobber desteklemiyor; kontrol-sonra-rename kullanıldı"
@@ -557,6 +588,7 @@ fn encrypt_one(
     let u = UnlockOptions {
         allow_large_kdf: true,
         strict_memory: job.opts.strict_memory,
+        identity: None,
     };
     ops::verify(out, job.nfc, job.keyfile, u, log)?;
     if let Some(d) = out.parent() {
@@ -673,6 +705,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             chunk_size,
             kdf,
             pw,
+            recipients,
             raw,
             pad,
             no_pad,
@@ -718,12 +751,30 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                     return Err(Error::Cancelled("güvenli silme onaylanmadı".into()));
                 }
             }
+            let pks = recipient_keys(recipients)?;
+            if !pks.is_empty() {
+                if pw.keyfile.is_some() || pw.password_file.is_some() || pw.password_stdin {
+                    return Err(Error::Environment(
+                        "--recipient replaces the password; do not combine it with password or key-file options".into(),
+                    ));
+                }
+                if remove {
+                    return Err(Error::Environment(
+                        "--delete-original/--secure-delete need a verification that only the recipient can do; delete the originals yourself".into(),
+                    ));
+                }
+            }
             let kdf = kdf.params();
-            kdf.check_encrypt_policy()?;
-            let keyfile = keyfile_of(pw.keyfile.as_ref())?;
-            let source = source_of(pw);
-            let nfc = read_password(&source, "Parola: ", true, is_stdin)?;
-            password::check_encrypt_policy(&nfc)?;
+            let (keyfile, nfc) = if pks.is_empty() {
+                kdf.check_encrypt_policy()?;
+                let keyfile = keyfile_of(pw.keyfile.as_ref())?;
+                let source = source_of(pw);
+                let nfc = read_password(&source, "Parola: ", true, is_stdin)?;
+                password::check_encrypt_policy(&nfc)?;
+                (keyfile, nfc)
+            } else {
+                (None, empty_secret()?)
+            };
             memory_warning(*strict_memory)?;
             let opts = EncryptOptions {
                 alg: match alg {
@@ -753,6 +804,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             }
             let job = EncryptJob {
                 split: *split_size,
+                recipients: &pks,
                 nfc: &nfc,
                 keyfile: keyfile.as_deref(),
                 opts: &opts,
@@ -799,6 +851,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
         }
         Command::Decrypt {
             input,
+            identity,
             output,
             stdout,
             pw,
@@ -810,10 +863,12 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             allow_cloud_dir,
             recover,
         } => {
-            let keyfile = keyfile_of(pw.keyfile.as_ref())?;
-            let source = source_of(pw);
-            let nfc = read_password(&source, "Parola: ", false, false)?;
+            let (keyfile, nfc, id) = unlock_material(input, identity.as_deref(), pw, *unlock, log)?;
             memory_warning(unlock.strict_memory)?;
+            let unlock_opts = UnlockOptions {
+                identity: id.as_ref(),
+                ..unlock.opts()
+            };
             if *recover {
                 let out = output.clone().unwrap_or_else(|| {
                     let s = input
@@ -825,7 +880,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                     input.with_file_name(format!("{base}.recovered"))
                 });
                 cloud_check(&out, *allow_cloud_dir)?;
-                let r = ops::recover(input, &out, &nfc, keyfile.as_deref(), unlock.opts(), log)?;
+                let r = ops::recover(input, &out, &nfc, keyfile.as_deref(), unlock_opts, log)?;
                 if r.repaired > 0 {
                     eprintln!("bilgi: hata düzeltme {} baytı onardı", r.repaired);
                 }
@@ -863,7 +918,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 });
             }
             let dopts = DecryptOptions {
-                unlock: unlock.opts(),
+                unlock: unlock_opts,
                 extract: ExtractOptions {
                     strict: *strict,
                     symlinks: match restore_symlinks {
@@ -924,19 +979,31 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             ));
             Ok(())
         }
-        Command::Verify { input, pw, unlock } => {
-            let keyfile = keyfile_of(pw.keyfile.as_ref())?;
-            let source = source_of(pw);
-            let nfc = read_password(&source, "Parola: ", false, false)?;
+        Command::Verify {
+            input,
+            identity,
+            pw,
+            unlock,
+        } => {
+            let (keyfile, nfc, id) = unlock_material(input, identity.as_deref(), pw, *unlock, log)?;
             memory_warning(unlock.strict_memory)?;
-            let n = ops::verify(input, &nfc, keyfile.as_deref(), unlock.opts(), log)?;
+            let u = UnlockOptions {
+                identity: id.as_ref(),
+                ..unlock.opts()
+            };
+            let n = ops::verify(input, &nfc, keyfile.as_deref(), u, log)?;
             println!("doğrulandı: {n} bayt");
             Ok(())
         }
         Command::Info { input } => {
             let h = ops::info(input)?;
             println!("dosya:        {}", disp(input));
-            println!("sürüm:        {}", lephy_core::FORMAT_VERSION);
+            let version = if h.compressed || h.recipients > 0 {
+                2
+            } else {
+                lephy_core::FORMAT_VERSION
+            };
+            println!("sürüm:        {version}");
             println!("algoritma:    {}", h.alg.name());
             println!(
                 "içerik:       {}",
@@ -947,24 +1014,34 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             );
             println!("dolgu:        {}", if h.padded { "PADMÉ" } else { "yok" });
             println!("chunk:        {} KiB", h.chunk_size() / 1024);
-            println!(
-                "kdf:          Argon2id m={} MiB t={} p={}",
-                h.kdf.memory_mib(),
-                h.kdf.t,
-                h.kdf.p
-            );
-            println!(
-                "keyfile:      {}",
-                if h.keyfile { "gerekli" } else { "yok" }
-            );
-            println!("salt:         {}", hex(&h.salt));
+            if h.compressed {
+                println!("sıkıştırma:   DEFLATE");
+            }
+            if h.recipients > 0 {
+                println!(
+                    "recipients:   {} (public key; needs --identity)",
+                    h.recipients
+                );
+            } else {
+                println!(
+                    "kdf:          Argon2id m={} MiB t={} p={}",
+                    h.kdf.memory_mib(),
+                    h.kdf.t,
+                    h.kdf.p
+                );
+                println!(
+                    "keyfile:      {}",
+                    if h.keyfile { "gerekli" } else { "yok" }
+                );
+                println!("salt:         {}", hex(&h.salt));
+                println!("commit_tag:   {}", hex(&h.commit_tag));
+            }
             println!(
                 "nonce_prefix: {}",
                 hex(&h.stream_nonce_prefix[..h.alg.prefix_len()])
             );
-            println!("commit_tag:   {}", hex(&h.commit_tag));
             let size = std::fs::metadata(input)?.len();
-            let body = size.saturating_sub(256);
+            let body = size.saturating_sub((256 + h.ext_len()) as u64);
             let cs = h.chunk_size() as u64 + 16;
             println!(
                 "boyut:        {size} bayt (~{} chunk)",
@@ -1069,6 +1146,36 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             );
             Ok(())
         }
+        Command::Keygen { path, kdf, pw } => {
+            if pw.keyfile.is_some() {
+                return Err(Error::Environment(
+                    "keygen: identity files are protected by a password only".into(),
+                ));
+            }
+            let kdf = kdf.params();
+            kdf.check_encrypt_policy()?;
+            let pub_path = path.with_extension("pub");
+            if pub_path.exists() {
+                return Err(Error::Exists(disp(&pub_path)));
+            }
+            let nfc = read_password(&source_of(pw), "Identity password: ", true, false)?;
+            password::check_encrypt_policy(&nfc)?;
+            let id = Identity::generate(&mut OsEntropy)?;
+            lephy_core::recipient::write_identity_file(path, &id, &nfc, kdf, &mut OsEntropy, log)?;
+            let pk = id.public().to_string();
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&pub_path)?;
+            std::io::Write::write_all(&mut f, format!("{pk}\n").as_bytes())?;
+            println!("{pk}");
+            eprintln!(
+                "identity: {} (keep it secret; back it up — losing it or its password makes files encrypted to this key unreadable)\npublic key: {} (share this one)",
+                disp(path),
+                disp(&pub_path)
+            );
+            Ok(())
+        }
         Command::KeyfileGen { path, size } => {
             password::generate_keyfile(path, *size)?;
             eprintln!(
@@ -1102,6 +1209,71 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             let n = lephy_core::io::cleanup(&stale)?;
             println!("{n} silindi");
             Ok(())
+        }
+    }
+}
+
+fn empty_secret() -> Result<SecretBytes> {
+    SecretBytes::with_capacity(1).map_err(|e| Error::Environment(format!("kilitli bellek: {e}")))
+}
+
+/// `-r` values: `lphy1…` keys or files with one key per line.
+fn recipient_keys(values: &[String]) -> Result<Vec<PublicKey>> {
+    let mut out = Vec::new();
+    for v in values {
+        if v.trim_start()
+            .starts_with(lephy_core::recipient::PUBLIC_PREFIX)
+        {
+            out.push(v.parse::<PublicKey>()?);
+        } else {
+            let text = std::fs::read_to_string(v)
+                .map_err(|e| Error::Environment(format!("recipient {}: {e}", escape_display(v))))?;
+            let keys = lephy_core::recipient::parse_public_keys(&text)?;
+            if keys.is_empty() {
+                return Err(Error::Environment(format!(
+                    "recipient file has no keys: {}",
+                    escape_display(v)
+                )));
+            }
+            out.extend(keys);
+        }
+    }
+    out.dedup();
+    Ok(out)
+}
+
+/// Key-file digest, password and identity for unlocking.
+type UnlockMaterial = (
+    Option<zeroize::Zeroizing<[u8; 32]>>,
+    SecretBytes,
+    Option<Identity>,
+);
+
+/// Password/key file for password files, or the opened identity for recipient files. The
+/// file's header decides, so the right question is asked.
+fn unlock_material(
+    input: &Path,
+    identity: Option<&Path>,
+    pw: &PasswordArgs,
+    unlock: UnlockArgs,
+    log: &mut dyn FnMut(&str),
+) -> Result<UnlockMaterial> {
+    let recipients = ops::info(input).map_or(0, |h| h.recipients);
+    match (recipients > 0, identity) {
+        (true, None) => Err(Error::IdentityRequired),
+        (false, Some(_)) => Err(Error::IdentityNotUsed),
+        (true, Some(path)) => {
+            if pw.keyfile.is_some() {
+                return Err(Error::KeyfileNotUsed);
+            }
+            let nfc = read_password(&source_of(pw), "Identity password: ", false, false)?;
+            let id = lephy_core::recipient::read_identity_file(path, &nfc, unlock.opts(), log)?;
+            Ok((None, empty_secret()?, Some(id)))
+        }
+        (false, None) => {
+            let keyfile = keyfile_of(pw.keyfile.as_ref())?;
+            let nfc = read_password(&source_of(pw), "Parola: ", false, false)?;
+            Ok((keyfile, nfc, None))
         }
     }
 }

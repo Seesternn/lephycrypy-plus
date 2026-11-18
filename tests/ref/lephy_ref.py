@@ -24,12 +24,15 @@ import blake3
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 MAGIC = b"LPHY+\0"
 VERSION = 1
 VERSION_2 = 2
 FEATURE_COMPRESSED = 0x01
+FEATURE_RECIPIENTS = 0x02
+INFO_X25519 = b"lphy+/v2/x25519"
 INFO_KEK = b"lphy+/v1/kek"
 INFO_WRAP = b"lphy+/v1/wrap"
 INFO_COMMIT = b"lphy+/v1/commit"
@@ -178,6 +181,42 @@ def build_header(alg, content_type, padded, chunk_code, m_kib, t, p, pwd_nfc, ke
     return bytes(h), keys
 
 
+def x25519_public(secret: bytes) -> bytes:
+    return X25519PrivateKey.from_private_bytes(secret).public_key().public_bytes_raw()
+
+
+def build_recipient_header(alg, content_type, padded, chunk_code, prefix, fk, stanzas_in,
+                           compressed=False) -> tuple[bytes, bytes, dict]:
+    """FORMAT.md › Recipients. stanzas_in: [(recipient_pk, eph_secret, wrap_nonce)]."""
+    prefix24 = prefix[: prefix_len(alg)].ljust(24, b"\0")
+    h = bytearray(256)
+    h[0:6] = MAGIC
+    h[6:8] = struct.pack("<H", VERSION_2)
+    h[8] = alg
+    h[9] = content_type
+    h[10] = 1 if padded else 0
+    h[11] = chunk_code
+    h[12] = FEATURE_RECIPIENTS | (FEATURE_COMPRESSED if compressed else 0)
+    h[13] = 0  # no password slot
+    h[28:30] = struct.pack("<H", len(stanzas_in))
+    h[64:88] = prefix24
+    ext = bytearray()
+    for pk, e, wn in stanzas_in:
+        eph = x25519_public(e)
+        ss = X25519PrivateKey.from_private_bytes(e).exchange(X25519PublicKey.from_public_bytes(pk))
+        assert ss != bytes(32)
+        kek = hkdf32(ss, eph + pk, INFO_X25519)
+        wrap_key = hkdf32(kek, eph, INFO_WRAP)
+        commit = hkdf32(kek, eph, INFO_COMMIT)
+        wn24 = wn[: nonce_len(alg)].ljust(24, b"\0")
+        wrapped = seal(alg, wrap_key, wn24[: nonce_len(alg)], bytes(h[0:144]) + eph, fk)
+        ext += eph + wn24 + commit + wrapped
+    data_key = hkdf32(fk, prefix24, INFO_DATA)
+    mac_key = hkdf32(fk, prefix24, INFO_HMAC)
+    h[224:256] = blake3.blake3(bytes(h[0:224]) + bytes(ext), key=mac_key).digest()
+    return bytes(h), bytes(ext), {"data_key": data_key}
+
+
 def chunk_aad(header: bytes) -> bytes:
     return blake3.blake3(header[0:13] + header[64:88]).digest()
 
@@ -295,6 +334,9 @@ def selftest():
     ct = xchacha_seal(k, n, aad, pt)
     assert ct[-16:].hex() == "c0875924c1c7987947deafd8780acf49", ct[-16:].hex()
     assert ct[:32].hex() == "bd6d179d3e83d43b9576579493c0e939572a1700252bfaccbed2902c21396cbb"
+    # RFC 7748 §6.1 X25519
+    a = bytes.fromhex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")
+    assert x25519_public(a).hex() == "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"
     # RFC 9106 §5.3 (secret/ad'li; sadece kütüphane doğrulaması)
     from argon2.low_level import hash_secret_raw as hsr  # noqa
     print("selftest ok")
@@ -348,6 +390,22 @@ def vectors(outdir: str):
     with open(os.path.join(outdir, "v13.lphy"), "wb") as f:
         f.write(blob)
     meta["v13"] = {"alg": 2, "chunk_code": 0, "content_type": 1, "padded": False, "compressed": True}
+    # 14: v2, recipients (X25519), two stanzas, raw stream, no padding
+    sk1 = bytes(range(0x80, 0xA0))
+    sk2 = bytes(range(0xA0, 0xC0))
+    e1 = bytes(range(0xC0, 0xE0))
+    e2 = bytes(range(0xE0, 0x100))
+    wrap2 = bytes(range(0x58, 0x70))
+    pt14 = b"to a public key"
+    h14, ext14, k14 = build_recipient_header(
+        1, 0, False, 0, PREFIX, FK,
+        [(x25519_public(sk1), e1, WRAP), (x25519_public(sk2), e2, wrap2)])
+    body = encrypt_stream(1, k14["data_key"], h14[64:88], chunk_aad(h14), CHUNK_SIZES[0], pt14)
+    with open(os.path.join(outdir, "v14.lphy"), "wb") as f:
+        f.write(h14 + ext14 + body)
+    meta["v14"] = {"alg": 1, "chunk_code": 0, "content_type": 0, "padded": False,
+                   "recipients": [x25519_public(sk1).hex(), x25519_public(sk2).hex()],
+                   "identities": [sk1.hex(), sk2.hex()], "plaintext": pt14.decode()}
     # 7/8/11: KEK eşitliği
     nfd = "ş ğ İ é".encode("utf-8")
     nfc = "ş ğ İ é".encode("utf-8")

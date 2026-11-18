@@ -90,6 +90,7 @@ deny = [
 # çeker). Yukarı akış güncellendiğinde kaldırılır; yeni çift sürüm yine "deny" ile yakalanır.
 skip = [
     { crate = "io-lifetimes@2.0.4", reason = "fs-set-times 0.20 eski io-lifetimes'e bağlı (cap-std 4)" },
+    { crate = "syn@2.0.119", reason = "curve25519-dalek-derive (proc macro, x86_64 SIMD backend only) has not moved to syn 3" },
 ]
 skip-tree = [
     { crate = "windows-sys@0.59.0", reason = "winx/fs-set-times (cap-std 4); alt ağaç windows-targets 0.52" },

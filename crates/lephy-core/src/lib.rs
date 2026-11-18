@@ -17,6 +17,7 @@ pub mod pad;
 pub mod passphrase;
 pub mod password;
 pub mod pipeline;
+pub mod recipient;
 pub mod rs;
 pub mod split;
 pub mod stream;

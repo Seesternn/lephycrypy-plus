@@ -29,6 +29,8 @@ const V9: &[u8] = include_bytes!("../../../tests/kat/vectors/v9.lphy");
 /// karşılaştırılır.
 const V12: &[u8] = include_bytes!("../../../tests/kat/vectors/v12.lphy");
 const V13: &[u8] = include_bytes!("../../../tests/kat/vectors/v13.lphy");
+/// v2 recipient vector (X25519, two stanzas): byte-identical in both directions.
+const V14: &[u8] = include_bytes!("../../../tests/kat/vectors/v14.lphy");
 const META: &str = include_str!("../../../tests/kat/vectors/vectors.json");
 
 fn common_kdf() -> KdfParams {
@@ -300,5 +302,65 @@ fn v2_compressed_vectors_from_reference_decrypt() {
     )
     .unwrap();
     assert_eq!(std::fs::read(d.join("v13.out")).unwrap(), b"hi");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn v14_recipients_match_reference_both_ways() {
+    use lephy_core::ops::{Identity, PublicKey, UnlockOptions};
+    let d = std::env::temp_dir().join(format!("lphy-v14-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let range = |a: u16, b: u16| -> Vec<u8> { (a..b).map(|x| x as u8).collect() };
+    let (sk1, sk2) = (range(0x80, 0xA0), range(0xA0, 0xC0));
+    let ids: Vec<Identity> = [&sk1, &sk2]
+        .iter()
+        .map(|s| Identity::from_secret(SecretBytes::from_slice(s).unwrap()).unwrap())
+        .collect();
+    let pks: Vec<PublicKey> = ids.iter().map(Identity::public).collect();
+    // Rust → same bytes as the reference (entropy order: prefix, FK, then e and wrap_nonce
+    // per recipient).
+    let src = d.join("pt");
+    std::fs::write(&src, b"to a public key").unwrap();
+    let mut e = FixedEntropy::new(vec![
+        range(0x20, 0x20 + 19),
+        range(0x60, 0x80),
+        range(0xC0, 0xE0),
+        range(0x40, 0x58),
+        range(0xE0, 0x100),
+        range(0x58, 0x70),
+    ]);
+    let out = d.join("v14.lphy");
+    ops::encrypt_to_recipients(
+        &Input::Path(&src),
+        &out,
+        &pks,
+        &opts(AlgId::XChaCha20Poly1305, 0, true, Some(false)),
+        &mut e,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), V14);
+    // Reference → Rust: each identity opens it.
+    std::fs::write(d.join("ref.lphy"), V14).unwrap();
+    for (i, id) in ids.iter().enumerate() {
+        let target = d.join(format!("out{i}"));
+        ops::decrypt(
+            &d.join("ref.lphy"),
+            &ops::Output::Path(&target, false),
+            &pwd(""),
+            None,
+            DecryptOptions {
+                unlock: UnlockOptions {
+                    identity: Some(id),
+                    ..UnlockOptions::default()
+                },
+                ..DecryptOptions::default()
+            },
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"to a public key");
+    }
     let _ = std::fs::remove_dir_all(&d);
 }

@@ -47,11 +47,20 @@ Fixes from the November 2026 internal review (not an independent audit):
   whose time range is narrower; the time is simply not applied.
 
 ### Changed
+- New dependency for recipient encryption: `curve25519-dalek` 5.0 (pure Rust, BSD-3-Clause), with
+  `fiat-crypto` and `curve25519-dalek-derive`. All three are `cargo vet` exemptions until audits
+  can be imported; `syn` 2 is allowed next to `syn` 3 because of the derive crate.
 - Supply chain: audits imported from more sources (ISRG, Zcash, Embark, Ariel OS); unnecessary
   `cargo-vet` exemptions pruned (339 to 326); CI fails a pull request that exempts a new crate.
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Encryption to public keys (X25519), for one or more recipients
+  (`lephycrypy keygen`, `encrypt --recipient`, `decrypt/verify --identity`; "With public keys" and
+  "Create my own key pair" in the app). Only the holders of the matching identity files can open
+  the file; no shared password is needed. Identities are stored password-protected (`.lphykey`),
+  public keys are short `lphy1…` strings with a checksum. Format version 2, documented in
+  `docs/FORMAT.md`; vector 14 from the Python reference is reproduced byte for byte.
 - Optional error correction (`--error-correction`, and an option in the app). The encrypted file
   is wrapped in a Reed–Solomon RS(255,239) envelope with byte interleaving (about 6.7 % larger):
   any burst of up to 1 KiB per 30 KiB block is repaired on decryption. The inner `.lphy` file is

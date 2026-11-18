@@ -125,6 +125,17 @@ xattr, ACL, resource fork, sahiplik, sert bağlar (kopya), FIFO/soket/aygıt des
 bağlar çıkarmadan sonra başka programlar için kök dışını gösterebilir (uyarı); Windows'ta
 ayrıcalık/Developer Mode yoksa kurulamaz, ağaç eksik kalır.
 
+## Recipient (public-key) encryption
+A file encrypted to public keys can be opened by the holder of any listed identity; there is no
+password to guess, but the identity file is only as strong as its own password. Encryption is
+anonymous to an observer: recipients' public keys are not stored, though the number of
+recipients is visible in the header. The sender is not authenticated — anyone who knows a
+recipient's public key can create a file for them, so a valid file proves nothing about who made
+it. A recipient who can open the file can also learn the file key and could re-encrypt different
+content for the other recipients. `rekey`/`reencrypt` do not apply to these files. There is no
+post-quantum protection: a future quantum computer that records the file could recover the file
+key from the stanzas.
+
 ## Error correction and recovery
 The Reed–Solomon envelope protects against accidental damage only; it adds no secrecy or
 authenticity. An attacker can rewrite it at will, and every repaired byte is still checked by

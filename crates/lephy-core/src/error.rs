@@ -55,6 +55,15 @@ pub enum Error {
     /// Dosya anahtar dosyası kullanmıyor ama verildi (kod 3, KDF çalışmadan).
     #[error("Bu dosya anahtar dosyası kullanmıyor")]
     KeyfileNotUsed,
+    /// The file is encrypted to public keys and no identity was given (code 3).
+    #[error("Bu dosya bir açık anahtara şifrelenmiş; kimlik dosyası gerekiyor (--identity)")]
+    IdentityRequired,
+    /// The file uses a password; an identity was given (code 3).
+    #[error("Bu dosya parolayla şifrelenmiş; kimlik dosyası kullanılmaz")]
+    IdentityNotUsed,
+    /// No recipient stanza is for the given identity (code 3).
+    #[error("Bu dosya bu kimlik için şifrelenmemiş")]
+    NoMatchingIdentity,
     /// Dosya bozuk (kod 4). `at` = "başlık" ya da `chunk N`.
     #[error("Dosya bozuk ({at})")]
     Corrupt {
@@ -86,9 +95,12 @@ impl Error {
     pub const fn exit_code(&self) -> ExitCode {
         match self {
             Error::Io(_) | Error::Environment(_) => ExitCode::Io,
-            Error::WrongPassword | Error::KeyfileRequired | Error::KeyfileNotUsed => {
-                ExitCode::WrongPassword
-            }
+            Error::WrongPassword
+            | Error::KeyfileRequired
+            | Error::KeyfileNotUsed
+            | Error::IdentityRequired
+            | Error::IdentityNotUsed
+            | Error::NoMatchingIdentity => ExitCode::WrongPassword,
             Error::Corrupt { .. } => ExitCode::Corrupt,
             Error::Cancelled(_) => ExitCode::Cancelled,
             Error::KdfBudget(_) => ExitCode::KdfBudget,

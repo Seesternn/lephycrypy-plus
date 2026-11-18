@@ -20,6 +20,16 @@ pub const VERSION: u16 = 1;
 pub const VERSION_2: u16 = 2;
 /// `feature_flags.bit0`: içerik şifrelemeden önce ham DEFLATE ile sıkıştırıldı.
 pub const FEATURE_COMPRESSED: u8 = 0x01;
+/// `feature_flags.bit1`: the file key is wrapped for X25519 recipients (no password slot).
+/// `kdf_id = 0`, the password fields are zero and `header[28..30]` holds the recipient count;
+/// the recipient stanzas follow the header (`recipient.rs`).
+pub const FEATURE_RECIPIENTS: u8 = 0x02;
+/// Known v2 feature bits.
+const KNOWN_FEATURES: u8 = FEATURE_COMPRESSED | FEATURE_RECIPIENTS;
+/// Most recipients one file can have.
+pub const MAX_RECIPIENTS: u16 = 64;
+/// One recipient stanza: `eph_pk 32 ‖ wrap_nonce 24 ‖ commit 32 ‖ wrapped_fk 48`.
+pub const STANZA_LEN: usize = 136;
 /// `wrapped_fk` AAD aralığı.
 pub const WRAP_AAD_END: usize = 144;
 /// `header_mac` girdisi aralığı.
@@ -53,6 +63,8 @@ pub struct Header {
     pub keyfile: bool,
     /// İçerik sıkıştırılmış mı (v2 `feature_flags.bit0`).
     pub compressed: bool,
+    /// Recipient count (v2 `feature_flags.bit1`); 0 = password file.
+    pub recipients: u16,
     /// Argon2 salt.
     pub salt: [u8; 32],
     /// STREAM nonce prefix'i (24 B'ın tamamı; AES'te kuyruk sıfır).
@@ -99,35 +111,57 @@ impl Header {
     pub fn to_bytes(&self) -> [u8; HEADER_LEN] {
         let mut b = [0u8; HEADER_LEN];
         b[0..6].copy_from_slice(&MAGIC);
-        let version = if self.compressed { VERSION_2 } else { VERSION };
+        let features = self.features();
+        let version = if features != 0 { VERSION_2 } else { VERSION };
         b[6..8].copy_from_slice(&version.to_le_bytes());
-        if self.compressed {
-            b[12] = FEATURE_COMPRESSED;
-        }
+        b[12] = features;
         b[8] = self.alg as u8;
         b[9] = self.content_type as u8;
         b[10] = u8::from(self.padded);
         b[11] = self.chunk_code;
-        b[13] = 1; // kdf_id Argon2id
-        b[14] = u8::from(self.keyfile);
-        b[16..20].copy_from_slice(&self.kdf.m_kib.to_le_bytes());
-        b[20..24].copy_from_slice(&self.kdf.t.to_le_bytes());
-        b[24..28].copy_from_slice(&self.kdf.p.to_le_bytes());
-        b[32..64].copy_from_slice(&self.salt);
         let pl = self.alg.prefix_len();
         b[64..64 + pl].copy_from_slice(&self.stream_nonce_prefix[..pl]);
-        let nl = self.alg.nonce_len();
-        b[88..88 + nl].copy_from_slice(&self.wrap_nonce[..nl]);
-        b[112..144].copy_from_slice(&self.commit_tag);
-        b[144..192].copy_from_slice(&self.wrapped_fk);
+        if self.recipients > 0 {
+            // kdf_id 0: no password slot; the password fields stay zero.
+            b[28..30].copy_from_slice(&self.recipients.to_le_bytes());
+        } else {
+            b[13] = 1; // kdf_id Argon2id
+            b[14] = u8::from(self.keyfile);
+            b[16..20].copy_from_slice(&self.kdf.m_kib.to_le_bytes());
+            b[20..24].copy_from_slice(&self.kdf.t.to_le_bytes());
+            b[24..28].copy_from_slice(&self.kdf.p.to_le_bytes());
+            b[32..64].copy_from_slice(&self.salt);
+            let nl = self.alg.nonce_len();
+            b[88..88 + nl].copy_from_slice(&self.wrap_nonce[..nl]);
+            b[112..144].copy_from_slice(&self.commit_tag);
+            b[144..192].copy_from_slice(&self.wrapped_fk);
+        }
         b[224..256].copy_from_slice(&self.header_mac);
         b
+    }
+
+    fn features(&self) -> u8 {
+        let mut f = 0;
+        if self.compressed {
+            f |= FEATURE_COMPRESSED;
+        }
+        if self.recipients > 0 {
+            f |= FEATURE_RECIPIENTS;
+        }
+        f
+    }
+
+    /// Length of the recipient stanzas that follow the header (0 for password files).
+    #[must_use]
+    pub fn ext_len(&self) -> usize {
+        usize::from(self.recipients) * STANZA_LEN
     }
 
     /// Ayrıştırır ve biçim denetimlerini yapar (FORMAT.md › Çözme sırası, adım 1).
     ///
     /// # Errors
     /// Her ihlal `Error::Corrupt { at: "başlık" }` (kod 4); ayrıntı yalnızca `--verbose`.
+    #[allow(clippy::too_many_lines)] // the checks are read top to bottom in FORMAT.md order
     pub fn parse(b: &[u8; HEADER_LEN]) -> Result<Self> {
         if b[0..6] != MAGIC {
             return Err(corrupt("magic"));
@@ -141,7 +175,7 @@ impl Header {
                 0
             }
             VERSION_2 => {
-                if b[12] & !FEATURE_COMPRESSED != 0 {
+                if b[12] & !KNOWN_FEATURES != 0 {
                     return Err(corrupt("bilinmeyen feature_flags biti"));
                 }
                 if b[12] == 0 {
@@ -168,22 +202,47 @@ impl Header {
         if b[15] != 0 {
             return Err(corrupt("reserved bayt ≠ 0"));
         }
-        if b[13] != 1 {
-            return Err(corrupt("kdf_id"));
+        if b[192..224].iter().any(|&x| x != 0) {
+            return Err(corrupt("reserved alan ≠ 0"));
         }
+        let recipients = if features & FEATURE_RECIPIENTS != 0 {
+            // No password slot: kdf_id 0 and every password field zero.
+            if b[13] != 0 {
+                return Err(corrupt("kdf_id"));
+            }
+            if b[14] != 0
+                || b[16..28].iter().any(|&x| x != 0)
+                || b[30..64].iter().any(|&x| x != 0)
+                || b[88..192].iter().any(|&x| x != 0)
+            {
+                return Err(corrupt("recipient file has password fields"));
+            }
+            let n = u16::from_le_bytes([b[28], b[29]]);
+            if n == 0 || n > MAX_RECIPIENTS {
+                return Err(corrupt("recipient count"));
+            }
+            n
+        } else {
+            if b[13] != 1 {
+                return Err(corrupt("kdf_id"));
+            }
+            if b[28..32].iter().any(|&x| x != 0) {
+                return Err(corrupt("reserved alan ≠ 0"));
+            }
+            0
+        };
         if b[14] & 0xFE != 0 {
             return Err(corrupt("kdf_flags rezerve bit"));
         }
         let keyfile = b[14] & 1 == 1;
-        if b[28..32].iter().any(|&x| x != 0) || b[192..224].iter().any(|&x| x != 0) {
-            return Err(corrupt("reserved alan ≠ 0"));
-        }
         let kdf = KdfParams {
             m_kib: u32::from_le_bytes([b[16], b[17], b[18], b[19]]),
             t: u32::from_le_bytes([b[20], b[21], b[22], b[23]]),
             p: u32::from_le_bytes([b[24], b[25], b[26], b[27]]),
         };
-        kdf.check_format_limits()?;
+        if recipients == 0 {
+            kdf.check_format_limits()?;
+        }
         let mut salt = [0u8; 32];
         salt.copy_from_slice(&b[32..64]);
         let mut stream_nonce_prefix = [0u8; 24];
@@ -212,6 +271,7 @@ impl Header {
             kdf,
             keyfile,
             compressed: features & FEATURE_COMPRESSED != 0,
+            recipients,
             salt,
             stream_nonce_prefix,
             wrap_nonce,
@@ -268,6 +328,7 @@ mod tests {
             },
             keyfile: false,
             compressed: false,
+            recipients: 0,
             salt: [1; 32],
             stream_nonce_prefix: {
                 let mut p = [0u8; 24];
@@ -330,6 +391,37 @@ mod tests {
         let mut b = h.to_bytes();
         b[7] = 9;
         expect_corrupt(b, "sürüm");
+    }
+
+    #[test]
+    fn recipient_header_has_no_password_fields() {
+        let mut h = sample();
+        h.recipients = 3;
+        let b = h.to_bytes();
+        assert_eq!(u16::from_le_bytes([b[6], b[7]]), VERSION_2);
+        assert_eq!(b[12], FEATURE_RECIPIENTS);
+        assert_eq!(b[13], 0);
+        assert!(b[16..28].iter().all(|&x| x == 0));
+        assert!(b[88..192].iter().all(|&x| x == 0));
+        let p = Header::parse(&b).unwrap();
+        assert_eq!(p.recipients, 3);
+        assert_eq!(p.ext_len(), 3 * STANZA_LEN);
+        let mut bad = b;
+        bad[40] = 1; // salt in a recipient file
+        expect_corrupt(bad, "password fields");
+        let mut bad = b;
+        bad[28..30].copy_from_slice(&0u16.to_le_bytes());
+        expect_corrupt(bad, "recipient count");
+        let mut bad = b;
+        bad[28..30].copy_from_slice(&(MAX_RECIPIENTS + 1).to_le_bytes());
+        expect_corrupt(bad, "recipient count");
+        let mut bad = b;
+        bad[13] = 1;
+        expect_corrupt(bad, "kdf_id");
+        // A password file must not carry a recipient count.
+        let mut pw = sample().to_bytes();
+        pw[28] = 1;
+        expect_corrupt(pw, "reserved");
     }
 
     #[test]
