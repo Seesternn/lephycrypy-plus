@@ -472,6 +472,37 @@ mod imp {
 }
 
 // ---------------------------------------------------------------------------------------------
+// App settings folder
+// ---------------------------------------------------------------------------------------------
+
+/// Folder for the desktop app's few settings: macOS `~/Library/Application Support/lephycrypy+`,
+/// Windows `%APPDATA%\lephycrypy+`, elsewhere `$XDG_CONFIG_HOME/lephycrypy+` or
+/// `~/.config/lephycrypy+`. Not created here. `None` if the base folder is unknown.
+#[must_use]
+#[allow(clippy::disallowed_methods)] // only HOME/APPDATA/XDG_CONFIG_HOME are read; not secrets
+pub fn app_settings_dir() -> Option<std::path::PathBuf> {
+    let abs = |v: std::ffi::OsString| {
+        let p = std::path::PathBuf::from(v);
+        p.is_absolute().then_some(p)
+    };
+    #[cfg(target_os = "macos")]
+    let base = std::env::var_os("HOME")
+        .and_then(abs)
+        .map(|h| h.join("Library").join("Application Support"));
+    #[cfg(windows)]
+    let base = std::env::var_os("APPDATA").and_then(abs);
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .and_then(abs)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .and_then(abs)
+                .map(|h| h.join(".config"))
+        });
+    base.map(|b| b.join("lephycrypy+"))
+}
+
+// ---------------------------------------------------------------------------------------------
 // Cloud-sync roots — heuristic list, in one place
 // ---------------------------------------------------------------------------------------------
 

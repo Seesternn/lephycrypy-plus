@@ -1,6 +1,6 @@
 //! UI language (Turkish / English). Every text is written in both languages with `tr("…", "…")`;
 //! both arguments are required, so a missing translation does not compile. The language is detected
-//! from the system and can be changed in the UI (not persisted: the app stores no settings).
+//! from the system; a choice made in the app is saved (`settings.rs`).
 
 use std::sync::atomic::{AtomicU8, Ordering};
 

@@ -81,6 +81,14 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Desktop app start screen: a welcome on first launch, then cards for Encrypt, Decrypt, My keys
+  and Settings. "My keys" creates key pairs, shows an identity's public, signer and post-quantum
+  keys with copy links, and its paper backup. Settings are laid out in sections.
+- Optional app lock (off by default): a password asked at every start; only its Argon2id verifier
+  is saved. The app now saves a small settings file (language, welcome seen, lock verifier).
+- Closing the window no longer stops a job: on macOS the app hides and the Dock icon brings it
+  back; Cmd+Q / Dock → Quit asks first while a job runs. On Windows closing while a job runs
+  minimises the window.
 - Post-quantum hybrid recipients (ML-KEM-768 + X25519): `encrypt --pq`, "Post-quantum" in the
   app. Breaking a file needs breaking both. The ML-KEM key is derived from the identity, so
   existing identities and paper backups cover it; `keygen` writes the `lphypq1…` key as the third

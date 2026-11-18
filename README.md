@@ -179,9 +179,12 @@ NTFS resident files and wear levelling mean physical erasure is not guaranteed.
 
 ## Desktop app
 
-`lephycrypy-gui` (macOS and Windows) is a single, simple window:
+`lephycrypy-gui` (macOS and Windows) is a single, simple window. The first launch shows a short
+welcome; after that the start screen has four cards — **Encrypt**, **Decrypt**, **My keys**
+(create a key pair, show the public keys of an identity, take its paper backup) and **Settings** —
+and a drop area.
 
-1. Drop files or folders on the window, or use **Choose file** / **Choose folder**. `.lphy` files
+1. Drop files or folders on the window, or use the **Encrypt** / **Decrypt** cards. `.lphy` files
    are opened; everything else is encrypted.
 2. Choose **With a password** or **With public keys**. A password is asked twice and must be at
    least 8 characters; a strength estimate and a passphrase generator help. With public keys,
@@ -190,17 +193,29 @@ NTFS resident files and wear levelling mean physical erasure is not guaranteed.
 4. When it is done, **Show in folder** opens the result in Finder or Explorer.
 
 On macOS, double-clicking a `.lphy` file opens it in the app, and any file or folder can be
-opened with **Open With → lephycrypy+**. The gear button on the start screen opens **Settings**:
+opened with **Open With → lephycrypy+**.
 
-- **Language:** English or Turkish. The system language is used at start; the choice is not saved
-  (the app stores no settings).
+Closing the window does not stop a running job: on macOS the close button hides the app and the
+Dock icon brings it back; the app quits only with Cmd+Q or Dock → Quit, which asks first while a
+job runs (the job is then cancelled and the partial file deleted). On Windows, closing while a job
+runs minimises the window.
+
+**Settings:**
+
+- **Language:** English or Turkish (the system language until you choose).
+- **App lock** (off by default): when you turn it on, the app asks for a password every time it
+  starts. It only keeps others from using the app; encrypted files are protected by their own
+  passwords and keys. Forgetting it is not fatal: delete the settings file to remove the lock.
 - **Finder Quick Action** (macOS, app bundle only): adds "Encrypt or open with lephycrypy+" under
   **Quick Actions** in Finder's right-click menu. It is a small workflow in
   `~/Library/Services` for the current user that only opens the selected items in the app.
 - **Explorer integration** (Windows): for the current user only, `.lphy` files open with a
   double-click and every file and folder gets a right-click entry.
 
-Both integrations are added and removed only after confirmation.
+Both integrations are added and removed only after confirmation. The app saves only the language,
+whether the welcome screen was seen and, if the lock is on, its verifier (Argon2id) — in
+`~/Library/Application Support/lephycrypy+/settings` (Windows: `%APPDATA%\lephycrypy+`); no file
+names or passwords.
 Shortcut: Cmd+O (Ctrl+O on Windows) opens the file picker.
 
 The password field is masked, copy and paste are disabled and the text is kept in locked memory.

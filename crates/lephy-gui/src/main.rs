@@ -26,6 +26,8 @@ mod logic;
 #[cfg(any(target_os = "macos", windows))]
 mod secret_field;
 #[cfg(any(target_os = "macos", windows))]
+mod settings;
+#[cfg(any(target_os = "macos", windows))]
 mod theme;
 
 use std::process::ExitCode;
@@ -118,6 +120,12 @@ fn run(options: eframe::NativeOptions, font: fonts::SystemFonts) -> Result<(), S
         && !lephy_sys::open_docs::install_macos_handler("WinitApplicationDelegate")
     {
         eprintln!("warning: opening files from Finder could not be set up");
+    }
+    // Quitting while a job runs asks first (the close button only hides the app).
+    if cfg!(target_os = "macos")
+        && !lephy_sys::lifecycle::install_macos_quit_guard("WinitApplicationDelegate")
+    {
+        eprintln!("warning: quitting during a job could not be guarded");
     }
     lephy_sys::open_docs::push(open_args());
     let mut app = eframe::create_native(

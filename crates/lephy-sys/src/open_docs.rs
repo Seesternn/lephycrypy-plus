@@ -22,6 +22,14 @@ pub fn set_waker(f: impl Fn() + Send + Sync + 'static) {
     let _ = WAKER.set(Box::new(f));
 }
 
+/// Wakes the app (repaints the window) if a waker is set.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(crate) fn wake() {
+    if let Some(w) = WAKER.get() {
+        w();
+    }
+}
+
 /// Adds paths to the queue and wakes the app.
 pub fn push(paths: Vec<PathBuf>) {
     if paths.is_empty() {

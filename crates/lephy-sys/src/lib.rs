@@ -16,6 +16,7 @@
 pub mod alloc;
 pub mod fdio;
 pub mod fs;
+pub mod lifecycle;
 pub mod locale;
 pub mod mem;
 pub mod open_docs;

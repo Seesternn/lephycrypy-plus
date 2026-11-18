@@ -153,7 +153,11 @@ Ayrıntılar İngilizce README'dedir.
 
 ## Masaüstü uygulaması
 
-1. Dosya ya da klasörleri pencereye bırakın veya **Dosya seç** / **Klasör seç** ile seçin.
+İlk açılışta kısa bir karşılama ekranı çıkar. Sonrasında açılış ekranında dört kart vardır:
+**Şifrele**, **Şifreyi çöz**, **Anahtarlarım** (anahtar çifti oluşturma, bir kimliğin açık
+anahtarlarını gösterme, kâğıt yedeği) ve **Ayarlar**. Altında bir bırakma alanı bulunur.
+
+1. Dosya ya da klasörleri pencereye bırakın veya **Şifrele** / **Şifreyi çöz** kartlarını kullanın.
    `.lphy` dosyaları açılır, diğer her şey şifrelenir.
 2. **Parolayla** ya da **Açık anahtarla** seçin. Parola iki kez istenir ve en az 8 karakter
    olmalıdır; güç tahmini ve parola üretici yardımcı olur. Açık anahtarla şifrelerken alıcıların
@@ -162,16 +166,29 @@ Ayrıntılar İngilizce README'dedir.
 4. İş bitince **Klasörde göster** sonucu Finder'da ya da Gezgin'de açar.
 
 macOS'ta `.lphy` dosyasına çift tıklamak onu uygulamada açar; her dosya ya da klasör **Birlikte
-Aç → lephycrypy+** ile açılabilir. Açılış ekranındaki dişli düğmesi **Ayarlar**'ı açar:
+Aç → lephycrypy+** ile açılabilir.
 
-- **Dil:** Türkçe ya da İngilizce. Başlangıçta sistem dili kullanılır; seçim kaydedilmez.
+Pencereyi kapatmak süren bir işi durdurmaz. macOS'ta kırmızı düğme uygulamayı gizler, Dock
+simgesi geri getirir. Uygulama yalnızca Cmd+Q ya da Dock → Çık ile kapanır; iş sürüyorsa önce
+sorar (iş iptal edilir, yarım dosya silinir). Windows'ta iş sürerken kapatmak pencereyi simge
+durumuna küçültür.
+
+**Ayarlar:**
+
+- **Dil:** Türkçe ya da İngilizce (seçene kadar sistem dili).
+- **Uygulama kilidi** (varsayılan kapalı): açarsanız uygulama her başlatıldığında parola ister.
+  Yalnızca başkalarının uygulamayı kullanmasını engeller; şifreli dosyalar kendi parolaları ve
+  anahtarlarıyla korunur. Parolayı unutursanız ayar dosyasını silerek kilidi kaldırabilirsiniz.
 - **Finder Hızlı İşlemi** (macOS, yalnızca .app paketi): Finder'da sağ tık → **Hızlı İşlemler**
   altına "lephycrypy+ ile şifrele / aç" ekler. `~/Library/Services` içinde yalnızca geçerli
   kullanıcı için küçük bir iş akışıdır; seçilen öğeleri yalnızca uygulamada açar.
 - **Gezgin entegrasyonu** (Windows): yalnızca geçerli kullanıcı için `.lphy` çift tıklamayla açılır,
   her dosya ve klasöre sağ tık girişi eklenir.
 
-İki entegrasyon da yalnızca onaydan sonra eklenir ve kaldırılır.
+İki entegrasyon da yalnızca onaydan sonra eklenir ve kaldırılır. Uygulama yalnızca dili,
+karşılama ekranının görüldüğünü ve kilit açıksa doğrulayıcısını (Argon2id) kaydeder:
+`~/Library/Application Support/lephycrypy+/settings` (Windows: `%APPDATA%\lephycrypy+`). Dosya
+adı ya da parola kaydedilmez.
 
 Şifreli bir arşivde **İçeriği listele**, hiçbir şey yazmadan içinde ne olduğunu gösterir; yalnızca
 işaretlediğiniz öğeler çıkarılır.

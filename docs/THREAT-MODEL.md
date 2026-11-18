@@ -199,6 +199,20 @@ The compressed size reveals information about the content, especially when an at
 part of the input (CRIME/BREACH style). PADMÉ reduces but does not remove this. Compression is
 off by default.
 
+## App settings and app lock
+
+The desktop app saves a small settings file (`~/Library/Application Support/lephycrypy+/settings`,
+mode `0600`; Windows `%APPDATA%\lephycrypy+`): the language, whether the welcome screen was seen
+and, only if the user turns the lock on, `salt ‖ HKDF(Argon2id(password, salt, 64 MiB, t = 3))`.
+No file names, paths or passwords are written. The app lock is a convenience against casual use
+of an unlocked computer, not protection for data: anyone who can write the settings file can
+remove it, and the encrypted files never depend on it. An attacker with the file can try to guess
+the lock password offline at the Argon2id cost; use a password that is not used elsewhere.
+
+Closing the window hides the app (macOS) or minimises it while a job runs (Windows); a job keeps
+running. Quitting with Cmd+Q or Dock → Quit asks first while a job runs and then cancels it, so
+the partial output is deleted as with Cancel.
+
 ## Not implemented: Touch ID / Windows Hello unlock
 
 Unlocking an identity with Touch ID or Windows Hello was evaluated (November 2026) and left out,

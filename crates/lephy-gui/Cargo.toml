@@ -20,6 +20,7 @@ fault-injection = ["lephy-core/fault-injection"]
 lephy-core = { workspace = true }
 lephy-sys = { workspace = true }
 zeroize = { workspace = true }
+subtle = { workspace = true }
 
 # persistence off, clipboard off, embedded fonts (default_fonts:
 # Ubuntu/UFL + emoji/OFL) off — a system font is loaded at run time. glow (OpenGL):

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{
     self, Align, Color32, CornerRadius, CursorIcon, Layout, Pos2, Rect, Response, RichText, Sense,
-    Stroke, StrokeKind, Ui, UiBuilder, WidgetInfo, pos2, vec2,
+    Stroke, StrokeKind, Ui, WidgetInfo, pos2, vec2,
 };
 use lephy_core::names::escape_display;
 use lephy_core::password::MIN_SCALARS;
@@ -93,8 +93,6 @@ pub struct App {
     show_help: bool,
     /// Physical memory (MiB; 0 if unknown). KDF options that are too large are disabled.
     ram_mib: u64,
-    /// Closing the window was requested while a job runs: it closes when the job stops.
-    close_after_job: bool,
     /// Estimated total stream bytes of the job (0: unknown).
     total: Arc<AtomicU64>,
     /// Encrypt to public keys instead of a password.
@@ -113,8 +111,31 @@ pub struct App {
     paper: Option<lephy_sys::mem::SecretBytes>,
     /// Files received from the operating system, not yet applied.
     pending_open: Vec<PathBuf>,
-    /// The settings page (language, system integration) is open instead of the drop zone.
-    show_settings: bool,
+    /// Which start-screen page is shown while nothing is chosen.
+    page: pages::Page,
+    /// Saved settings (welcome seen, language, app lock).
+    prefs: crate::settings::Settings,
+    /// The app lock is on and not yet opened in this session.
+    locked: bool,
+    /// Lock screen / lock settings: password fields and the last message.
+    lock_pw: SecretField,
+    lock_new: SecretField,
+    lock_new2: SecretField,
+    lock_msg: Option<String>,
+    /// The lock settings are being changed (turning on, or off).
+    lock_edit: bool,
+    /// Quitting was requested while a job runs: ask first.
+    quit_confirm: bool,
+    /// Quitting was confirmed (or a signal arrived): close once the job has stopped.
+    quitting: bool,
+    /// Home: the encrypt card was clicked (file or folder?).
+    encrypt_choice: bool,
+    /// Keys page: identity to open, its password, the result and the background job.
+    id_path: Option<PathBuf>,
+    id_pw: SecretField,
+    id_loaded: Option<pages::LoadedId>,
+    id_job: Option<Receiver<std::result::Result<pages::LoadedId, String>>>,
+    id_show_paper: bool,
     /// Encrypting to public keys: use the recipients' post-quantum hybrid keys.
     pq: bool,
     /// The chosen encrypted file uses post-quantum hybrid recipients.
@@ -172,7 +193,6 @@ impl Default for App {
             content_h: 0.0,
             show_help: false,
             ram_mib: lephy_sys::platform::physical_memory_bytes().map_or(0, |b| b / (1024 * 1024)),
-            close_after_job: false,
             total: Arc::new(AtomicU64::new(0)),
             use_keys: false,
             recipients_text: String::new(),
@@ -182,7 +202,22 @@ impl Default for App {
             created_pub: None,
             paper: None,
             pending_open: Vec::new(),
-            show_settings: false,
+            page: pages::Page::Home,
+            prefs: crate::settings::Settings::default(),
+            locked: false,
+            lock_pw: SecretField::new("Uygulama parolası", "App password"),
+            lock_new: SecretField::new("Yeni uygulama parolası", "New app password"),
+            lock_new2: SecretField::new("Parolayı tekrar girin", "Repeat the password"),
+            lock_msg: None,
+            lock_edit: false,
+            quit_confirm: false,
+            quitting: false,
+            encrypt_choice: false,
+            id_path: None,
+            id_pw: SecretField::new("Kimlik parolası", "Identity password"),
+            id_loaded: None,
+            id_job: None,
+            id_show_paper: false,
             pq: false,
             file_pq: false,
             sign: false,
@@ -258,7 +293,8 @@ impl App {
 
     /// Several sources: all must suit the same operation (all encrypted or none).
     fn set_sources(&mut self, paths: &[PathBuf]) {
-        self.show_settings = false;
+        self.page = pages::Page::Home;
+        self.encrypt_choice = false;
         self.confirm_shell = false;
         // Every part of a split set stands for the set (its first part).
         let paths = logic::collapse_parts(paths);
@@ -528,18 +564,30 @@ impl App {
     /// SIGINT/SIGTERM/Ctrl+C: when idle, close the window; when a job runs, the job stops first (temp
     /// files removed), then it closes. Repaints regularly to notice a signal while idle.
     fn handle_signal(&mut self, ctx: &egui::Context) {
-        if lephy_sys::signal::signalled() && !self.running() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        lephy_sys::lifecycle::set_busy(self.running());
+        // SIGINT/SIGTERM: the job (if any) stops on its own; then the app closes.
+        if lephy_sys::signal::signalled() {
+            self.quitting = true;
         }
-        // If a close request arrives while a job runs: the job is cancelled, the partial file deleted,
-        // and only then does the window close.
-        if self.running() && ctx.input(|i| i.viewport().close_requested()) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.close_after_job = true;
-            self.cancel_requested = true;
-            lephy_sys::signal::request_cancel();
+        // Cmd+Q / Dock → Quit while a job runs: ask first.
+        if lephy_sys::lifecycle::take_quit_request() {
+            self.quit_confirm = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
-        if self.close_after_job && !self.running() {
+        // The close button only hides the window; the job continues and the Dock icon brings the
+        // window back. Quitting is Cmd+Q or Dock → Quit (Windows: closing while a job runs
+        // minimises instead).
+        if !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
+            if cfg!(target_os = "macos") {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                let _ = lephy_sys::lifecycle::hide_app();
+            } else if self.running() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
+        }
+        if self.quitting && !self.running() {
+            lephy_sys::lifecycle::allow_quit();
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         ctx.request_repaint_after(Duration::from_millis(400));
@@ -731,21 +779,36 @@ impl App {
                                         .font(fonts::semibold(15.0))
                                         .color(pal.ink),
                                 );
-                                if matches!(self.stage, Stage::Pick) {
+                                if matches!(self.stage, Stage::Pick)
+                                    && !self.locked
+                                    && matches!(
+                                        self.page,
+                                        pages::Page::Keys | pages::Page::Settings
+                                    )
+                                {
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if settings_button(ui, pal, self.show_settings).clicked() {
-                                            self.show_settings = !self.show_settings;
-                                            self.confirm_shell = false;
-                                            self.settings_note = None;
+                                        if link_button(ui, pal, tr("‹ Ana sayfa", "‹ Home"))
+                                            .clicked()
+                                        {
+                                            self.go_home();
                                         }
                                     });
                                 }
                             });
                             ui.add_space(18.0);
+                            self.quit_confirm_view(ui, pal);
+                            if self.locked {
+                                self.lock_view(ui, pal);
+                                return;
+                            }
                             self.open_request_banner(ui, &ctx, pal);
                             match self.stage {
-                                Stage::Pick if self.show_settings => self.settings_view(ui, pal),
-                                Stage::Pick => self.pick_view(ui, pal),
+                                Stage::Pick => match self.page {
+                                    pages::Page::Welcome => self.welcome_view(ui, pal),
+                                    pages::Page::Home => self.home_view(ui, pal),
+                                    pages::Page::Keys => self.keys_view(ui, pal),
+                                    pages::Page::Settings => self.settings_view(ui, pal),
+                                },
                                 Stage::Ready => self.ready_view(ui, &ctx, pal),
                                 Stage::Running { since } => self.running_view(ui, pal, since),
                                 Stage::Done(_) => self.done_view(ui, pal),
@@ -760,139 +823,6 @@ impl App {
                     });
                 });
             });
-    }
-
-    fn pick_view(&mut self, ui: &mut Ui, pal: Palette) {
-        let hovering = ui.input(|i| !i.raw.hovered_files.is_empty());
-        let h = (ui.ctx().content_rect().height() - 150.0).clamp(260.0, 380.0);
-        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
-        let (fill, stroke) = if hovering {
-            (pal.accent_soft, Stroke::new(1.5, pal.accent))
-        } else {
-            (pal.surface, Stroke::new(1.0, pal.line))
-        };
-        ui.painter().rect(
-            rect,
-            f32::from(theme::R_ZONE),
-            fill,
-            stroke,
-            StrokeKind::Inside,
-        );
-        let content_h = 168.0;
-        let inner = Rect::from_center_size(rect.center(), vec2(rect.width() - 48.0, content_h));
-        {
-            let ui = &mut ui.new_child(
-                UiBuilder::new()
-                    .max_rect(inner)
-                    .layout(Layout::top_down(Align::Center)),
-            );
-            {
-                let (g, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
-                draw_lock(ui.painter(), g.center(), 1.0, pal.accent);
-                ui.add_space(12.0);
-                ui.label(
-                    RichText::new(tr(
-                        "Bir dosya ya da klasörü buraya bırakın",
-                        "Drop a file or folder here",
-                    ))
-                    .font(fonts::semibold(17.0))
-                    .color(pal.ink),
-                );
-                ui.label(
-                    RichText::new(tr(
-                        "Şifreli .lphy dosyaları açılır, diğer her şey şifrelenir.",
-                        "Encrypted .lphy files are opened; everything else is encrypted.",
-                    ))
-                    .color(pal.muted)
-                    .size(13.5),
-                );
-                ui.add_space(14.0);
-                let bw = 124.0;
-                let row = Rect::from_center_size(
-                    pos2(ui.max_rect().center().x, ui.cursor().top() + 17.0),
-                    vec2(bw * 2.0 + 10.0, 34.0),
-                );
-                {
-                    let ui = &mut ui.new_child(
-                        UiBuilder::new()
-                            .max_rect(row)
-                            .layout(Layout::left_to_right(Align::Center)),
-                    );
-                    {
-                        if secondary_button(ui, pal, tr("Dosya seç", "Choose file"), bw, 34.0)
-                            .clicked()
-                        {
-                            self.pick_file();
-                        }
-                        ui.add_space(2.0);
-                        if secondary_button(ui, pal, tr("Klasör seç", "Choose folder"), bw, 34.0)
-                            .clicked()
-                        {
-                            self.pick_folder();
-                        }
-                    }
-                }
-            }
-        }
-        ui.add_space(12.0);
-        ui.label(
-            RichText::new(tr(
-                "Dosyalarınız bu bilgisayardan çıkmaz; parolanız hiçbir yere kaydedilmez.",
-                "Your files never leave this computer; your password is never stored.",
-            ))
-            .color(pal.muted)
-            .size(12.5),
-        );
-    }
-
-    /// Settings page: language and the optional system integration.
-    fn settings_view(&mut self, ui: &mut Ui, pal: Palette) {
-        ui.label(
-            RichText::new(tr("Ayarlar", "Settings"))
-                .font(fonts::semibold(17.0))
-                .color(pal.ink),
-        );
-        ui.add_space(14.0);
-        ui.label(
-            RichText::new(tr("Dil", "Language"))
-                .font(fonts::semibold(13.5))
-                .color(pal.ink),
-        );
-        ui.add_space(6.0);
-        let mut l = lang();
-        // Each language's name is written in that language.
-        segmented(
-            ui,
-            pal,
-            &mut l,
-            &[(Lang::Tr, "Türkçe", true), (Lang::En, "English", true)],
-        );
-        if l != lang() {
-            self.set_language(l);
-        }
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new(tr(
-                "Başlangıçta sistem dili kullanılır; seçim kaydedilmez.",
-                "The system language is used at start; the choice is not saved.",
-            ))
-            .color(pal.muted)
-            .size(12.5),
-        );
-        #[cfg(target_os = "macos")]
-        self.quick_action(ui, pal);
-        #[cfg(windows)]
-        self.explorer_integration(ui, pal);
-        if let Some(note) = &self.settings_note {
-            ui.add_space(8.0);
-            ui.label(RichText::new(note.as_str()).color(pal.muted).size(12.5));
-        }
-        ui.add_space(18.0);
-        if link_button(ui, pal, tr("Bitti", "Done")).clicked() {
-            self.show_settings = false;
-            self.confirm_shell = false;
-            self.settings_note = None;
-        }
     }
 
     fn set_language(&mut self, next: Lang) {
@@ -911,7 +841,6 @@ impl App {
     #[cfg(target_os = "macos")]
     fn quick_action(&mut self, ui: &mut Ui, pal: Palette) {
         use lephy_sys::quick_action as qa;
-        ui.add_space(22.0);
         ui.label(
             RichText::new(tr("Finder Hızlı İşlemi", "Finder Quick Action"))
                 .font(fonts::semibold(13.5))
@@ -1004,7 +933,6 @@ impl App {
     #[cfg(windows)]
     fn explorer_integration(&mut self, ui: &mut Ui, pal: Palette) {
         use lephy_sys::shell;
-        ui.add_space(22.0);
         ui.label(
             RichText::new(tr("Gezgin entegrasyonu", "Explorer integration"))
                 .font(fonts::semibold(13.5))
@@ -2682,8 +2610,10 @@ impl App {
 /// Pencereye verilecek uygulama.
 #[must_use]
 pub fn boxed() -> Box<dyn eframe::App> {
-    Box::new(App::default())
+    Box::new(App::with_prefs(crate::settings::Settings::load()))
 }
+
+mod pages;
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -2907,29 +2837,29 @@ fn reveal_on_hover(ui: &mut Ui, pal: Palette, secret: &[u8]) {
     );
 }
 
-/// Gear icon that opens the settings page.
-fn settings_button(ui: &mut Ui, pal: Palette, open: bool) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
-    resp.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, tr("Ayarlar", "Settings")));
-    let c = rect.center();
-    let color = if open || resp.hovered() {
-        pal.accent
-    } else {
-        pal.muted
-    };
-    let stroke = Stroke::new(1.5, color);
-    let p = ui.painter();
-    p.circle_stroke(c, 5.5, stroke);
-    p.circle_stroke(c, 2.2, stroke);
+/// Gear icon (settings card).
+fn draw_gear(p: &egui::Painter, c: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.8, color);
+    p.circle_stroke(c, 8.0, stroke);
+    p.circle_stroke(c, 3.2, stroke);
     for i in 0..8 {
         #[allow(clippy::cast_precision_loss)]
         let a = std::f32::consts::FRAC_PI_4 * i as f32;
         let d = vec2(a.cos(), a.sin());
-        p.line_segment([c + d * 5.5, c + d * 8.0], Stroke::new(2.2, color));
+        p.line_segment([c + d * 8.0, c + d * 11.5], Stroke::new(3.0, color));
     }
-    focus_ring(ui, &resp, rect, pal);
-    resp.on_hover_cursor(CursorIcon::PointingHand)
-        .on_hover_text(tr("Ayarlar", "Settings"))
+}
+
+/// Key icon (keys card): a ring and a bit with two teeth.
+fn draw_key(p: &egui::Painter, c: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.8, color);
+    let ring = c + vec2(-6.0, 0.0);
+    p.circle_stroke(ring, 5.5, stroke);
+    let start = ring + vec2(5.5, 0.0);
+    let end = c + vec2(11.0, 0.0);
+    p.line_segment([start, end], stroke);
+    p.line_segment([end, end + vec2(0.0, 5.0)], stroke);
+    p.line_segment([end + vec2(-5.0, 0.0), end + vec2(-5.0, 4.0)], stroke);
 }
 
 /// "?" button in a circle.
@@ -3139,6 +3069,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::unwrap_used)]
+    #[allow(clippy::too_many_lines, reason = "one walk through every screen")]
     fn renders_every_stage_headless() {
         let ctx = egui::Context::default();
         theme::apply(&ctx);
@@ -3194,11 +3125,49 @@ mod tests {
         app.pending_open.clear();
         app.reset();
         frame(&ctx, &mut app);
-        app.show_settings = true;
+        for page in [
+            pages::Page::Welcome,
+            pages::Page::Keys,
+            pages::Page::Settings,
+        ] {
+            app.page = page;
+            frame(&ctx, &mut app);
+        }
+        // App lock: locked at start when a verifier is saved; the right password opens it.
+        let pw = lephy_sys::mem::SecretBytes::from_slice(b"app lock 123").unwrap();
+        let mut prefs = crate::settings::Settings {
+            welcome_done: true,
+            ..Default::default()
+        };
+        prefs.lock = Some(crate::settings::LockVerifier::new(&pw).unwrap());
+        let mut locked = App::with_prefs(prefs);
+        assert!(locked.locked && locked.page == pages::Page::Home);
+        frame(&ctx, &mut locked);
+        assert!(!App::with_prefs(crate::settings::Settings::default()).locked);
+        assert!(App::with_prefs(crate::settings::Settings::default()).page == pages::Page::Welcome);
+        // Quit confirmation while a job runs, then quitting once it is confirmed.
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.job = Some(rx);
+        app.stage = Stage::Running {
+            since: Instant::now(),
+        };
+        app.quit_confirm = true;
+        frame(&ctx, &mut app);
+        assert!(app.quit_confirm && !app.quitting);
+        drop(tx);
+        app.job = None;
+        app.stage = Stage::Pick;
+        frame(&ctx, &mut app);
+        assert!(
+            !app.quit_confirm && app.quitting,
+            "a finished job quits at once"
+        );
+        app.quitting = false;
+        app.page = pages::Page::Settings;
         app.confirm_shell = true;
         app.settings_note = Some("Not.".into());
         frame(&ctx, &mut app);
-        app.show_settings = false;
+        app.page = pages::Page::Home;
         app.confirm_shell = false;
 
         // Public-key mode: the list decides, no password is needed.
