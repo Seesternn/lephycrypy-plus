@@ -59,6 +59,9 @@ Fixes from the November 2026 internal review (not an independent audit):
   whose time range is narrower; the time is simply not applied.
 
 ### Changed
+- Touch ID / Windows Hello unlock of identities was evaluated and not added: without a signed
+  release the biometric check is not enforced (macOS legacy keychain) or not bound to the data
+  (Windows DPAPI). See the threat model.
 - A folder that is encrypted now always comes back as a folder, even when it holds a single file
   (it used to be written out as that file). The archive's END entry records that the source was a
   folder (`END_FOLDER`, docs/FORMAT.md); files encrypted from a single file are unchanged.

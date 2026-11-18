@@ -199,6 +199,22 @@ The compressed size reveals information about the content, especially when an at
 part of the input (CRIME/BREACH style). PADMÉ reduces but does not remove this. Compression is
 off by default.
 
+## Not implemented: Touch ID / Windows Hello unlock
+
+Unlocking an identity with Touch ID or Windows Hello was evaluated (November 2026) and left out,
+because without a signed release it would only look secure:
+
+- macOS: a keychain item whose access control requires biometry needs the Data Protection
+  keychain, which refuses apps without a Developer ID team entitlement (`errSecMissingEntitlement`,
+  −34018). In the legacy file keychain the same access control is accepted but not enforced: the
+  item was read back without any Touch ID prompt.
+- Windows: DPAPI protects data for the user account, not for Windows Hello; a Hello consent dialog
+  in front of it would not stop another process of the same user from decrypting it. Binding to
+  Hello needs `KeyCredentialManager` (WinRT), which the project does not use.
+
+It can be revisited together with signed releases. Until then the identity file's password is the
+only protection, and the paper backup is the recovery path.
+
 ## Other
 Weak passwords; a key file is only an additional factor. Linux is best effort: it is not tested,
 and Linux-specific protections (MADV_DONTDUMP, PR_SET_DUMPABLE, renameat2) are considered
