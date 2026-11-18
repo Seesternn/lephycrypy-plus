@@ -380,6 +380,183 @@ pub struct Job {
     pub restore_name: bool,
     /// Decrypt mode: run this tool on the inputs instead of decrypting them.
     pub tool: Option<Tool>,
+    /// Per-item states, shared with the window (a queue); `None` for a plain job.
+    pub progress: Option<std::sync::Arc<QueueProgress>>,
+}
+
+/// State of one queued item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ItemState {
+    /// Not started.
+    Waiting,
+    /// Being processed.
+    Running,
+    /// Finished.
+    Done,
+    /// Failed, with the error text.
+    Failed(String),
+    /// Removed from the queue before it started.
+    Skipped,
+}
+
+/// Item states of a running job and the items the user removed, shared between the job thread
+/// and the window.
+#[derive(Debug, Default)]
+pub struct QueueProgress {
+    /// One state per item, in order.
+    pub states: std::sync::Mutex<Vec<ItemState>>,
+    /// Indices to skip (removed while waiting).
+    pub skip: std::sync::Mutex<std::collections::HashSet<usize>>,
+}
+
+impl QueueProgress {
+    /// `n` waiting items.
+    #[must_use]
+    pub fn new(n: usize) -> Self {
+        Self {
+            states: std::sync::Mutex::new(vec![ItemState::Waiting; n]),
+            skip: std::sync::Mutex::default(),
+        }
+    }
+
+    fn set(&self, i: usize, st: ItemState) {
+        if let Ok(mut v) = self.states.lock()
+            && let Some(x) = v.get_mut(i)
+        {
+            *x = st;
+        }
+    }
+
+    fn skipped(&self, i: usize) -> bool {
+        self.skip.lock().is_ok_and(|s| s.contains(&i))
+    }
+
+    /// Current states (a copy).
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<ItemState> {
+        self.states.lock().map(|v| v.clone()).unwrap_or_default()
+    }
+
+    /// Removes a waiting item (it is skipped when its turn comes).
+    pub fn remove(&self, i: usize) {
+        if let Ok(mut s) = self.skip.lock() {
+            s.insert(i);
+        }
+    }
+}
+
+/// Everything a job needs except its items, kept (secrets in locked memory) so more items can
+/// follow with the same settings: files added while a queue runs, or a retry of the failed ones.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the job's independent switches"
+)]
+pub struct JobTemplate {
+    mode: Mode,
+    password: SecretBytes,
+    confirm: Option<SecretBytes>,
+    kdf_mib: u32,
+    aes: bool,
+    pad: bool,
+    allow_cloud: bool,
+    keyfile: Option<PathBuf>,
+    secure_delete: bool,
+    split: Option<u64>,
+    compress: bool,
+    ecc: bool,
+    recipients: Vec<PublicKey>,
+    identity: Option<PathBuf>,
+    hybrid: Vec<lephy_core::hybrid::HybridKey>,
+    sign_identity: Option<PathBuf>,
+    sign_password: Option<SecretBytes>,
+    restore_name: bool,
+}
+
+fn copy_secret(s: &SecretBytes) -> Option<SecretBytes> {
+    SecretBytes::from_slice(s.expose()).ok()
+}
+
+impl JobTemplate {
+    /// The settings of `job` (`None` for listings, tools, recovery and recipient edits, which
+    /// are not queued).
+    #[must_use]
+    pub fn from_job(job: &Job) -> Option<Self> {
+        let plain = !job.list_only && job.tool.is_none() && !job.recover && job.only.is_empty();
+        let edits_recipients =
+            job.mode == Mode::Decrypt && (!job.recipients.is_empty() || !job.hybrid.is_empty());
+        if !plain || edits_recipients {
+            return None;
+        }
+        Some(Self {
+            mode: job.mode,
+            password: copy_secret(&job.password)?,
+            confirm: match &job.confirm {
+                Some(c) => Some(copy_secret(c)?),
+                None => None,
+            },
+            kdf_mib: job.kdf_mib,
+            aes: job.aes,
+            pad: job.pad,
+            allow_cloud: job.allow_cloud,
+            keyfile: job.keyfile.clone(),
+            secure_delete: job.secure_delete,
+            split: job.split,
+            compress: job.compress,
+            ecc: job.ecc,
+            recipients: job.recipients.clone(),
+            identity: job.identity.clone(),
+            hybrid: job.hybrid.clone(),
+            sign_identity: job.sign_identity.clone(),
+            sign_password: match &job.sign_password {
+                Some(c) => Some(copy_secret(c)?),
+                None => None,
+            },
+            restore_name: job.restore_name,
+        })
+    }
+
+    /// Mode of the queued jobs.
+    #[must_use]
+    pub const fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// A job for `items` with these settings (secrets copied).
+    #[must_use]
+    pub fn job(&self, items: Vec<Item>) -> Option<Job> {
+        Some(Job {
+            mode: self.mode,
+            items,
+            password: copy_secret(&self.password)?,
+            confirm: match &self.confirm {
+                Some(c) => Some(copy_secret(c)?),
+                None => None,
+            },
+            kdf_mib: self.kdf_mib,
+            aes: self.aes,
+            pad: self.pad,
+            allow_cloud: self.allow_cloud,
+            keyfile: self.keyfile.clone(),
+            secure_delete: self.secure_delete,
+            split: self.split,
+            compress: self.compress,
+            ecc: self.ecc,
+            recover: false,
+            recipients: self.recipients.clone(),
+            identity: self.identity.clone(),
+            hybrid: self.hybrid.clone(),
+            list_only: false,
+            only: Vec::new(),
+            sign_identity: self.sign_identity.clone(),
+            sign_password: match &self.sign_password {
+                Some(c) => Some(copy_secret(c)?),
+                None => None,
+            },
+            restore_name: self.restore_name,
+            tool: None,
+            progress: None,
+        })
+    }
 }
 
 /// Job result.
@@ -670,14 +847,32 @@ pub fn run(mut job: Job) -> Result<Outcome> {
         },
         restore_name: job.restore_name,
     };
-    let single = job.items.len() == 1;
+    let single = job.items.len() == 1 && job.progress.is_none();
     let mut out = Outcome::default();
     let mut first_err = None;
-    for item in &job.items {
+    let progress = job.progress.clone();
+    for (i, item) in job.items.iter().enumerate() {
         if lephy_sys::signal::interrupted() {
             return Err(Error::Interrupted);
         }
-        match run_one(&ctx, item, &mut out) {
+        if let Some(p) = &progress {
+            if p.skipped(i) {
+                p.set(i, ItemState::Skipped);
+                continue;
+            }
+            p.set(i, ItemState::Running);
+        }
+        let r = run_one(&ctx, item, &mut out);
+        if let Some(p) = &progress {
+            p.set(
+                i,
+                match &r {
+                    Ok(()) => ItemState::Done,
+                    Err(e) => ItemState::Failed(describe_error(e)),
+                },
+            );
+        }
+        match r {
             Ok(()) => {}
             Err(e) if single || matches!(e, Error::Interrupted) => return Err(e),
             Err(e) => {
@@ -1282,6 +1477,7 @@ mod tests {
             sign_password: None,
             restore_name: false,
             tool: None,
+            progress: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -1325,6 +1521,7 @@ mod tests {
             sign_password: None,
             restore_name: false,
             tool: None,
+            progress: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Decrypt,
@@ -1359,6 +1556,7 @@ mod tests {
             sign_password: None,
             restore_name: true,
             tool: None,
+            progress: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Decrypt,
@@ -1393,6 +1591,7 @@ mod tests {
                 sign_password: None,
                 restore_name: false,
                 tool: None,
+                progress: None,
                 list_only: false,
                 only: Vec::new(),
                 mode: Mode::Encrypt,
@@ -1426,6 +1625,7 @@ mod tests {
             sign_password: None,
             restore_name: false,
             tool: None,
+            progress: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Decrypt,
@@ -1468,6 +1668,7 @@ mod tests {
             sign_password: None,
             restore_name: false,
             tool: None,
+            progress: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -1528,6 +1729,7 @@ mod tests {
             sign_password: None,
             restore_name: false,
             tool: None,
+            progress: None,
             list_only,
             only,
             mode,
@@ -1585,6 +1787,7 @@ mod tests {
             sign_password: sign.then(|| secret("identity pass m")),
             restore_name: false,
             tool: None,
+            progress: None,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1634,6 +1837,7 @@ mod tests {
                 sign_password: None,
                 restore_name: false,
                 tool: None,
+                progress: None,
                 list_only: false,
                 only: Vec::new(),
                 mode,
@@ -1689,6 +1893,7 @@ mod tests {
             sign_password: None,
             restore_name: false,
             tool: None,
+            progress: None,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1773,6 +1978,7 @@ mod tests {
             sign_password: None,
             restore_name: false,
             tool: None,
+            progress: None,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1833,6 +2039,7 @@ mod tests {
             sign_password: None,
             restore_name: false,
             tool: None,
+            progress: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -1868,6 +2075,7 @@ mod tests {
             sign_password: None,
             restore_name: false,
             tool: None,
+            progress: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -1904,6 +2112,7 @@ mod tests {
             sign_password: None,
             restore_name: false,
             tool: None,
+            progress: None,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -1953,6 +2162,7 @@ mod tests {
             sign_password: None,
             restore_name: false,
             tool: None,
+            progress: None,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -2057,6 +2267,7 @@ mod tests {
             sign_password: None,
             restore_name: false,
             tool,
+            progress: None,
             list_only: false,
             only: Vec::new(),
             mode,
@@ -2169,6 +2380,7 @@ mod tests {
             sign_password: None,
             restore_name: false,
             tool: None,
+            progress: None,
             list_only: false,
             only: Vec::new(),
             mode: Mode::Encrypt,
@@ -2211,6 +2423,69 @@ mod tests {
         );
         // Only the encrypted file is in the folder: nothing was written.
         assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn queue_states_skip_and_template_retry() {
+        let d = std::env::temp_dir().join(format!("lphy-gui-queue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(d.join(n), n.as_bytes()).unwrap();
+        }
+        let item = |n: &str| Item {
+            input: d.join(n),
+            output: d.join(format!("{n}.lphy")),
+        };
+        let job = Job {
+            hybrid: Vec::new(),
+            sign_identity: None,
+            sign_password: None,
+            restore_name: false,
+            tool: None,
+            progress: None,
+            list_only: false,
+            only: Vec::new(),
+            mode: Mode::Encrypt,
+            items: vec![
+                item("a.txt"),
+                item("missing.txt"),
+                item("b.txt"),
+                item("c.txt"),
+            ],
+            password: secret("queue pass 1234"),
+            confirm: Some(secret("queue pass 1234")),
+            kdf_mib: 64,
+            aes: false,
+            pad: true,
+            allow_cloud: false,
+            keyfile: None,
+            secure_delete: false,
+            split: None,
+            compress: false,
+            ecc: false,
+            recover: false,
+            recipients: Vec::new(),
+            identity: None,
+        };
+        let t = JobTemplate::from_job(&job).unwrap();
+        let p = std::sync::Arc::new(QueueProgress::new(4));
+        p.remove(2); // b.txt removed while waiting
+        let mut job = job;
+        job.progress = Some(std::sync::Arc::clone(&p));
+        let out = run(job).unwrap();
+        let st = p.snapshot();
+        assert_eq!(st[0], ItemState::Done);
+        assert!(matches!(st[1], ItemState::Failed(_)));
+        assert_eq!(st[2], ItemState::Skipped);
+        assert_eq!(st[3], ItemState::Done);
+        assert_eq!(out.outputs.len(), 2);
+        assert!(!d.join("b.txt.lphy").exists());
+        // The template runs more items with the same settings (password kept).
+        let again = t.job(vec![item("b.txt")]).unwrap();
+        assert_eq!(run(again).unwrap().outputs, vec![d.join("b.txt.lphy")]);
+        assert_eq!(detect_mode(&d.join("b.txt.lphy")), Mode::Decrypt);
         let _ = std::fs::remove_dir_all(&d);
     }
 

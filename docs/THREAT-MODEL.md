@@ -188,6 +188,13 @@ marks) and control characters are replaced with `_`, so a name cannot pose as a 
 extension. The app warns when the output contains programs (by name, such as `.app`, `.command`,
 `.exe`, `.ps1`, or by the executable bit).
 
+## Queue and session history
+While a queue runs (several files, or files dropped onto a running job), its password, key-file
+path, signing password and recipient keys are kept in locked memory so the next items and a retry
+of the failed ones use the same settings; they are dropped when the queue's result is closed. The
+home screen's "This session" list (file names, results, times) lives in memory only and is never
+written to disk; it can be turned off in Settings › Appearance.
+
 ## Vault
 A vault is an encrypted folder opened once for work. Opening decrypts it to a private place:
 a RAM disk on macOS (`hdiutil` `ram://`, HFS+, Spotlight off), so decrypted files do not reach

@@ -720,6 +720,7 @@ impl App {
             .color(pal.muted)
             .size(12.5),
         );
+        self.history_view(ui, pal);
     }
 
     /// Dashed area that also accepts dropped files (the whole window does).

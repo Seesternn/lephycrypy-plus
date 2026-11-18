@@ -190,6 +190,10 @@ pub struct App {
     usb: usb_ui::Usb,
     /// Open folder vault, its background steps and leftovers.
     vault: vault_ui::VaultUi,
+    /// Queue of the running job, files added meanwhile, this session's history.
+    queue: queue_ui::QueueUi,
+    /// When the app started (history times).
+    started: Instant,
 }
 
 impl Default for App {
@@ -273,6 +277,8 @@ impl Default for App {
             preview: None,
             usb: usb_ui::Usb::default(),
             vault: vault_ui::VaultUi::default(),
+            queue: queue_ui::QueueUi::default(),
+            started: Instant::now(),
         }
     }
 }
@@ -399,6 +405,7 @@ impl App {
 
     fn reset(&mut self) {
         self.tools.reset();
+        self.queue.reset();
         self.preview = None;
         self.source = None;
         self.output = None;
@@ -500,7 +507,7 @@ impl App {
         let key_mode = (mode == Mode::Encrypt && self.use_keys)
             || (mode == Mode::Decrypt && self.identity_required && self.edit_recipients);
         let (recipients, hybrid) = self.job_keys(key_mode);
-        let job = Job {
+        let mut job = Job {
             hybrid,
             recipients,
             identity: if mode == Mode::Decrypt && self.identity_required {
@@ -528,6 +535,7 @@ impl App {
             sign_password: (mode == Mode::Encrypt && self.sign).then(|| self.sign_password.take()),
             restore_name: mode == Mode::Decrypt && (src.paths.len() > 1 || !self.output_custom),
             tool: self.tools.pending.take(),
+            progress: None,
             list_only,
             only: if list_only || self.listing.is_none() {
                 Vec::new()
@@ -535,6 +543,13 @@ impl App {
                 self.selected.iter().cloned().collect()
             },
         };
+        self.queue.reset();
+        self.queue_begin(&mut job);
+        self.run_prepared_job(ctx, job);
+    }
+
+    /// Starts a built job in the background.
+    pub(super) fn run_prepared_job(&mut self, ctx: &egui::Context, job: Job) {
         self.confirm_delete = false;
         self.confirm.clear();
         // A cancellation left over from the previous job is cleared before the job starts (on the UI
@@ -580,15 +595,21 @@ impl App {
                     self.listing = Some(entries);
                     self.selected.clear();
                     self.stage = Stage::Ready;
+                    self.job = None;
                 } else {
-                    self.stage = Stage::Done(out);
+                    self.job = None;
+                    if let Some(o) = self.queue_end(ctx, out) {
+                        self.stage = Stage::Done(o);
+                    }
                 }
-                self.job = None;
             }
             Ok(Err(msg)) => {
                 self.error = Some(msg);
                 self.stage = Stage::Ready;
                 self.job = None;
+                let keep = !self.prefs.history_off;
+                self.queue.finish(self.started, keep);
+                self.queue.pending.clear();
             }
             Err(TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(16)),
             Err(TryRecvError::Disconnected) => {
@@ -724,9 +745,6 @@ impl App {
     }
 
     fn handle_drop(&mut self, ctx: &egui::Context) {
-        if self.running() {
-            return;
-        }
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw
                 .dropped_files
@@ -734,7 +752,13 @@ impl App {
                 .map(|f| f.path().to_path_buf())
                 .collect()
         });
-        if !dropped.is_empty() {
+        if dropped.is_empty() {
+            return;
+        }
+        if self.job.is_some() {
+            // A job runs: same kind of files join its queue.
+            self.queue_add(&dropped);
+        } else if !self.running() {
             self.set_sources(&dropped);
         }
     }
@@ -2706,6 +2730,7 @@ impl App {
             );
         }
         ui.ctx().request_repaint_after(Duration::from_millis(16));
+        self.queue_view(ui, pal);
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.label(
@@ -2906,6 +2931,9 @@ impl App {
                 Lang::En => format!("Could not open the folder: {e}."),
             });
         }
+        let ctx = ui.ctx().clone();
+        ui.add_space(8.0);
+        self.retry_view(ui, &ctx, pal);
         if again {
             self.reset();
         }
@@ -2930,6 +2958,7 @@ mod lockgate;
 mod maintenance;
 mod pages;
 mod preview_ui;
+mod queue_ui;
 mod restore;
 mod settings_ui;
 mod tools;
@@ -3456,6 +3485,21 @@ mod tests {
             since: Instant::now(),
         };
         frame(&ctx, &mut app);
+        // A queue: per-item states under the progress bar, and a file waiting to be added.
+        app.queue.items = vec![
+            logic::Item {
+                input: d.join("a.txt"),
+                output: d.join("a.lphy"),
+            },
+            logic::Item {
+                input: d.join("b.txt"),
+                output: d.join("b.lphy"),
+            },
+        ];
+        app.queue.progress = Some(Arc::new(logic::QueueProgress::new(2)));
+        app.queue.pending.push(d.join("c.txt"));
+        frame(&ctx, &mut app);
+        app.queue.reset();
         app.stage = Stage::Done(Outcome {
             outputs: vec![d.join("x.lphy")],
             skipped: 2,

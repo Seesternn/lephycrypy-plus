@@ -103,6 +103,10 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Desktop app: job queue. Several files show per-item states (waiting, running, done, failed with
+  the reason, removed); files dropped while a job runs join the queue with the same settings;
+  "Retry the failed ones" on the done screen; a "This session" list on the home screen kept in
+  memory only (can be turned off).
 - Desktop app: an open vault saves and locks itself after no input for a set time (default 15
   min), when the screen locks and after waking from sleep (Settings › Vault). lephy-sys gains
   `idle` (system idle time, screen-locked state).

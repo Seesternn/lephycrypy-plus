@@ -224,6 +224,13 @@ error correction, splitting, secure deletion and an optional key file; the **?**
 the terms. For an encrypted archive, **List contents** shows what is inside without writing
 anything; tick entries to extract only those. The app follows the system light/dark theme.
 
+### Queue (desktop app)
+
+Drop or choose several files to process them one after another; each shows its state, and a
+waiting one can be removed. Files dropped while a job runs join the queue with the same password
+and settings. Failed items can be retried from the done screen. The home screen lists this
+session's jobs; the list is kept in memory only.
+
 ### Vault (desktop app)
 
 Open an encrypted folder, enter its password and press **Open as a vault…**: the folder opens

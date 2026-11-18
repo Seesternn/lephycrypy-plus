@@ -41,6 +41,7 @@ pub struct LockVerifier {
 
 /// Saved settings.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools, reason = "independent preferences")]
 pub struct Settings {
     /// The welcome screen was seen.
     pub welcome_done: bool,
@@ -54,6 +55,8 @@ pub struct Settings {
     pub vault_idle: Option<u32>,
     /// Do not lock an open vault when the screen locks or the computer wakes from sleep.
     pub vault_keep_on_lock: bool,
+    /// Do not show this session's finished jobs on the home screen.
+    pub history_off: bool,
 }
 
 impl Settings {
@@ -103,6 +106,7 @@ impl Settings {
                 ("anim", "0") => s.anim_off = true,
                 ("vault_idle", v) => s.vault_idle = v.parse().ok().filter(|m| *m <= 24 * 60),
                 ("vault_screen", "0") => s.vault_keep_on_lock = true,
+                ("history", "0") => s.history_off = true,
                 ("lock", v) => {
                     s.lock = v.split_once(':').and_then(|(a, b)| {
                         Some(LockVerifier {
@@ -137,6 +141,9 @@ impl Settings {
         }
         if self.vault_keep_on_lock {
             out.push_str("vault_screen=0\n");
+        }
+        if self.history_off {
+            out.push_str("history=0\n");
         }
         if let Some(l) = &self.lock {
             let _ = writeln!(out, "lock={}:{}", hex(&l.salt), hex(&l.tag));
@@ -269,6 +276,7 @@ mod tests {
             anim_off: true,
             vault_idle: Some(30),
             vault_keep_on_lock: true,
+            history_off: true,
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(

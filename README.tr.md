@@ -193,6 +193,13 @@ adı ya da parola kaydedilmez.
 Şifreli bir arşivde **İçeriği listele**, hiçbir şey yazmadan içinde ne olduğunu gösterir; yalnızca
 işaretlediğiniz öğeler çıkarılır.
 
+### Kuyruk (masaüstü uygulaması)
+
+Birden çok dosyayı bırakın ya da seçin; sırayla işlenir, her birinin durumu görünür ve bekleyen
+bir öğe kaldırılabilir. Bir iş sürerken bırakılan dosyalar aynı parola ve ayarlarla kuyruğa
+eklenir. Başarısız öğeler bitti ekranından yeniden denenebilir. Ana sayfa bu oturumdaki işleri
+listeler; liste yalnızca bellekte tutulur.
+
 ### Kasa (masaüstü uygulaması)
 
 Şifreli bir klasörü açın, parolasını girin ve **Kasa olarak aç…**a basın: klasör Finder'da /

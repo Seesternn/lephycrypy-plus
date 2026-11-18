@@ -613,6 +613,29 @@ impl App {
             self.prefs.anim_off = !self.prefs.anim_off;
             self.save_prefs();
         }
+        let mut hist = false;
+        group(ui, pal, |ui| {
+            hist = switch_row(
+                ui,
+                pal,
+                None,
+                tr("Bu oturumdaki işler", "This session's jobs"),
+                Some(tr("Ana sayfada göster", "Show on the home screen")),
+                !self.prefs.history_off,
+            );
+        });
+        footer(
+            ui,
+            pal,
+            tr(
+                "Son işler yalnızca bellekte tutulur ve uygulama kapanınca silinir; diske hiçbir dosya adı yazılmaz.",
+                "Recent jobs are kept in memory only and are gone when the app closes; no file name is written to disk.",
+            ),
+        );
+        if hist {
+            self.prefs.history_off = !self.prefs.history_off;
+            self.save_prefs();
+        }
     }
 
     fn pane_lock(&mut self, ui: &mut Ui, pal: Palette) {
