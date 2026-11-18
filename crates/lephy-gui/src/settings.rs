@@ -50,6 +50,18 @@ pub struct Settings {
     pub lock: Option<LockVerifier>,
     /// Animations turned off by the user.
     pub anim_off: bool,
+    /// Lock an open vault after this many minutes without input (`None`: 15; `Some(0)`: never).
+    pub vault_idle: Option<u32>,
+    /// Do not lock an open vault when the screen locks or the computer wakes from sleep.
+    pub vault_keep_on_lock: bool,
+}
+
+impl Settings {
+    /// Minutes of inactivity before an open vault is locked (0: never).
+    #[must_use]
+    pub fn vault_idle_minutes(&self) -> u32 {
+        self.vault_idle.unwrap_or(15)
+    }
 }
 
 fn path() -> Option<PathBuf> {
@@ -89,6 +101,8 @@ impl Settings {
                 ("lang", "tr") => s.lang = Some(Lang::Tr),
                 ("lang", "en") => s.lang = Some(Lang::En),
                 ("anim", "0") => s.anim_off = true,
+                ("vault_idle", v) => s.vault_idle = v.parse().ok().filter(|m| *m <= 24 * 60),
+                ("vault_screen", "0") => s.vault_keep_on_lock = true,
                 ("lock", v) => {
                     s.lock = v.split_once(':').and_then(|(a, b)| {
                         Some(LockVerifier {
@@ -117,6 +131,12 @@ impl Settings {
         }
         if self.anim_off {
             out.push_str("anim=0\n");
+        }
+        if let Some(m) = self.vault_idle {
+            let _ = writeln!(out, "vault_idle={m}");
+        }
+        if self.vault_keep_on_lock {
+            out.push_str("vault_screen=0\n");
         }
         if let Some(l) = &self.lock {
             let _ = writeln!(out, "lock={}:{}", hex(&l.salt), hex(&l.tag));
@@ -247,6 +267,8 @@ mod tests {
                 tag: [2; 32],
             }),
             anim_off: true,
+            vault_idle: Some(30),
+            vault_keep_on_lock: true,
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(

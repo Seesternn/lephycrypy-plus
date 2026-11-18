@@ -19,6 +19,7 @@ pub(super) enum Pane {
     Language,
     Appearance,
     Lock,
+    Vault,
     #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
     Integration,
     Maintenance,
@@ -397,6 +398,7 @@ impl App {
             Pane::Language => self.pane_language(ui, pal),
             Pane::Appearance => self.pane_appearance(ui, pal),
             Pane::Lock => self.pane_lock(ui, pal),
+            Pane::Vault => self.pane_vault(ui, pal),
             Pane::Integration => self.pane_integration(ui, pal),
             Pane::Maintenance => self.pane_maintenance(ui, pal),
             Pane::About => self.pane_about(ui, pal),
@@ -478,6 +480,19 @@ impl App {
                 lock,
             ) {
                 go = Some(Pane::Lock);
+            }
+            divider(ui, pal, TEXT_X);
+            let m = self.prefs.vault_idle_minutes();
+            let v = if m == 0 {
+                tr("Elle", "Manual").to_owned()
+            } else {
+                match lang() {
+                    Lang::Tr => format!("{m} dk"),
+                    Lang::En => format!("{m} min"),
+                }
+            };
+            if nav_row(ui, pal, (tile::BLUE, glyph_lock), tr("Kasa", "Vault"), &v) {
+                go = Some(Pane::Vault);
             }
             #[cfg(any(target_os = "macos", windows))]
             {
@@ -638,6 +653,71 @@ impl App {
             self.lock_pw.clear();
             self.lock_new.clear();
             self.lock_new2.clear();
+        }
+    }
+
+    fn pane_vault(&mut self, ui: &mut Ui, pal: Palette) {
+        page_head(ui, pal, tr("Kasa", "Vault"));
+        let cur = self.prefs.vault_idle_minutes();
+        let mut pick = None;
+        ui.label(
+            RichText::new(tr("Hareketsizlikte kilitle", "Lock after no input for"))
+                .color(pal.muted)
+                .size(12.5),
+        );
+        ui.add_space(4.0);
+        group(ui, pal, |ui| {
+            for (i, m) in [0u32, 5, 15, 30, 60].into_iter().enumerate() {
+                if i > 0 {
+                    divider(ui, pal, 12.0);
+                }
+                let label = if m == 0 {
+                    tr("Hiçbir zaman (yalnızca elle)", "Never (manual only)").to_owned()
+                } else {
+                    match lang() {
+                        Lang::Tr => format!("{m} dakika"),
+                        Lang::En => format!("{m} minutes"),
+                    }
+                };
+                if choice_row(ui, pal, &label, cur == m) {
+                    pick = Some(m);
+                }
+            }
+        });
+        footer(
+            ui,
+            pal,
+            tr(
+                "Bilgisayarda bu süre boyunca hiç klavye ya da fare kullanılmazsa açık kasa kendiliğinden kaydedilip kilitlenir.",
+                "If the keyboard and mouse are not used for this long, an open vault saves and locks itself.",
+            ),
+        );
+        let mut flip = false;
+        group(ui, pal, |ui| {
+            flip = switch_row(
+                ui,
+                pal,
+                None,
+                tr("Ekran kilitlenince kilitle", "Lock when the screen locks"),
+                Some(tr("Uykudan uyanınca da", "Also after waking from sleep")),
+                !self.prefs.vault_keep_on_lock,
+            );
+        });
+        footer(
+            ui,
+            pal,
+            tr(
+                "Kaydetme başarısız olursa (örneğin bir dosya başka bir programda açıksa) kasa açık kalır ve üstteki şerit uyarır.",
+                "If saving fails (for example a file is open in another program) the vault stays open and the bar says so.",
+            ),
+        );
+        if let Some(m) = pick {
+            self.prefs.vault_idle = Some(m);
+            self.save_prefs();
+        }
+        if flip {
+            self.prefs.vault_keep_on_lock = !self.prefs.vault_keep_on_lock;
+            self.save_prefs();
         }
     }
 

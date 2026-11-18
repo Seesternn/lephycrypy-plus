@@ -809,6 +809,7 @@ impl App {
             self.vault.leftovers = crate::vault::leftovers();
         }
         self.poll_vault();
+        self.auto_lock_vault(&ctx);
         crate::motion::set_enabled(!self.prefs.anim_off && !self.reduce_motion);
         self.poll(&ctx);
         self.poll_lock_check(&ctx);

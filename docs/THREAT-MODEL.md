@@ -203,7 +203,13 @@ because locking needs them; every program running as the same user can read and 
 files; RAM-disk pages can still reach swap or a hibernation image; on Windows decrypted files are
 written to disk, with the SSD and snapshot limits above. If the app crashes or is killed, the
 RAM disk (or folder) stays until the computer restarts or the app finds it at the next start and
-offers to close it. Vaults are only for archives locked with a password: files encrypted to
+offers to close it. An open vault saves and locks itself after a set time without keyboard or
+mouse input anywhere in the session (default 15 minutes; Settings › Vault), when the screen
+locks, and when the computer wakes from sleep (noticed from the clocks; macOS
+`CGEventSourceSecondsSinceLastEventType` / `CGSSessionScreenIsLocked`, Windows
+`GetLastInputInfo` / the input desktop). This only works while the app runs: it is not a
+substitute for locking by hand, and the vault stays open during sleep itself. Vaults are only for
+archives locked with a password: files encrypted to
 public keys (the recipients' keys are not in the file), with error correction, split files and
 raw streams are refused.
 

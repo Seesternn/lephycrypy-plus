@@ -35,6 +35,8 @@ features = [
     "Win32_System_Registry", # shell.rs: per-user Explorer integration (HKCU)
     "Win32_UI_Shell",        # shell.rs: SHChangeNotify after (un)registering
     "Win32_UI_WindowsAndMessaging", # capture.rs: window display affinity
+    "Win32_UI_Input_KeyboardAndMouse", # idle.rs: GetLastInputInfo
+    "Win32_System_StationsAndDesktops", # idle.rs: locked-workstation check
 ]
 
 # The workspace table contains `unsafe_code = "forbid"`; this crate uses its own table.

@@ -103,6 +103,9 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Desktop app: an open vault saves and locks itself after no input for a set time (default 15
+  min), when the screen locks and after waking from sleep (Settings › Vault). lephy-sys gains
+  `idle` (system idle time, screen-locked state).
 - Desktop app: a Vault card on the home screen and its own page: open an existing vault or
   create a new, empty one (name, place, password twice, optional key file).
 - Desktop app: folder vaults. "Open as a vault…" decrypts an encrypted folder to a RAM disk
