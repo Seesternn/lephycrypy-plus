@@ -113,8 +113,10 @@ impl App {
                     .truncate(),
             );
             ui.horizontal(|ui| {
-                if link_button(ui, pal, tr("Kopyala", "Copy")).clicked() {
-                    let _ = logic::copy_to_clipboard(&pk);
+                if link_button(ui, pal, tr("Kopyala", "Copy")).clicked()
+                    && logic::copy_to_clipboard(&pk).is_ok()
+                {
+                    self.show_toast(ui.ctx(), tr("Panoya kopyalandı", "Copied to the clipboard"));
                 }
                 if link_button(ui, pal, tr("Tamam", "Done")).clicked() {
                     self.restore.done = None;

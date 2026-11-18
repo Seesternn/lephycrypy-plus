@@ -176,6 +176,10 @@ pub struct App {
     restore: restore::Restore,
     /// App-lock password checks (background, with back-off).
     lock_gate: lockgate::LockGate,
+    /// The system asks to reduce motion (read once at start, on the main thread).
+    reduce_motion: bool,
+    /// Short message that fades out (e.g. "Copied"): text and the time it appeared.
+    toast: Option<(String, f64)>,
 }
 
 impl Default for App {
@@ -252,6 +256,8 @@ impl Default for App {
             capture_protected: false,
             restore: restore::Restore::default(),
             lock_gate: lockgate::LockGate::default(),
+            reduce_motion: false,
+            toast: None,
         }
     }
 }
@@ -778,8 +784,10 @@ impl App {
         if std::mem::take(&mut self.scan_on_start) {
             self.stale.scan(&ctx, logic::usual_output_dirs());
         }
+        crate::motion::set_enabled(!self.prefs.anim_off && !self.reduce_motion);
         self.poll(&ctx);
         self.poll_lock_check(&ctx);
+        self.handle_escape(&ctx);
         self.guard_capture();
         self.handle_signal(&ctx);
         self.handle_open_requests(&ctx);
@@ -830,7 +838,16 @@ impl App {
                                     });
                                 }
                             });
-                            ui.add_space(18.0);
+                            ui.add_space(10.0);
+                            // New page, step or stage: fade in and slide up a little.
+                            let t = crate::motion::since_change(
+                                &ctx,
+                                egui::Id::unique("page-transition"),
+                                self.view_key(),
+                                crate::motion::PAGE_SECS,
+                            );
+                            ui.set_opacity(t);
+                            ui.add_space(8.0 * (1.0 - t));
                             self.quit_confirm_view(ui, pal);
                             if self.locked {
                                 self.lock_view(ui, pal);
@@ -852,6 +869,7 @@ impl App {
                                 Stage::Done(_) => self.done_view(ui, pal),
                             }
                         });
+                        self.toast_view(&ctx, pal);
                         let h = r.response.rect.height();
                         if (h - self.content_h).abs() > 1.0 {
                             self.content_h = h;
@@ -860,6 +878,78 @@ impl App {
                         ui.add_space(24.0);
                     });
                 });
+            });
+    }
+
+    /// Identifies what is on screen (page, stage, welcome step) for the page transition.
+    fn view_key(&self) -> u64 {
+        let stage = match self.stage {
+            Stage::Pick => 0u64,
+            Stage::Ready => 1,
+            Stage::Running { .. } => 2,
+            Stage::Done(_) => 3,
+        };
+        (self.page as u64)
+            | (stage << 8)
+            | (u64::from(self.welcome_step) << 16)
+            | (u64::from(self.locked) << 24)
+    }
+
+    /// Esc goes one step back: from a chosen file to its page, from a page to Home.
+    fn handle_escape(&mut self, ctx: &egui::Context) {
+        if self.running()
+            || self.locked
+            || !ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            return;
+        }
+        match self.stage {
+            Stage::Ready | Stage::Done(_) => self.reset(),
+            Stage::Pick if !matches!(self.page, pages::Page::Home | pages::Page::Welcome) => {
+                self.go_home();
+            }
+            _ => {}
+        }
+    }
+
+    /// Shows a short message that fades out after two seconds.
+    pub(super) fn show_toast(&mut self, ctx: &egui::Context, text: &str) {
+        self.toast = Some((text.to_owned(), ctx.input(|i| i.time)));
+    }
+
+    fn toast_view(&mut self, ctx: &egui::Context, pal: Palette) {
+        let Some((text, at)) = &self.toast else {
+            return;
+        };
+        let age = ctx.input(|i| i.time) - at;
+        if age > 2.2 {
+            self.toast = None;
+            return;
+        }
+        ctx.request_repaint();
+        #[allow(clippy::cast_possible_truncation, reason = "a fraction of a second")]
+        let alpha = if crate::motion::enabled() {
+            ((2.2 - age) / 0.4)
+                .clamp(0.0, 1.0)
+                .min((age / 0.15).clamp(0.0, 1.0)) as f32
+        } else {
+            1.0
+        };
+        let screen = ctx.content_rect();
+        egui::Area::new(egui::Id::unique("toast"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos2(screen.center().x, screen.bottom() - 56.0))
+            .pivot(egui::Align2::CENTER_CENTER)
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.set_opacity(alpha);
+                egui::Frame::new()
+                    .fill(pal.ink)
+                    .corner_radius(CornerRadius::same(theme::R_INPUT))
+                    .inner_margin(egui::Margin::symmetric(14, 8))
+                    .show(ui, |ui| {
+                        ui.label(RichText::new(text.as_str()).color(pal.bg).size(13.0));
+                    });
             });
     }
 
@@ -2161,6 +2251,9 @@ impl App {
             self.error = (!ok).then(|| {
                 tr("Panoya kopyalanamadı.", "Could not copy to the clipboard.").to_string()
             });
+            if ok {
+                self.show_toast(ui.ctx(), tr("Panoya kopyalandı", "Copied to the clipboard"));
+            }
         }
         if self.show_keygen {
             ui.add_space(10.0);
@@ -2507,6 +2600,8 @@ impl App {
         let p = ui.painter_at(track);
         p.rect_filled(track, 2.0, pal.line);
         if let Some(f) = frac {
+            // Smooth: the bar glides to each new value instead of jumping.
+            let f = crate::motion::follow(ui.ctx(), egui::Id::unique("progress-bar"), f, 0.35);
             p.rect_filled(
                 Rect::from_min_size(track.min, vec2(track.width() * f, track.height())),
                 2.0,
@@ -2557,7 +2652,13 @@ impl App {
         let mut again = false;
         ui.with_layout(Layout::top_down(Align::Center), |ui| {
             let (g, _) = ui.allocate_exact_size(vec2(52.0, 52.0), Sense::hover());
-            draw_check(ui.painter(), g.center(), pal.accent);
+            let t = crate::motion::since_change(
+                ui.ctx(),
+                egui::Id::unique("done-mark"),
+                self.view_key(),
+                0.45,
+            );
+            draw_check_animated(ui.painter(), g.center(), pal.accent, t);
             ui.add_space(14.0);
             ui.label(
                 RichText::new(match mode {
@@ -2698,6 +2799,7 @@ impl App {
 pub fn boxed() -> Box<dyn eframe::App> {
     let mut app = App::with_prefs(crate::settings::Settings::load());
     app.scan_on_start = true;
+    app.reduce_motion = lephy_sys::a11y::reduce_motion();
     Box::new(app)
 }
 
@@ -3138,6 +3240,41 @@ fn draw_folder(p: &egui::Painter, c: Pos2, color: Color32) {
 }
 
 /// Check mark in a circle.
+/// The done mark drawn over `t` (0 → 1): the ring sweeps round with a small pop, then the tick
+/// is drawn stroke by stroke.
+fn draw_check_animated(p: &egui::Painter, c: Pos2, color: Color32, t: f32) {
+    if t >= 1.0 {
+        draw_check(p, c, color);
+        return;
+    }
+    let ring = (t / 0.6).clamp(0.0, 1.0);
+    let r = 24.0 * (0.85 + 0.15 * ring);
+    let steps = 48;
+    #[allow(clippy::cast_precision_loss, reason = "small counts")]
+    let pts: Vec<Pos2> = (0..=steps)
+        .map(|i| {
+            let a = -std::f32::consts::FRAC_PI_2
+                + std::f32::consts::TAU * ring * (i as f32 / steps as f32);
+            c + vec2(a.cos(), a.sin()) * r
+        })
+        .collect();
+    p.add(egui::Shape::line(pts, Stroke::new(2.0, color)));
+    let tick = ((t - 0.45) / 0.55).clamp(0.0, 1.0);
+    if tick > 0.0 {
+        let (a, b, e) = (
+            c + vec2(-9.0, 0.5),
+            c + vec2(-3.0, 6.5),
+            c + vec2(9.5, -6.5),
+        );
+        let first = (tick / 0.35).clamp(0.0, 1.0);
+        let mut line = vec![a, a + (b - a) * first];
+        if tick > 0.35 {
+            line.push(b + (e - b) * ((tick - 0.35) / 0.65));
+        }
+        p.add(egui::Shape::line(line, Stroke::new(2.4, color)));
+    }
+}
+
 fn draw_check(p: &egui::Painter, c: Pos2, color: Color32) {
     p.circle_stroke(c, 24.0, Stroke::new(2.0, color));
     p.add(egui::Shape::line(
@@ -3249,6 +3386,24 @@ mod tests {
         frame(&ctx, &mut app);
         app.go_home();
         assert!(!app.restore.open);
+        // Esc: from a page back home; motion off draws end states at once.
+        app.page = pages::Page::Settings;
+        app.handle_escape(&ctx);
+        ctx.input_mut(|i| {
+            i.events.push(egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        });
+        app.prefs.anim_off = true;
+        frame(&ctx, &mut app);
+        app.prefs.anim_off = false;
+        app.show_toast(&ctx, "Copied");
+        frame(&ctx, &mut app);
+        assert!(app.toast.is_some());
         for step in 0..3 {
             app.page = pages::Page::Welcome;
             app.welcome_step = step;

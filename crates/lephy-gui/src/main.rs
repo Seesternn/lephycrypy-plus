@@ -24,6 +24,8 @@ mod i18n;
 #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 mod logic;
 #[cfg(any(target_os = "macos", windows))]
+mod motion;
+#[cfg(any(target_os = "macos", windows))]
 mod secret_field;
 #[cfg(any(target_os = "macos", windows))]
 mod settings;

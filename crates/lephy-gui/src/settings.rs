@@ -48,6 +48,8 @@ pub struct Settings {
     pub lang: Option<Lang>,
     /// App lock (`None`: off).
     pub lock: Option<LockVerifier>,
+    /// Animations turned off by the user.
+    pub anim_off: bool,
 }
 
 fn path() -> Option<PathBuf> {
@@ -86,6 +88,7 @@ impl Settings {
                 ("welcome", "1") => s.welcome_done = true,
                 ("lang", "tr") => s.lang = Some(Lang::Tr),
                 ("lang", "en") => s.lang = Some(Lang::En),
+                ("anim", "0") => s.anim_off = true,
                 ("lock", v) => {
                     s.lock = v.split_once(':').and_then(|(a, b)| {
                         Some(LockVerifier {
@@ -111,6 +114,9 @@ impl Settings {
             Some(Lang::Tr) => out.push_str("lang=tr\n"),
             Some(Lang::En) => out.push_str("lang=en\n"),
             None => {}
+        }
+        if self.anim_off {
+            out.push_str("anim=0\n");
         }
         if let Some(l) = &self.lock {
             let _ = writeln!(out, "lock={}:{}", hex(&l.salt), hex(&l.tag));
@@ -240,6 +246,7 @@ mod tests {
                 salt: [1; 32],
                 tag: [2; 32],
             }),
+            anim_off: true,
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(

@@ -99,6 +99,9 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Desktop app: short animations (page and step transitions, card hover lift, folding help
+  boxes, a smoothly moving progress bar, a drawn done mark, a "Copied" notice). They follow the
+  system "reduce motion" setting and can be turned off in Settings › Appearance. Esc goes back.
 - `scripts/macos-app.sh --dmg` writes a `.sha256` next to the disk image; README "Verify your
   download" explains how to check releases (they are not notarized).
 - Desktop app: My keys › Restore from a paper backup rebuilds an identity from its 22 words with

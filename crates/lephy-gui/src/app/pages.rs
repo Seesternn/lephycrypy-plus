@@ -79,39 +79,64 @@ fn action_card(
     title: &str,
     subtitle: &str,
 ) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let (slot, resp) = ui.allocate_exact_size(size, Sense::click());
     resp.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, title));
     let hovered = resp.hovered() || resp.has_focus();
-    ui.painter().rect(
+    // Hover: colours blend in, the card lifts 2 px over a soft shadow; pressing settles it.
+    let t = crate::motion::toggle(
+        ui.ctx(),
+        resp.id.with("hover"),
+        hovered,
+        crate::motion::HOVER_SECS,
+    );
+    let lift = 2.0
+        * t
+        * if resp.is_pointer_button_down_on() {
+            0.3
+        } else {
+            1.0
+        };
+    let rect = slot.translate(vec2(0.0, -lift));
+    let p = ui.painter();
+    if t > 0.0 {
+        p.rect_filled(
+            slot.translate(vec2(0.0, 2.0)),
+            f32::from(theme::R_CARD),
+            egui::Color32::BLACK.gamma_multiply(0.11 * t),
+        );
+    }
+    p.rect(
         rect,
         f32::from(theme::R_CARD),
-        if hovered {
-            pal.accent_soft
-        } else {
-            pal.surface
-        },
-        Stroke::new(1.0, if hovered { pal.accent } else { pal.line }),
+        pal.surface.lerp_to_gamma(pal.accent_soft, t),
+        Stroke::new(1.0, pal.line.lerp_to_gamma(pal.accent, t)),
         StrokeKind::Inside,
     );
+    if resp.has_focus() {
+        p.rect_stroke(
+            rect.expand(3.0),
+            f32::from(theme::R_CARD) + 3.0,
+            Stroke::new(2.0, pal.accent.gamma_multiply(0.6)),
+            StrokeKind::Outside,
+        );
+    }
     let icon_c = rect.left_top() + vec2(30.0, 32.0);
-    ui.painter()
-        .circle_filled(icon_c, 18.0, pal.accent_soft.gamma_multiply(1.4));
-    icon(ui.painter(), icon_c, pal.accent);
-    ui.painter().text(
+    p.circle_filled(icon_c, 18.0 + 2.0 * t, pal.accent_soft.gamma_multiply(1.4));
+    icon(p, icon_c, pal.accent);
+    p.text(
         rect.left_top() + vec2(16.0, 62.0),
         egui::Align2::LEFT_TOP,
         title,
         fonts::semibold(15.5),
         pal.ink,
     );
-    let galley = ui.painter().layout(
+    let galley = p.layout(
         subtitle.to_owned(),
         fonts::regular(12.5),
         pal.muted,
         rect.width() - 32.0,
     );
-    ui.painter()
-        .galley(rect.left_top() + vec2(16.0, 84.0), galley, pal.muted);
+    p.galley(rect.left_top() + vec2(16.0, 84.0), galley, pal.muted);
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
@@ -310,10 +335,16 @@ fn step_dots(ui: &mut Ui, pal: Palette, step: u8, steps: u8) {
     let total = w_on + f32::from(steps - 1) * d + f32::from(steps - 1) * gap;
     let mut x = rect.center().x - total / 2.0;
     for i in 0..steps {
-        let w = if i == step { w_on } else { d };
+        let on = crate::motion::toggle(
+            ui.ctx(),
+            ui.scope_id().with(("step-dot", i)),
+            i == step,
+            crate::motion::PAGE_SECS,
+        );
+        let w = d + (w_on - d) * on;
         let r = egui::Rect::from_min_size(egui::pos2(x, rect.top() + 1.0), vec2(w, d));
         ui.painter()
-            .rect_filled(r, d / 2.0, if i == step { pal.accent } else { pal.line });
+            .rect_filled(r, d / 2.0, pal.line.lerp_to_gamma(pal.accent, on));
         x += w + gap;
     }
 }
@@ -642,7 +673,16 @@ impl App {
         let hovering = ui.input(|i| !i.raw.hovered_files.is_empty());
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 92.0), Sense::hover());
         let (fill, stroke) = if hovering {
-            (pal.accent_soft, Stroke::new(1.5, pal.accent))
+            // Files are being dragged over the window: the border breathes.
+            let pulse = if crate::motion::enabled() {
+                ui.ctx().request_repaint();
+                #[allow(clippy::cast_possible_truncation, reason = "sine of the clock")]
+                let s = (ui.input(|i| i.time) * 5.0).sin() as f32;
+                0.5 + 0.5 * s
+            } else {
+                1.0
+            };
+            (pal.accent_soft, Stroke::new(1.5 + pulse, pal.accent))
         } else {
             (pal.bg, Stroke::new(1.0, pal.line))
         };
@@ -1054,6 +1094,9 @@ impl App {
             self.error = (!ok).then(|| {
                 tr("Panoya kopyalanamadı.", "Could not copy to the clipboard.").to_string()
             });
+            if ok {
+                self.show_toast(ui.ctx(), tr("Panoya kopyalandı", "Copied to the clipboard"));
+            }
         }
         if let Some(e) = &self.error {
             ui.add_space(6.0);
@@ -1114,6 +1157,7 @@ impl App {
     // -----------------------------------------------------------------------------------------
     // Settings
 
+    #[allow(clippy::too_many_lines, reason = "one page laid out top to bottom")]
     pub(super) fn settings_view(&mut self, ui: &mut Ui, pal: Palette) {
         ui.label(
             RichText::new(tr("Ayarlar", "Settings"))
@@ -1131,6 +1175,28 @@ impl App {
             ),
             |ui| self.language_choice(ui),
         );
+        section(ui, pal, tr("Görünüm", "Appearance"), "", |ui| {
+            let mut on = !self.prefs.anim_off;
+            if ui
+                .checkbox(&mut on, tr("Animasyonlar", "Animations"))
+                .changed()
+            {
+                self.prefs.anim_off = !on;
+                self.save_prefs();
+            }
+            let note = if self.reduce_motion {
+                tr(
+                    "Sistemde \"hareketi azalt\" açık olduğu için animasyonlar kapalı.",
+                    "Animations are off because the system asks to reduce motion.",
+                )
+            } else {
+                tr(
+                    "Sayfa geçişleri, kartlar ve açılır kutular için kısa geçişler.",
+                    "Short transitions for pages, cards and folding boxes.",
+                )
+            };
+            ui.label(RichText::new(note).color(pal.muted).size(12.5));
+        });
         section(
             ui,
             pal,

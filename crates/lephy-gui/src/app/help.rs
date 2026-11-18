@@ -3,6 +3,7 @@
 
 use super::{Palette, fonts, theme};
 use crate::i18n::tr;
+use eframe::egui::collapsing_header::CollapsingState;
 use eframe::egui::{self, CornerRadius, CursorIcon, RichText, Sense, Stroke, Ui, vec2};
 
 /// A help topic: a question as title and a few short paragraphs or steps.
@@ -190,7 +191,12 @@ pub(super) fn body_ui(ui: &mut Ui, pal: Palette, topic: Topic) {
 /// A fold-out help box: a "?" badge and the question; clicking shows the answer.
 pub(super) fn help_box(ui: &mut Ui, pal: Palette, topic: Topic) {
     let id = ui.scope_id().with(("lephy-help", topic as u8));
-    let mut open = ui.ctx().data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+    let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, false);
+    let openness = if crate::motion::enabled() {
+        crate::motion::ease_out(state.openness(ui.ctx()))
+    } else {
+        f32::from(u8::from(state.is_open()))
+    };
     egui::Frame::new()
         .fill(pal.accent_soft.gamma_multiply(0.6))
         .stroke(Stroke::new(1.0, pal.accent.gamma_multiply(0.25)))
@@ -218,9 +224,10 @@ pub(super) fn help_box(ui: &mut Ui, pal: Palette, topic: Topic) {
                         .wrap(),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // The chevron turns over as the box opens.
                         let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
                         let c = r.center();
-                        let d = if open { -3.0 } else { 3.0 };
+                        let d = 3.0 - 6.0 * openness;
                         let st = Stroke::new(1.6, pal.accent);
                         ui.painter()
                             .line_segment([c + vec2(-5.0, -d / 1.5), c + vec2(0.0, d)], st);
@@ -232,14 +239,21 @@ pub(super) fn help_box(ui: &mut Ui, pal: Palette, topic: Topic) {
             let click = ui.interact(head.rect, id.with("head"), Sense::click());
             let click = click.on_hover_cursor(CursorIcon::PointingHand);
             if click.clicked() {
-                open = !open;
+                state.toggle(ui);
             }
-            if open {
-                ui.add_space(8.0);
-                body_ui(ui, pal, topic);
+            if crate::motion::enabled() {
+                state.show_body_unindented(ui, |ui| {
+                    ui.add_space(8.0);
+                    body_ui(ui, pal, topic);
+                });
+            } else {
+                if state.is_open() {
+                    ui.add_space(8.0);
+                    body_ui(ui, pal, topic);
+                }
+                state.store(ui.ctx());
             }
         });
-    ui.ctx().data_mut(|d| d.insert_temp(id, open));
     ui.add_space(8.0);
 }
 
