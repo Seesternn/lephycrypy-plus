@@ -27,8 +27,11 @@ pub const FEATURE_RECIPIENTS: u8 = 0x02;
 /// `feature_flags.bit2`: the file ends with a 136-byte sender-signature trailer after the last
 /// chunk (`signature.rs`).
 pub const FEATURE_SIGNED: u8 = 0x04;
+/// `feature_flags.bit3` (with bit1): every recipient stanza is a post-quantum hybrid stanza
+/// (ML-KEM-768 + X25519, `hybrid.rs`).
+pub const FEATURE_PQ: u8 = 0x08;
 /// Known v2 feature bits.
-const KNOWN_FEATURES: u8 = FEATURE_COMPRESSED | FEATURE_RECIPIENTS | FEATURE_SIGNED;
+const KNOWN_FEATURES: u8 = FEATURE_COMPRESSED | FEATURE_RECIPIENTS | FEATURE_SIGNED | FEATURE_PQ;
 /// Most recipients one file can have.
 pub const MAX_RECIPIENTS: u16 = 64;
 /// One recipient stanza: `eph_pk 32 ‖ wrap_nonce 24 ‖ commit 32 ‖ wrapped_fk 48`.
@@ -71,6 +74,8 @@ pub struct Header {
     pub recipients: u16,
     /// A sender-signature trailer follows the last chunk (v2 `feature_flags.bit2`).
     pub signed: bool,
+    /// The recipient stanzas are post-quantum hybrid stanzas (v2 `feature_flags.bit3`).
+    pub pq: bool,
     /// Argon2 salt.
     pub salt: [u8; 32],
     /// STREAM nonce prefix (all 24 bytes; the tail is zero for AES).
@@ -157,13 +162,21 @@ impl Header {
         if self.signed {
             f |= FEATURE_SIGNED;
         }
+        if self.pq {
+            f |= FEATURE_PQ;
+        }
         f
     }
 
     /// Length of the recipient stanzas that follow the header (0 for password files).
     #[must_use]
     pub fn ext_len(&self) -> usize {
-        usize::from(self.recipients) * STANZA_LEN
+        usize::from(self.recipients)
+            * if self.pq {
+                crate::hybrid::PQ_STANZA_LEN
+            } else {
+                STANZA_LEN
+            }
     }
 
     /// Parses and runs the format checks (FORMAT.md › Decryption order, step 1).
@@ -213,6 +226,9 @@ impl Header {
         }
         if b[192..224].iter().any(|&x| x != 0) {
             return Err(corrupt("reserved field ≠ 0"));
+        }
+        if features & FEATURE_PQ != 0 && features & FEATURE_RECIPIENTS == 0 {
+            return Err(corrupt("post-quantum flag without recipients"));
         }
         let recipients = if features & FEATURE_RECIPIENTS != 0 {
             // No password slot: kdf_id 0 and every password field zero.
@@ -282,6 +298,7 @@ impl Header {
             compressed: features & FEATURE_COMPRESSED != 0,
             recipients,
             signed: features & FEATURE_SIGNED != 0,
+            pq: features & FEATURE_PQ != 0,
             salt,
             stream_nonce_prefix,
             wrap_nonce,
@@ -343,6 +360,7 @@ mod tests {
             compressed: false,
             recipients: 0,
             signed: false,
+            pq: false,
             salt: [1; 32],
             stream_nonce_prefix: {
                 let mut p = [0u8; 24];

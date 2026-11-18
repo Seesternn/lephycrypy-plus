@@ -100,7 +100,11 @@ pub fn unlock_header(
         let Some(id) = opts.identity else {
             return Err(Error::IdentityRequired);
         };
-        let fk = crate::recipient::unwrap_with(bytes, header.alg, ext, id)?;
+        let fk = if header.pq {
+            crate::hybrid::unwrap_with(bytes, header.alg, ext, id.secret_bytes(), &id.public().0)?
+        } else {
+            crate::recipient::unwrap_with(bytes, header.alg, ext, id)?
+        };
         return finish_unlock(header, bytes, ext, fk);
     }
     if opts.identity.is_some() {
@@ -198,18 +202,37 @@ pub fn build_recipient_header(
     recipients: &[PublicKey],
     entropy: &mut dyn Entropy,
 ) -> Result<Unlocked> {
-    build_recipient_header_with(params, recipients, Reuse::default(), entropy)
+    build_recipient_header_with(params, Keys::Classic(recipients), Reuse::default(), entropy)
+}
+
+/// The recipients of a file encrypted to public keys: all classic (X25519) or all post-quantum
+/// hybrid (ML-KEM-768 + X25519).
+#[derive(Clone, Copy, Debug)]
+pub enum Keys<'a> {
+    /// `lphy1…` keys.
+    Classic(&'a [PublicKey]),
+    /// `lphypq1…` keys.
+    Hybrid(&'a [crate::hybrid::HybridKey]),
+}
+
+impl Keys<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Keys::Classic(r) => r.len(),
+            Keys::Hybrid(r) => r.len(),
+        }
+    }
 }
 
 /// [`build_recipient_header`] that keeps FK and `stream_nonce_prefix` when given (`set_recipients`);
 /// only the missing ones are drawn from `entropy`.
 fn build_recipient_header_with(
     params: &NewHeaderParams,
-    recipients: &[PublicKey],
+    keys: Keys<'_>,
     reuse: Reuse<'_>,
     entropy: &mut dyn Entropy,
 ) -> Result<Unlocked> {
-    let count = u16::try_from(recipients.len())
+    let count = u16::try_from(keys.len())
         .ok()
         .filter(|n| (1..=crate::header::MAX_RECIPIENTS).contains(n))
         .ok_or_else(|| {
@@ -244,6 +267,7 @@ fn build_recipient_header_with(
         keyfile: false,
         compressed: params.compressed,
         signed: params.signed,
+        pq: matches!(keys, Keys::Hybrid(_)),
         recipients: count,
         salt: [0u8; 32],
         stream_nonce_prefix: prefix,
@@ -253,7 +277,10 @@ fn build_recipient_header_with(
         header_mac: [0u8; 32],
     };
     let partial = header.to_bytes();
-    let ext = crate::recipient::wrap_for(&partial, params.alg, &fk, recipients, entropy)?;
+    let ext = match keys {
+        Keys::Classic(r) => crate::recipient::wrap_for(&partial, params.alg, &fk, r, entropy)?,
+        Keys::Hybrid(r) => crate::hybrid::wrap_for(&partial, params.alg, &fk, r, entropy)?,
+    };
     let (data_key, mac_key) = kdf::derive_fk_subkeys(&fk, &prefix)?;
     header.header_mac = kdf::header_mac(&mac_key, &mac_input(&partial, &ext))?;
     drop(mac_key);
@@ -333,6 +360,7 @@ pub fn build_header(
         keyfile: keyfile_digest.is_some(),
         compressed: params.compressed,
         signed: params.signed,
+        pq: false,
         recipients: 0,
         salt,
         stream_nonce_prefix: prefix,
@@ -622,6 +650,30 @@ pub fn encrypt_to_recipients(
     )
 }
 
+/// Encrypts to post-quantum hybrid recipients (ML-KEM-768 + X25519): an attacker must break
+/// both to unwrap the file key.
+///
+/// # Errors
+/// As [`encrypt_to_recipients`].
+pub fn encrypt_to_hybrid(
+    input: &Input<'_>,
+    output: &Path,
+    recipients: &[crate::hybrid::HybridKey],
+    opts: &EncryptOptions,
+    entropy: &mut dyn Entropy,
+    log: &mut dyn FnMut(&str),
+) -> Result<EncryptReport> {
+    encrypt_with(
+        input,
+        output,
+        Lock::Hybrid(recipients),
+        None,
+        opts,
+        entropy,
+        log,
+    )
+}
+
 /// How the file key is protected.
 /// How the file key is protected.
 #[derive(Clone, Copy)]
@@ -630,6 +682,8 @@ pub enum Lock<'a> {
     Password(&'a SecretBytes, Option<&'a [u8; 32]>),
     /// X25519 recipients.
     Recipients(&'a [PublicKey]),
+    /// Post-quantum hybrid recipients (ML-KEM-768 + X25519).
+    Hybrid(&'a [crate::hybrid::HybridKey]),
 }
 
 /// Encrypts and signs with `signer` (FORMAT.md › Format version 2 (signatures)). Anyone who can
@@ -707,6 +761,7 @@ fn encrypt_with(
         let chunk = crate::header::chunk_size_for(opts.chunk_code).unwrap_or(1 << 20) as u64;
         let ext = match lock {
             Lock::Recipients(r) => (r.len() * crate::header::STANZA_LEN) as u64,
+            Lock::Hybrid(r) => (r.len() * crate::hybrid::PQ_STANZA_LEN) as u64,
             Lock::Password(..) => 0,
         };
         let est = HEADER_LEN as u64 + ext + size + 64 + (size / chunk + 1) * TAG_LEN as u64;
@@ -727,6 +782,9 @@ fn encrypt_with(
             log,
         )?,
         Lock::Recipients(r) => build_recipient_header(&params, r, entropy)?,
+        Lock::Hybrid(r) => {
+            build_recipient_header_with(&params, Keys::Hybrid(r), Reuse::default(), entropy)?
+        }
     };
     let cipher = SharedCipher::new(opts.alg, key32(&unlocked.data_key)?)?;
     let aad = chunk_aad(&unlocked.bytes);
@@ -1586,7 +1644,7 @@ pub fn list(
 pub fn set_recipients(
     path: &Path,
     identity: &Identity,
-    recipients: &[PublicKey],
+    recipients: Keys<'_>,
     opts: UnlockOptions<'_>,
     entropy: &mut dyn Entropy,
     log: &mut dyn FnMut(&str),
@@ -1606,6 +1664,21 @@ pub fn set_recipients(
     };
     let empty = SecretBytes::with_capacity(0).map_err(arena_err)?;
     let u = unlock_header(&b, &ext, &empty, None, opts, log)?;
+    // The post-quantum flag is part of the chunk AAD: the kind of recipients cannot change.
+    match (u.header.pq, recipients) {
+        (true, Keys::Classic(_)) => {
+            return Err(Error::Environment(
+                "this file uses post-quantum recipients; give lphypq1… keys".into(),
+            ));
+        }
+        (false, Keys::Hybrid(_)) => {
+            return Err(Error::Environment(
+                "this file uses classic recipients; give lphy1… keys (encrypt again for post-quantum protection)"
+                    .into(),
+            ));
+        }
+        _ => {}
+    }
     let params = NewHeaderParams {
         alg: u.header.alg,
         content_type: u.header.content_type,
@@ -1634,7 +1707,11 @@ pub fn set_recipients(
     drop(f);
     w.commit(true)?;
     let _ = std::fs::set_permissions(path, orig_md.permissions());
-    if !recipients.contains(&identity.public()) {
+    let still_in = match recipients {
+        Keys::Classic(r) => r.contains(&identity.public()),
+        Keys::Hybrid(r) => r.iter().any(|k| k.x == identity.public().0),
+    };
+    if !still_in {
         log("warning: your own key is not in the new list; you can no longer open this file");
     }
     log("warning: a removed recipient who kept a copy of the old file can still open that copy");

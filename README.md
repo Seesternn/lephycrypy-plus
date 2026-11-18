@@ -23,7 +23,9 @@ effort** basis.
 - **Files and folders** become one `.lphy` archive: names, structure and (by default) size are
   hidden. XChaCha20-Poly1305 or AES-256-GCM, Argon2id key derivation (512 MiB by default).
 - **Password or public keys.** Use a password (optionally plus a key file), or encrypt to one or
-  more X25519 public keys so only their owners can open the file — no shared password needed.
+  more X25519 public keys so only their owners can open the file — no shared password needed;
+  optionally post-quantum (ML-KEM-768 + X25519), with sender signatures (Ed25519), a 22-word
+  paper backup of your identity and changing the recipients later.
 - **Batch encryption.** Several files or folders at once, each to its own `.lphy`.
 - **Damage tolerance.** Optional Reed–Solomon error correction repairs damage from failing USB
   sticks and disks; a recovery mode saves what can be saved from a damaged file.
@@ -119,6 +121,15 @@ lephycrypy recipients report.lphy -i me.lphykey -r me.pub -r new-colleague.pub
 
 The content is not re-encrypted; a removed recipient who kept a copy of the old file can still
 open that copy.
+
+For protection against future quantum computers, encrypt to the recipients' post-quantum keys
+(ML-KEM-768 together with X25519; the third line of their `.pub` file):
+
+```bash
+lephycrypy encrypt report.pdf -o report.lphy --pq -r friend.pub
+```
+
+In the app, tick **Post-quantum** under "With public keys".
 
 Sign what you send, so recipients know it came from you and was not changed:
 

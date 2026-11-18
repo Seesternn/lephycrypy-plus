@@ -67,6 +67,13 @@
   "plaintext": "signed by sk1",
   "signer_identity": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f"
  },
+ "v17": {
+  "identities": [
+   "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+  ],
+  "mlkem_ek_blake3": "d8c2bcf17e743f5922dd8537ba13c4756ac8d79e8063ea362ed7ef3f57718c77",
+  "plaintext": "post-quantum hello"
+ },
  "v2": {
   "alg": 1,
   "chunk_code": 0,

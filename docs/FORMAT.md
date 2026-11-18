@@ -285,6 +285,36 @@ removed from the existing list individually.
 | 14 | 1 | 0 | 0 | `"to a public key"`, two recipients `sk1 = 80..9f`, `sk2 = a0..bf`; `e1 = c0..df`, `wrap_nonce1 = 40..57`; `e2 = e0..ff`, `wrap_nonce2 = 58..6f`; prefix and FK as above | byte-identical both ways |
 | 15 | 1 | 0 | 0 | vector 14 with its recipients replaced by `sk2` only: `e = 10..2f`, `wrap_nonce = 30..47`; same chunks | byte-identical |
 
+## Format version 2 (hybrid recipients)
+
+`feature_flags.bit3` (only together with bit1) marks a file whose recipients are all
+post-quantum hybrid recipients: breaking the file key needs breaking both X25519 and ML-KEM-768
+(FIPS 203). Classic and hybrid stanzas are never mixed, since a classic stanza would leave a
+quantum-weak way in. The header is as for X25519 recipients; each stanza is 1224 bytes:
+
+```
+stanza     = E (32) ‖ ct (1088) ‖ wrap_nonce (24; AES: bytes 12..24 zero) ‖ commit (32) ‖ wrapped_fk (48)
+
+E          = X25519(e, 9);  ss_x = X25519(e, pk_x)            all-zero → reject
+ct, ss_k   = ML-KEM-768.Encaps(ek, m)                        m: 32 random bytes
+kek        = HKDF-SHA512(ikm = ss_x ‖ ss_k,
+                         salt = E ‖ pk_x ‖ BLAKE3(ek) ‖ BLAKE3(ct), info = "lphy+/v2/hybrid", L = 32)
+wrap_key, commit, wrapped_fk: as for X25519 stanzas (salt E, AAD = header[0..144] ‖ E)
+```
+
+The ML-KEM key of an identity comes from its secret: `d = HKDF-SHA512(sk, "",
+"lphy+/v2/ml-kem-768/d")`, `z = HKDF-SHA512(sk, "", "lphy+/v2/ml-kem-768/z")`,
+`(ek, dk) = ML-KEM-768.KeyGen_internal(d, z)`, so an identity file and its paper backup cover it.
+A reader decapsulates every stanza (implicit rejection gives an unrelated key for a foreign or
+changed `ct`) and compares `commit` in constant time. The hybrid public key text is `lphypq1` +
+base32(`pk_x ‖ ek ‖ BLAKE3(pk_x ‖ ek)[0..4]`), 1959 characters; `keygen` writes it as the third
+line of the `.pub` file. Because bit3 is part of `chunk_aad`, replacing the recipients keeps the
+kind: a classic file cannot become post-quantum in place.
+
+| # | alg | chunk_code | content_type | Input | Note |
+|---|---|---|---|---|---|
+| 17 | 1 | 0 | 0 | `"post-quantum hello"` to the hybrid key of `sk2`; `e = c0..df`, `m = 10..2f`, `wrap_nonce = 40..57`; prefix and FK as above | made by Rust (fixed `m`); the reference rebuilds every byte from the decapsulated `ct` |
+
 ## Format version 2 (signatures)
 
 `feature_flags.bit2` marks a file signed by its sender. It works with password and recipient

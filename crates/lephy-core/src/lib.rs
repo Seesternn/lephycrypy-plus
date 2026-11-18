@@ -9,6 +9,7 @@ pub mod entropy;
 pub mod envelope;
 pub mod error;
 pub mod header;
+pub mod hybrid;
 pub mod io;
 pub mod kdf;
 pub mod names;

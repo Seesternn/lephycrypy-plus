@@ -67,7 +67,7 @@ impl fmt::Debug for PublicKey {
 
 const B32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 
-fn base32_encode(data: &[u8]) -> String {
+pub(crate) fn base32_encode(data: &[u8]) -> String {
     let mut out = String::with_capacity(data.len().div_ceil(5) * 8);
     let mut acc: u32 = 0;
     let mut bits = 0;
@@ -85,7 +85,7 @@ fn base32_encode(data: &[u8]) -> String {
     out
 }
 
-fn base32_decode(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn base32_decode(s: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(s.len() * 5 / 8);
     let mut acc: u32 = 0;
     let mut bits = 0;
@@ -165,7 +165,10 @@ pub fn parse_public_keys(text: &str) -> Result<Vec<PublicKey>> {
     text.lines()
         .map(str::trim)
         .filter(|l| {
-            !l.is_empty() && !l.starts_with('#') && !l.starts_with(crate::signature::SIGNER_PREFIX)
+            !l.is_empty()
+                && !l.starts_with('#')
+                && !l.starts_with(crate::signature::SIGNER_PREFIX)
+                && !l.starts_with(crate::hybrid::HYBRID_PREFIX)
         })
         .map(PublicKey::from_str)
         .collect()
@@ -209,6 +212,15 @@ impl Identity {
     #[must_use]
     pub fn signer(&self) -> crate::signature::SignerKey {
         crate::signature::signer_key(self.secret.expose())
+    }
+
+    /// The post-quantum hybrid public key (`lphypq1…`): this identity's X25519 key and its
+    /// ML-KEM-768 key, both derived from the same secret.
+    ///
+    /// # Errors
+    /// Locked-memory error.
+    pub fn hybrid_public(&self) -> Result<crate::hybrid::HybridKey> {
+        crate::hybrid::public_of(self.secret.expose(), self.public.0)
     }
 
     /// The secret bytes, for signing inside the crate.

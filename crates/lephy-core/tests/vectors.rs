@@ -33,6 +33,7 @@ const V13: &[u8] = include_bytes!("../../../tests/kat/vectors/v13.lphy");
 const V14: &[u8] = include_bytes!("../../../tests/kat/vectors/v14.lphy");
 const V15: &[u8] = include_bytes!("../../../tests/kat/vectors/v15.lphy");
 const V16: &[u8] = include_bytes!("../../../tests/kat/vectors/v16.lphy");
+const V17: &[u8] = include_bytes!("../../../tests/kat/vectors/v17.lphy");
 const META: &str = include_str!("../../../tests/kat/vectors/vectors.json");
 
 fn common_kdf() -> KdfParams {
@@ -384,7 +385,7 @@ fn v15_set_recipients_matches_reference() {
     ops::set_recipients(
         &file,
         &id1,
-        &[id2.public()],
+        ops::Keys::Classic(&[id2.public()]),
         UnlockOptions::default(),
         &mut e,
         &mut |_| {},
@@ -419,7 +420,7 @@ fn v15_set_recipients_matches_reference() {
         ops::set_recipients(
             &file,
             &id2,
-            &[id1.public()],
+            ops::Keys::Classic(&[id1.public()]),
             UnlockOptions::default(),
             &mut lephy_core::entropy::OsEntropy,
             &mut |_| {}
@@ -514,7 +515,7 @@ fn v16_signed_matches_reference_and_is_checked() {
     ops::set_recipients(
         &out,
         &id2,
-        &[id2.public(), id1.public()],
+        ops::Keys::Classic(&[id2.public(), id1.public()]),
         UnlockOptions::default(),
         &mut lephy_core::entropy::OsEntropy,
         &mut |_| {},
@@ -551,5 +552,104 @@ fn v16_signed_matches_reference_and_is_checked() {
         open(&d.join("v14.lphy"), Some(id1.signer()), 6),
         Err(Error::SignerMismatch(_))
     ));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn v17_hybrid_matches_reference() {
+    use lephy_core::error::Error;
+    use lephy_core::ops::{Identity, Keys, UnlockOptions};
+    let d = std::env::temp_dir().join(format!("lphy-v17-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let range = |a: u16, b: u16| -> Vec<u8> { (a..b).map(|x| x as u8).collect() };
+    let id1 = Identity::from_secret(SecretBytes::from_slice(&range(0x80, 0xA0)).unwrap()).unwrap();
+    let id2 = Identity::from_secret(SecretBytes::from_slice(&range(0xA0, 0xC0)).unwrap()).unwrap();
+    let hk2 = id2.hybrid_public().unwrap();
+    // The ML-KEM key derived from the identity is the reference's.
+    let want = META
+        .split("\"mlkem_ek_blake3\": \"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    assert_eq!(blake3::hash(&hk2.ek[..]).to_hex().as_str(), want);
+    // The key text round-trips.
+    let text = hk2.to_string();
+    assert!(text.starts_with("lphypq1"));
+    assert_eq!(text.parse::<lephy_core::hybrid::HybridKey>().unwrap(), hk2);
+    // Rust → the bytes the reference rebuilt (entropy: prefix, FK, e, m, wrap_nonce).
+    let src = d.join("pt");
+    std::fs::write(&src, b"post-quantum hello").unwrap();
+    let mut e = FixedEntropy::new(vec![
+        range(0x20, 0x20 + 19),
+        range(0x60, 0x80),
+        range(0xC0, 0xE0),
+        range(0x10, 0x30),
+        range(0x40, 0x58),
+    ]);
+    let out = d.join("v17.lphy");
+    ops::encrypt_to_hybrid(
+        &Input::Path(&src),
+        &out,
+        std::slice::from_ref(&hk2),
+        &opts(AlgId::XChaCha20Poly1305, 0, true, Some(false)),
+        &mut e,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), V17);
+    let h = ops::info(&out).unwrap();
+    assert!(h.pq && h.recipients == 1);
+    let open = |id: &Identity, n: u32| {
+        ops::decrypt(
+            &out,
+            &ops::Output::Path(&d.join(format!("out{n}")), false),
+            &pwd(""),
+            None,
+            DecryptOptions {
+                unlock: UnlockOptions {
+                    identity: Some(id),
+                    ..UnlockOptions::default()
+                },
+                ..DecryptOptions::default()
+            },
+            &mut |_| {},
+        )
+    };
+    open(&id2, 2).unwrap();
+    assert_eq!(
+        std::fs::read(d.join("out2")).unwrap(),
+        b"post-quantum hello"
+    );
+    assert!(matches!(open(&id1, 1), Err(Error::NoMatchingIdentity)));
+    // A changed ML-KEM ciphertext no longer matches (implicit rejection), nothing is written.
+    let mut bad = V17.to_vec();
+    bad[256 + 32 + 100] ^= 1;
+    std::fs::write(&out, &bad).unwrap();
+    assert!(open(&id2, 3).is_err());
+    assert!(!d.join("out3").exists());
+    // Replacing recipients keeps the kind: hybrid keys only.
+    std::fs::write(&out, V17).unwrap();
+    let mut log = |_: &str| {};
+    let keep = |keys: Keys<'_>, log: &mut dyn FnMut(&str)| {
+        ops::set_recipients(
+            &out,
+            &id2,
+            keys,
+            UnlockOptions::default(),
+            &mut lephy_core::entropy::OsEntropy,
+            log,
+        )
+    };
+    assert!(keep(Keys::Classic(&[id1.public()]), &mut log).is_err());
+    let hk1 = id1.hybrid_public().unwrap();
+    keep(Keys::Hybrid(&[hk1]), &mut log).unwrap();
+    open(&id1, 4).unwrap();
+    assert!(matches!(open(&id2, 5), Err(Error::NoMatchingIdentity)));
+    // A classic file cannot be turned into a hybrid one in place.
+    std::fs::write(&out, V14).unwrap();
+    assert!(keep(Keys::Hybrid(std::slice::from_ref(&hk2)), &mut log).is_err());
     let _ = std::fs::remove_dir_all(&d);
 }

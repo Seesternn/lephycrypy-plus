@@ -78,6 +78,12 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Post-quantum hybrid recipients (ML-KEM-768 + X25519): `encrypt --pq`, "Post-quantum" in the
+  app. Breaking a file needs breaking both. The ML-KEM key is derived from the identity, so
+  existing identities and paper backups cover it; `keygen` writes the `lphypq1…` key as the third
+  line of the `.pub` file. Vector 17 is made by Rust and rebuilt byte for byte by the Python
+  reference from the decapsulated ciphertext. New dependency `ml-kem` 0.3 (RustCrypto, with
+  `kem`, `module-lattice`, `sha3`, `shake`, `keccak`, `sponge-cursor`), `cargo vet` exemptions.
 - Sender signatures (Ed25519): `encrypt --sign ID`, `decrypt/verify/list --expect-signer KEY|FILE`,
   "Sign with my identity" in the app and the signer on its result screen. The signature and the
   signer's `lphysig1…` key are encrypted in a trailer, checked before anything is written, and

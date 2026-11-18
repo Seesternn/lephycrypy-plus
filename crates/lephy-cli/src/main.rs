@@ -241,6 +241,10 @@ enum Command {
         /// line). Repeat for several recipients; any one of them can decrypt.
         #[arg(short = 'r', long = "recipient", value_name = "KEY|FILE")]
         recipients: Vec<String>,
+        /// Post-quantum: encrypt to the recipients' `lphypq1…` hybrid keys (ML-KEM-768 + X25519)
+        /// instead of their `lphy1…` keys. Every recipient needs one (their `.pub` has it).
+        #[arg(long, requires = "recipients")]
+        pq: bool,
         /// Write a file as a raw stream instead of an archive (the name is not hidden; stdin is always raw).
         #[arg(long)]
         raw: bool,
@@ -639,6 +643,8 @@ enum Remove {
 struct EncryptJob<'a> {
     /// Sign with this identity.
     signer: Option<&'a Identity>,
+    /// Post-quantum hybrid recipients (instead of `recipients`).
+    hybrid: &'a [lephy_core::hybrid::HybridKey],
     split: Option<u64>,
     /// Public keys; empty = password encryption.
     recipients: &'a [PublicKey],
@@ -662,13 +668,17 @@ fn encrypt_one(
     } else {
         Input::Path(input)
     };
-    let lock = if job.recipients.is_empty() {
+    let lock = if !job.hybrid.is_empty() {
+        ops::Lock::Hybrid(job.hybrid)
+    } else if job.recipients.is_empty() {
         ops::Lock::Password(job.nfc, job.keyfile)
     } else {
         ops::Lock::Recipients(job.recipients)
     };
     let rep = if let Some(id) = job.signer {
         ops::encrypt_signed(&inp, out, lock, id, job.opts, &mut OsEntropy, log)?
+    } else if !job.hybrid.is_empty() {
+        ops::encrypt_to_hybrid(&inp, out, job.hybrid, job.opts, &mut OsEntropy, log)?
     } else if job.recipients.is_empty() {
         ops::encrypt(
             &inp,
@@ -838,6 +848,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             kdf,
             pw,
             recipients,
+            pq,
             raw,
             pad,
             no_pad,
@@ -885,8 +896,12 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                     return Err(Error::Cancelled("secure deletion not confirmed".into()));
                 }
             }
-            let pks = recipient_keys(recipients)?;
-            if !pks.is_empty() {
+            let (pks, hybrid) = if *pq {
+                (Vec::new(), hybrid_keys(recipients)?)
+            } else {
+                (recipient_keys(recipients)?, Vec::new())
+            };
+            if !pks.is_empty() || !hybrid.is_empty() {
                 if pw.keyfile.is_some() || pw.password_file.is_some() || pw.password_stdin {
                     return Err(Error::Environment(
                         "--recipient replaces the password; do not combine it with password or key-file options".into(),
@@ -899,7 +914,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 }
             }
             let kdf = kdf.params();
-            let (keyfile, nfc) = if pks.is_empty() {
+            let (keyfile, nfc) = if pks.is_empty() && hybrid.is_empty() {
                 kdf.check_encrypt_policy()?;
                 let keyfile = keyfile_of(pw.keyfile.as_ref())?;
                 let source = source_of(pw);
@@ -957,6 +972,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 signer: signer.as_ref(),
                 split: *split_size,
                 recipients: &pks,
+                hybrid: &hybrid,
                 nfc: &nfc,
                 keyfile: keyfile.as_deref(),
                 opts: &opts,
@@ -1225,7 +1241,10 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 .create_new(true)
                 .open(&pub_path)?;
             // The signer key goes into the same file: `-r` ignores it, `--expect-signer` uses it.
-            std::io::Write::write_all(&mut f, format!("{pk}\n{}\n", id.signer()).as_bytes())?;
+            std::io::Write::write_all(
+                &mut f,
+                format!("{pk}\n{}\n{}\n", id.signer(), id.hybrid_public()?).as_bytes(),
+            )?;
             println!("{pk}");
             eprintln!(
                 "signer key: {} (others check your signatures with it)",
@@ -1241,12 +1260,26 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             pw,
             unlock,
         } => {
-            let keys = recipient_keys(recipients)?;
+            // The file decides the kind of keys (the post-quantum flag cannot change in place).
+            let pq = ops::info(input).is_ok_and(|h| h.pq);
+            let (classic, hybrid) = if pq {
+                (Vec::new(), hybrid_keys(recipients)?)
+            } else {
+                (recipient_keys(recipients)?, Vec::new())
+            };
             let (_, _, id) = unlock_material(input, Some(identity), pw, *unlock, log)?;
             let id = id.ok_or(Error::IdentityRequired)?;
             memory_warning(unlock.strict_memory)?;
-            ops::set_recipients(input, &id, &keys, unlock.opts(), &mut OsEntropy, log)?;
-            println!("recipients replaced: {} key(s)", keys.len());
+            let keys = if pq {
+                ops::Keys::Hybrid(&hybrid)
+            } else {
+                ops::Keys::Classic(&classic)
+            };
+            ops::set_recipients(input, &id, keys, unlock.opts(), &mut OsEntropy, log)?;
+            println!(
+                "recipients replaced: {} key(s)",
+                classic.len() + hybrid.len()
+            );
             Ok(())
         }
         Command::List {
@@ -1289,7 +1322,7 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
         Command::Info { input } => {
             let h = ops::info(input)?;
             println!("file:         {}", disp(input));
-            let version = if h.compressed || h.recipients > 0 || h.signed {
+            let version = if h.compressed || h.recipients > 0 || h.signed || h.pq {
                 2
             } else {
                 lephy_core::FORMAT_VERSION
@@ -1313,8 +1346,13 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             }
             if h.recipients > 0 {
                 println!(
-                    "recipients:   {} (public key; needs --identity)",
-                    h.recipients
+                    "recipients:   {} ({}; needs --identity)",
+                    h.recipients,
+                    if h.pq {
+                        "post-quantum hybrid ML-KEM-768 + X25519"
+                    } else {
+                        "public key X25519"
+                    }
                 );
             } else {
                 println!(
@@ -1462,7 +1500,10 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
                 .create_new(true)
                 .open(&pub_path)?;
             // The signer key goes into the same file: `-r` ignores it, `--expect-signer` uses it.
-            std::io::Write::write_all(&mut f, format!("{pk}\n{}\n", id.signer()).as_bytes())?;
+            std::io::Write::write_all(
+                &mut f,
+                format!("{pk}\n{}\n{}\n", id.signer(), id.hybrid_public()?).as_bytes(),
+            )?;
             println!("{pk}");
             eprintln!(
                 "signer key: {} (others check your signatures with it)",
@@ -1523,6 +1564,13 @@ fn recipient_keys(values: &[String]) -> Result<Vec<PublicKey>> {
     let mut out = Vec::new();
     for v in values {
         if v.trim_start()
+            .starts_with(lephy_core::hybrid::HYBRID_PREFIX)
+        {
+            return Err(Error::Environment(
+                "an lphypq1… key is a post-quantum key; add --pq to encrypt to it".into(),
+            ));
+        }
+        if v.trim_start()
             .starts_with(lephy_core::recipient::PUBLIC_PREFIX)
         {
             out.push(v.parse::<PublicKey>()?);
@@ -1549,6 +1597,44 @@ fn recipient_keys(values: &[String]) -> Result<Vec<PublicKey>> {
             true
         }
     });
+    Ok(out)
+}
+
+/// Post-quantum hybrid keys: `lphypq1…` values or files with one (each file must have one).
+fn hybrid_keys(values: &[String]) -> Result<Vec<lephy_core::hybrid::HybridKey>> {
+    let mut out: Vec<lephy_core::hybrid::HybridKey> = Vec::new();
+    for v in values {
+        let keys = if v
+            .trim_start()
+            .starts_with(lephy_core::hybrid::HYBRID_PREFIX)
+        {
+            vec![v.parse()?]
+        } else if v
+            .trim_start()
+            .starts_with(lephy_core::recipient::PUBLIC_PREFIX)
+        {
+            return Err(Error::Environment(
+                "--pq needs the recipients' lphypq1… keys (in their .pub files), not lphy1… keys"
+                    .into(),
+            ));
+        } else {
+            let text = std::fs::read_to_string(v)
+                .map_err(|e| Error::Environment(format!("recipient {}: {e}", escape_display(v))))?;
+            let keys = lephy_core::hybrid::parse_hybrid_keys(&text)?;
+            if keys.is_empty() {
+                return Err(Error::Environment(format!(
+                    "{} has no lphypq1… key (made by an older version? run `keygen` again or ask for a new .pub)",
+                    escape_display(v)
+                )));
+            }
+            keys
+        };
+        for k in keys {
+            if !out.contains(&k) {
+                out.push(k);
+            }
+        }
+    }
     Ok(out)
 }
 

@@ -23,7 +23,9 @@ indirilir.
 - **Dosya ve klasörler** tek bir `.lphy` arşivi olur: adlar, yapı ve (varsayılan olarak) boyut
   gizlenir. XChaCha20-Poly1305 ya da AES-256-GCM, Argon2id anahtar türetme (varsayılan 512 MiB).
 - **Parola ya da açık anahtar.** Parola (isteğe bağlı anahtar dosyasıyla) ya da bir veya birden çok
-  X25519 açık anahtarı: dosyayı yalnızca anahtar sahipleri açar, ortak parola gerekmez.
+  X25519 açık anahtarı: dosyayı yalnızca anahtar sahipleri açar, ortak parola gerekmez. İsteğe
+  bağlı olarak kuantuma dayanıklı (ML-KEM-768 + X25519); gönderen imzası (Ed25519), kimliğin
+  22 kelimelik kâğıt yedeği ve alıcıları sonradan değiştirme.
 - **Toplu şifreleme.** Birden çok dosya ya da klasör, her biri ayrı bir `.lphy`.
 - **Hasara dayanıklılık.** İsteğe bağlı Reed–Solomon hata düzeltme, bozulan USB bellek ve
   disklerdeki hasarı onarır; kurtarma modu bozuk dosyadan kurtarılabileni çıkarır.
@@ -105,6 +107,15 @@ lephycrypy recipients rapor.lphy -i ben.lphykey -r ben.pub -r yeni-is-arkadasi.p
 ```
 
 İçerik yeniden şifrelenmez; çıkarılan biri eski dosyanın bir kopyasını sakladıysa onu açabilir.
+
+Gelecekteki kuantum bilgisayarlara karşı koruma için alıcıların kuantuma dayanıklı anahtarlarına
+şifreleyin (ML-KEM-768 ile X25519 birlikte; `.pub` dosyalarının üçüncü satırı):
+
+```bash
+lephycrypy encrypt rapor.pdf -o rapor.lphy --pq -r arkadas.pub
+```
+
+Uygulamada "Açık anahtarla" altında **Kuantuma dayanıklı** kutusunu işaretleyin.
 
 Gönderdiğinizi imzalayın; alıcı sizden geldiğini ve değiştirilmediğini bilsin:
 

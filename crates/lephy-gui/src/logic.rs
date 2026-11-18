@@ -105,6 +105,27 @@ pub fn needs_identity(path: &Path) -> bool {
 ///
 /// # Errors
 /// An invalid line.
+pub fn parse_hybrid(text: &str) -> std::result::Result<Vec<lephy_core::hybrid::HybridKey>, String> {
+    let keys = lephy_core::hybrid::parse_hybrid_keys(text).map_err(|_| {
+        tr(
+            "Geçersiz kuantuma dayanıklı anahtar. Bu anahtarlar \"lphypq1\" ile başlar (alıcının .pub dosyasının üçüncü satırı).",
+            "Invalid post-quantum key. These keys start with \"lphypq1\" (the third line of the recipient's .pub file).",
+        )
+        .to_string()
+    })?;
+    let mut out: Vec<lephy_core::hybrid::HybridKey> = Vec::new();
+    for k in keys {
+        if !out.contains(&k) {
+            out.push(k);
+        }
+    }
+    Ok(out)
+}
+
+/// Public keys from text (one per line, `#` comments). `Err`: user-facing message.
+///
+/// # Errors
+/// An invalid line.
 pub fn parse_recipients(text: &str) -> std::result::Result<Vec<PublicKey>, String> {
     let mut keys = lephy_core::recipient::parse_public_keys(text).map_err(|_| {
         tr(
@@ -140,12 +161,16 @@ pub fn create_identity(
     };
     lephy_core::recipient::write_identity_file(path, &id, &nfc, kdf, &mut OsEntropy, &mut |_| {})?;
     let pk = id.public().to_string();
+    let hybrid = id.hybrid_public()?;
     std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&pub_path)
         .and_then(|mut f| {
-            std::io::Write::write_all(&mut f, format!("{pk}\n{}\n", id.signer()).as_bytes())
+            std::io::Write::write_all(
+                &mut f,
+                format!("{pk}\n{}\n{hybrid}\n", id.signer()).as_bytes(),
+            )
         })?;
     let paper = id.paper_backup()?;
     Ok((pk, paper))
@@ -270,6 +295,8 @@ pub struct Job {
     pub recipients: Vec<PublicKey>,
     /// Decrypt with this identity file; `password` is then the identity's password.
     pub identity: Option<PathBuf>,
+    /// Post-quantum hybrid keys, used like `recipients` instead of them.
+    pub hybrid: Vec<lephy_core::hybrid::HybridKey>,
     /// Decrypting an archive: only list its contents, write nothing.
     pub list_only: bool,
     /// Decrypting an archive: extract only these paths (empty = everything).
@@ -321,6 +348,7 @@ struct Ctx<'a> {
     list_only: bool,
     only: &'a [String],
     signer: Option<&'a Identity>,
+    hybrid: &'a [lephy_core::hybrid::HybridKey],
 }
 
 /// Runs the job. With a single item an error is returned directly; in a batch failed items go to
@@ -332,7 +360,8 @@ struct Ctx<'a> {
 pub fn run(job: Job) -> Result<Outcome> {
     let mut nfc = password::normalize_nfc(&job.password)?;
     drop(job.password);
-    let key_mode = job.mode == Mode::Encrypt && !job.recipients.is_empty();
+    let key_mode =
+        job.mode == Mode::Encrypt && (!job.recipients.is_empty() || !job.hybrid.is_empty());
     let identity = match (&job.identity, job.mode) {
         (Some(p), Mode::Decrypt) => {
             let id = lephy_core::recipient::read_identity_file(
@@ -347,21 +376,26 @@ pub fn run(job: Job) -> Result<Outcome> {
         }
         _ => None,
     };
-    if job.mode == Mode::Decrypt && !job.recipients.is_empty() {
+    if job.mode == Mode::Decrypt && (!job.recipients.is_empty() || !job.hybrid.is_empty()) {
         let id = identity.as_ref().ok_or(Error::IdentityRequired)?;
         let mut out = Outcome::default();
+        let keys = if job.hybrid.is_empty() {
+            ops::Keys::Classic(&job.recipients)
+        } else {
+            ops::Keys::Hybrid(&job.hybrid)
+        };
         for item in &job.items {
             ops::set_recipients(
                 &item.input,
                 id,
-                &job.recipients,
+                keys,
                 ops::UnlockOptions::default(),
                 &mut OsEntropy,
                 &mut |_| {},
             )?;
             out.outputs.push(item.input.clone());
         }
-        out.recipients_set = Some(job.recipients.len());
+        out.recipients_set = Some(job.recipients.len() + job.hybrid.len());
         return Ok(out);
     }
     let keyfile = job
@@ -432,6 +466,7 @@ pub fn run(job: Job) -> Result<Outcome> {
     drop(job.sign_password);
     let ctx = Ctx {
         signer: signer.as_ref(),
+        hybrid: if key_mode { &job.hybrid } else { &[] },
         nfc: &nfc,
         recipients: if key_mode { &job.recipients } else { &[] },
         identity: identity.as_ref(),
@@ -486,7 +521,9 @@ fn encrypt_item(
     log: &mut dyn FnMut(&str),
 ) -> Result<ops::EncryptReport> {
     if let Some(id) = ctx.signer {
-        let lock = if ctx.recipients.is_empty() {
+        let lock = if !ctx.hybrid.is_empty() {
+            ops::Lock::Hybrid(ctx.hybrid)
+        } else if ctx.recipients.is_empty() {
             ops::Lock::Password(ctx.nfc, ctx.kf)
         } else {
             ops::Lock::Recipients(ctx.recipients)
@@ -496,6 +533,15 @@ fn encrypt_item(
             &item.output,
             lock,
             id,
+            opts,
+            &mut OsEntropy,
+            log,
+        )
+    } else if !ctx.hybrid.is_empty() {
+        ops::encrypt_to_hybrid(
+            &Input::Path(&item.input),
+            &item.output,
+            ctx.hybrid,
             opts,
             &mut OsEntropy,
             log,
@@ -880,6 +926,7 @@ mod tests {
             "çıktı adı kaynak adını sızdırmamalı"
         );
         let job = Job {
+            hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
             list_only: false,
@@ -920,6 +967,7 @@ mod tests {
             d.join("x")
         );
         let job = Job {
+            hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
             list_only: false,
@@ -951,6 +999,7 @@ mod tests {
         // Mismatched repeat and a short password
         for (p, c) in [("gui parola 1234", "başka parola 99"), ("kisa", "kisa")] {
             let job = Job {
+                hybrid: Vec::new(),
                 sign_identity: None,
                 sign_password: None,
                 list_only: false,
@@ -981,6 +1030,7 @@ mod tests {
         }
         // Wrong password → code 3
         let job = Job {
+            hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
             list_only: false,
@@ -1020,6 +1070,7 @@ mod tests {
         OsEntropy.fill(&mut big).unwrap();
         std::fs::write(d.join("a.bin"), &big).unwrap();
         let job = |output: &str, ecc: bool, split: Option<u64>| Job {
+            hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
             list_only: false,
@@ -1077,6 +1128,7 @@ mod tests {
         std::fs::write(d.join("src/a.txt"), b"a").unwrap();
         std::fs::write(d.join("src/sub/b.txt"), b"b").unwrap();
         let job = |mode, input: &str, output: &str, list_only, only: Vec<String>| Job {
+            hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
             list_only,
@@ -1131,6 +1183,7 @@ mod tests {
         let signer = pubtext.lines().nth(1).unwrap().to_string();
         assert!(signer.starts_with("lphysig1"));
         let job = |mode, input: &str, output: &str, sign: bool| Job {
+            hybrid: Vec::new(),
             sign_identity: sign.then(|| d.join("me.lphykey")),
             sign_password: sign.then(|| secret("identity pass m")),
             list_only: false,
@@ -1165,6 +1218,59 @@ mod tests {
     }
 
     #[test]
+    fn post_quantum_recipients_from_the_app() {
+        let d = std::env::temp_dir().join(format!("lphy-gui-pq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("m.txt"), b"quantum safe").unwrap();
+        create_identity(&d.join("me.lphykey"), &secret("identity pass q"), 64).unwrap();
+        let pubtext = std::fs::read_to_string(d.join("me.pub")).unwrap();
+        let hybrid = parse_hybrid(&pubtext).unwrap();
+        assert_eq!(hybrid.len(), 1);
+        assert_eq!(parse_recipients(&pubtext).unwrap().len(), 1);
+        let job =
+            |mode, input: &str, output: &str, hybrid: Vec<_>, id: Option<&str>, pw: &str| Job {
+                hybrid,
+                sign_identity: None,
+                sign_password: None,
+                list_only: false,
+                only: Vec::new(),
+                mode,
+                items: vec![Item {
+                    input: d.join(input),
+                    output: d.join(output),
+                }],
+                password: secret(pw),
+                confirm: None,
+                kdf_mib: 64,
+                aes: false,
+                pad: true,
+                allow_cloud: true,
+                keyfile: None,
+                secure_delete: false,
+                split: None,
+                compress: false,
+                ecc: false,
+                recover: false,
+                recipients: Vec::new(),
+                identity: id.map(|i| d.join(i)),
+            };
+        run(job(Mode::Encrypt, "m.txt", "m.lphy", hybrid, None, "")).unwrap();
+        assert!(ops::info(&d.join("m.lphy")).unwrap().pq);
+        run(job(
+            Mode::Decrypt,
+            "m.lphy",
+            "back.txt",
+            Vec::new(),
+            Some("me.lphykey"),
+            "identity pass q",
+        ))
+        .unwrap();
+        assert_eq!(std::fs::read(d.join("back.txt")).unwrap(), b"quantum safe");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn replace_recipients_from_the_app() {
         let d = std::env::temp_dir().join(format!("lphy-gui-rcp-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -1177,6 +1283,7 @@ mod tests {
             .unwrap()
             .0;
         let job = |mode, input: &str, output: &str, keys: &str, id: Option<&str>, pw: &str| Job {
+            hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
             list_only: false,
@@ -1258,6 +1365,7 @@ mod tests {
         assert_eq!(keys.len(), 1);
         assert!(parse_recipients("lphy1nope").is_err());
         let base = |mode, input: &str, output: &str| Job {
+            hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
             list_only: false,
@@ -1315,6 +1423,7 @@ mod tests {
             output: d.join("out").join(out),
         };
         let job = Job {
+            hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
             list_only: false,
@@ -1347,6 +1456,7 @@ mod tests {
         assert!(!d.join("a.txt").exists() && !d.join("b.txt").exists());
         // If all fail, an error is returned.
         let job = Job {
+            hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
             list_only: false,
@@ -1380,6 +1490,7 @@ mod tests {
         let data: Vec<u8> = (0..3_500_000u32).map(|i| (i % 253) as u8).collect();
         std::fs::write(d.join("a.bin"), &data).unwrap();
         let mk = |mode, input: &str, output: &str, split| Job {
+            hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
             list_only: false,
@@ -1426,6 +1537,7 @@ mod tests {
         std::fs::write(d.join("a.txt"), b"anahtar dosyasi testi").unwrap();
         std::fs::write(d.join("key.bin"), [7u8; 64]).unwrap();
         let job = |mode, input: &str, output: &str, kf: bool| Job {
+            hybrid: Vec::new(),
             sign_identity: None,
             sign_password: None,
             list_only: false,

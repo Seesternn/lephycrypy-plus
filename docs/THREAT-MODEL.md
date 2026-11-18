@@ -177,9 +177,15 @@ or noted its file key, can still read the content.
 The paper backup (22 words) is the identity secret itself, without a password: whoever reads it can
 open every file encrypted to that key. It is shown only on request (the CLI refuses to print it
 into a pipe or file without `--force`; the app shows it masked until hovered, once). Identity
-files are refused as decryption input, so the secret key is never written to disk unprotected. There is no
-post-quantum protection: a future quantum computer that records the file could recover the file
+files are refused as decryption input, so the secret key is never written to disk unprotected. Classic recipient files
+have no post-quantum protection: a future quantum computer that records the file could recover the file
 key from the stanzas.
+Files encrypted with `--pq` (or "Post-quantum" in the app) use hybrid ML-KEM-768 + X25519
+stanzas: recovering the file key needs breaking both, so a recorded file stays safe against a
+quantum computer as long as ML-KEM-768 holds, and against classical attacks as long as X25519
+holds. Password files are not affected by quantum computers beyond Grover's square-root speed-up
+on the password guessing, which the 256-bit keys absorb. Signatures (Ed25519) are not
+post-quantum: they would only let a future attacker forge new signed files, not read old ones.
 
 ## Error correction and recovery
 The Reed–Solomon envelope protects against accidental damage only; it adds no secrecy or

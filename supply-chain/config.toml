@@ -603,6 +603,16 @@ criteria = "safe-to-deploy"
 version = "0.3.107"
 criteria = "safe-to-deploy"
 
+[[exemptions.keccak]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Keccak permutation for SHA-3/SHAKE used by ML-KEM (RustCrypto); no audit imported yet"
+
+[[exemptions.kem]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+notes = "RustCrypto KEM traits used by ml-kem; no audit imported yet"
+
 [[exemptions.khronos_api]]
 version = "3.1.0"
 criteria = "safe-to-deploy"
@@ -666,6 +676,16 @@ criteria = "safe-to-deploy"
 [[exemptions.miniz_oxide]]
 version = "0.9.1"
 criteria = "safe-to-deploy"
+
+[[exemptions.ml-kem]]
+version = "0.3.4"
+criteria = "safe-to-deploy"
+notes = "ML-KEM-768 (FIPS 203) for post-quantum hybrid recipients (RustCrypto); no audit imported yet"
+
+[[exemptions.module-lattice]]
+version = "0.2.4"
+criteria = "safe-to-deploy"
+notes = "lattice arithmetic for ml-kem (RustCrypto); no audit imported yet"
 
 [[exemptions.moxcms]]
 version = "0.8.1"
@@ -955,6 +975,16 @@ criteria = "safe-to-deploy"
 version = "0.11.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.sha3]]
+version = "0.12.0"
+criteria = "safe-to-deploy"
+notes = "SHA-3 used by ml-kem (RustCrypto); no audit imported yet"
+
+[[exemptions.shake]]
+version = "0.1.0"
+criteria = "safe-to-deploy"
+notes = "SHAKE XOF used by ml-kem (RustCrypto); no audit imported yet"
+
 [[exemptions.signal-hook-registry]]
 version = "1.4.8"
 criteria = "safe-to-deploy"
@@ -995,6 +1025,11 @@ criteria = "safe-to-deploy"
 [[exemptions.smol_str]]
 version = "0.2.2"
 criteria = "safe-to-deploy"
+
+[[exemptions.sponge-cursor]]
+version = "0.1.0"
+criteria = "safe-to-deploy"
+notes = "sponge helper used by sha3/shake (RustCrypto); no audit imported yet"
 
 [[exemptions.syn]]
 version = "2.0.119"

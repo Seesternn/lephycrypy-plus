@@ -37,6 +37,10 @@ FEATURE_SIGNED = 0x04
 INFO_ED25519 = b"lphy+/v2/ed25519"
 INFO_SIG_KEY = b"lphy+/v2/sig-key"
 SIG_CONTEXT = b"lphy+/v2/sig\0"
+FEATURE_PQ = 0x08
+INFO_MLKEM_D = b"lphy+/v2/ml-kem-768/d"
+INFO_MLKEM_Z = b"lphy+/v2/ml-kem-768/z"
+INFO_HYBRID = b"lphy+/v2/hybrid"
 INFO_KEK = b"lphy+/v1/kek"
 INFO_WRAP = b"lphy+/v1/wrap"
 INFO_COMMIT = b"lphy+/v1/commit"
@@ -219,6 +223,50 @@ def build_recipient_header(alg, content_type, padded, chunk_code, prefix, fk, st
     mac_key = hkdf32(fk, prefix24, INFO_HMAC)
     h[224:256] = blake3.blake3(bytes(h[0:224]) + bytes(ext), key=mac_key).digest()
     return bytes(h), bytes(ext), {"data_key": data_key}
+
+
+def mlkem_private(identity_secret: bytes):
+    """FORMAT.md › hybrid recipients: ML-KEM-768 key from the identity secret (seed d ‖ z)."""
+    from cryptography.hazmat.primitives.asymmetric import mlkem
+    seed = hkdf32(identity_secret, b"", INFO_MLKEM_D) + hkdf32(identity_secret, b"", INFO_MLKEM_Z)
+    return mlkem.MLKEM768PrivateKey.from_seed_bytes(seed)
+
+
+def build_hybrid_file(alg, prefix, fk, recipient_secret, e, ct_from, wrap_nonce, plaintext):
+    """Rebuilds a one-recipient hybrid raw file. ML-KEM encapsulation is randomized in the
+    library, so the ciphertext is taken from `ct_from` (the Rust vector) and checked by
+    decapsulation; every other byte is derived here independently."""
+    sk = mlkem_private(recipient_secret)
+    ek = sk.public_key().public_bytes_raw()
+    pk_x = x25519_public(recipient_secret)
+    ct = ct_from[256 + 32:256 + 32 + 1088]
+    ss_k = sk.decapsulate(ct)
+    prefix24 = prefix[: prefix_len(alg)].ljust(24, b"\0")
+    h = bytearray(256)
+    h[0:6] = MAGIC
+    h[6:8] = struct.pack("<H", VERSION_2)
+    h[8] = alg
+    h[9] = 0
+    h[10] = 0
+    h[11] = 0
+    h[12] = FEATURE_RECIPIENTS | FEATURE_PQ
+    h[13] = 0
+    h[28:30] = struct.pack("<H", 1)
+    h[64:88] = prefix24
+    eph = x25519_public(e)
+    ss_x = X25519PrivateKey.from_private_bytes(e).exchange(X25519PublicKey.from_public_bytes(pk_x))
+    salt = eph + pk_x + blake3.blake3(ek).digest() + blake3.blake3(ct).digest()
+    kek = hkdf32(ss_x + ss_k, salt, INFO_HYBRID)
+    wrap_key = hkdf32(kek, eph, INFO_WRAP)
+    commit = hkdf32(kek, eph, INFO_COMMIT)
+    wn24 = wrap_nonce[: nonce_len(alg)].ljust(24, b"\0")
+    wrapped = seal(alg, wrap_key, wn24[: nonce_len(alg)], bytes(h[0:144]) + eph, fk)
+    ext = eph + ct + wn24 + commit + wrapped
+    data_key = hkdf32(fk, prefix24, INFO_DATA)
+    mac_key = hkdf32(fk, prefix24, INFO_HMAC)
+    h[224:256] = blake3.blake3(bytes(h[0:224]) + ext, key=mac_key).digest()
+    body = encrypt_stream(alg, data_key, prefix24, chunk_aad(bytes(h)), CHUNK_SIZES[0], plaintext)
+    return bytes(h) + ext + body
 
 
 def paper_words(secret: bytes) -> str:
@@ -452,6 +500,17 @@ def vectors(outdir: str):
     with open(os.path.join(outdir, "v15.lphy"), "wb") as f:
         f.write(h15 + ext15 + body)
     meta["paper_words"] = paper_words(sk1)
+    # 17: post-quantum hybrid recipient (sk2), produced by Rust with fixed ML-KEM randomness and
+    # rebuilt here byte for byte from the decapsulated ciphertext.
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "..", "kat", "vectors", "v17.lphy"), "rb") as f:
+        v17_rust = f.read()
+    v17 = build_hybrid_file(1, PREFIX, FK, sk2, e1, v17_rust, WRAP, b"post-quantum hello")
+    assert v17 == v17_rust, "vector 17: the reference does not reproduce the Rust file"
+    with open(os.path.join(outdir, "v17.lphy"), "wb") as f:
+        f.write(v17)
+    meta["v17"] = {"identities": [sk2.hex()], "plaintext": "post-quantum hello",
+                   "mlkem_ek_blake3": blake3.blake3(mlkem_private(sk2).public_key().public_bytes_raw()).hexdigest()}
     # 16: like 14 but for the second recipient only, signed by identity sk1
     pt16 = b"signed by sk1"
     h16, ext16, k16 = build_recipient_header(

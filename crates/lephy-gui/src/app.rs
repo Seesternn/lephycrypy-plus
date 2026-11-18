@@ -115,6 +115,10 @@ pub struct App {
     pending_open: Vec<PathBuf>,
     /// The settings page (language, system integration) is open instead of the drop zone.
     show_settings: bool,
+    /// Encrypting to public keys: use the recipients' post-quantum hybrid keys.
+    pq: bool,
+    /// The chosen encrypted file uses post-quantum hybrid recipients.
+    file_pq: bool,
     /// Encrypting: sign with `sign_identity`.
     sign: bool,
     /// Signing identity file.
@@ -179,6 +183,8 @@ impl Default for App {
             paper: None,
             pending_open: Vec::new(),
             show_settings: false,
+            pq: false,
+            file_pq: false,
             sign: false,
             sign_identity: None,
             sign_password: SecretField::new(
@@ -247,6 +253,7 @@ impl App {
         self.selected.clear();
         self.list_filter.clear();
         self.edit_recipients = false;
+        self.file_pq = mode == Mode::Decrypt && lephy_core::ops::info(p).is_ok_and(|h| h.pq);
     }
 
     /// Several sources: all must suit the same operation (all encrypted or none).
@@ -356,8 +363,7 @@ impl App {
                 false
             }
             Mode::Encrypt if self.use_keys => {
-                !self.show_keygen
-                    && logic::parse_recipients(&self.recipients_text).is_ok_and(|k| !k.is_empty())
+                !self.show_keygen && self.key_count().is_ok_and(|n| n > 0)
             }
             Mode::Encrypt => {
                 !self.password.is_empty()
@@ -367,7 +373,7 @@ impl App {
             Mode::Decrypt if self.identity_required && self.edit_recipients => {
                 !self.password.is_empty()
                     && self.identity.is_some()
-                    && logic::parse_recipients(&self.recipients_text).is_ok_and(|k| !k.is_empty())
+                    && self.key_count().is_ok_and(|n| n > 0)
             }
             Mode::Decrypt => {
                 !self.password.is_empty()
@@ -410,12 +416,9 @@ impl App {
         };
         let key_mode = (mode == Mode::Encrypt && self.use_keys)
             || (mode == Mode::Decrypt && self.identity_required && self.edit_recipients);
-        let recipients = if key_mode {
-            logic::parse_recipients(&self.recipients_text).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        let (recipients, hybrid) = self.job_keys(key_mode);
         let job = Job {
+            hybrid,
             recipients,
             identity: if mode == Mode::Decrypt && self.identity_required {
                 self.identity.clone()
@@ -1450,6 +1453,71 @@ impl App {
         ui.add_space(8.0);
     }
 
+    /// The keys a job uses: classic or post-quantum, from the list (none outside key mode).
+    fn job_keys(
+        &self,
+        key_mode: bool,
+    ) -> (
+        Vec<lephy_core::ops::PublicKey>,
+        Vec<lephy_core::hybrid::HybridKey>,
+    ) {
+        match (key_mode, self.keys_pq()) {
+            (true, false) => (
+                logic::parse_recipients(&self.recipients_text).unwrap_or_default(),
+                Vec::new(),
+            ),
+            (true, true) => (
+                Vec::new(),
+                logic::parse_hybrid(&self.recipients_text).unwrap_or_default(),
+            ),
+            (false, _) => (Vec::new(), Vec::new()),
+        }
+    }
+
+    /// Which kind of keys counts: the file's when replacing its recipients, else the switch.
+    fn keys_pq(&self) -> bool {
+        if self.mode() == Some(Mode::Decrypt) {
+            self.file_pq
+        } else {
+            self.pq
+        }
+    }
+
+    /// Number of valid keys of the current kind in the list.
+    fn key_count(&self) -> std::result::Result<usize, String> {
+        if self.keys_pq() {
+            logic::parse_hybrid(&self.recipients_text).map(|k| k.len())
+        } else {
+            logic::parse_recipients(&self.recipients_text).map(|k| k.len())
+        }
+    }
+
+    /// Adds the keys of the current kind from a `.pub` file's text.
+    fn append_keys_from(&mut self, text: &str) -> bool {
+        let prefix = if self.keys_pq() {
+            lephy_core::hybrid::HYBRID_PREFIX
+        } else {
+            lephy_core::recipient::PUBLIC_PREFIX
+        };
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with(prefix))
+            .collect();
+        let ok = !lines.is_empty()
+            && if self.keys_pq() {
+                logic::parse_hybrid(&lines.join("\n")).is_ok()
+            } else {
+                logic::parse_recipients(&lines.join("\n")).is_ok()
+            };
+        if ok {
+            for l in lines {
+                self.append_key(l);
+            }
+        }
+        ok
+    }
+
     fn editing_recipients(&self) -> bool {
         self.edit_recipients && self.identity_required && !self.batch()
     }
@@ -1477,12 +1545,22 @@ impl App {
                 .desired_width(f32::INFINITY)
                 .font(egui::TextStyle::Monospace),
         );
-        match logic::parse_recipients(&self.recipients_text) {
-            Ok(k) if !k.is_empty() => {
+        if self.file_pq {
+            ui.label(
+                RichText::new(tr(
+                    "Bu dosya kuantuma dayanıklı: alıcıların lphypq1… anahtarlarını yazın.",
+                    "This file is post-quantum: write the recipients' lphypq1… keys.",
+                ))
+                .color(pal.muted)
+                .size(12.5),
+            );
+        }
+        match self.key_count() {
+            Ok(n) if n > 0 => {
                 ui.label(
                     RichText::new(match lang() {
-                        Lang::Tr => format!("{} geçerli anahtar.", k.len()),
-                        Lang::En => format!("{} valid key(s).", k.len()),
+                        Lang::Tr => format!("{n} geçerli anahtar."),
+                        Lang::En => format!("{n} valid key(s)."),
                     })
                     .color(pal.accent)
                     .size(12.5),
@@ -1959,7 +2037,19 @@ impl App {
             .color(pal.muted)
             .size(13.0),
         );
-        ui.add_space(10.0);
+        ui.add_space(6.0);
+        ui.checkbox(
+            &mut self.pq,
+            tr(
+                "Kuantuma dayanıklı (ML-KEM-768 + X25519)",
+                "Post-quantum (ML-KEM-768 + X25519)",
+            ),
+        )
+        .on_hover_text(tr(
+            "Alıcıların lphypq1… anahtarları kullanılır (.pub dosyalarının üçüncü satırı). Dosyayı açmak için hem X25519 hem ML-KEM kırılmalıdır; gelecekteki kuantum bilgisayarlara karşı koruma sağlar.",
+            "Uses the recipients' lphypq1… keys (the third line of their .pub files). Opening the file needs breaking both X25519 and ML-KEM, which protects against future quantum computers.",
+        ));
+        ui.add_space(6.0);
         egui::Frame::new()
             .fill(pal.surface)
             .stroke(Stroke::new(1.0, pal.line))
@@ -1968,22 +2058,30 @@ impl App {
             .show(ui, |ui| {
                 ui.add(
                     egui::TextEdit::multiline(&mut self.recipients_text)
-                        .hint_text("lphy1…")
+                        .hint_text(if self.pq { "lphypq1…" } else { "lphy1…" })
                         .font(egui::TextStyle::Monospace)
                         .desired_rows(3)
                         .desired_width(f32::INFINITY)
                         .frame(egui::Frame::NONE),
                 );
             });
-        let (status, color) = match logic::parse_recipients(&self.recipients_text) {
-            Ok(k) if k.is_empty() => (
-                tr("Henüz anahtar yok.", "No keys yet.").to_string(),
+        let (status, color) = match self.key_count() {
+            Ok(0) => (
+                if self.pq {
+                    tr(
+                        "Henüz kuantuma dayanıklı (lphypq1…) anahtar yok.",
+                        "No post-quantum (lphypq1…) keys yet.",
+                    )
+                } else {
+                    tr("Henüz anahtar yok.", "No keys yet.")
+                }
+                .to_string(),
                 pal.muted,
             ),
-            Ok(k) => (
+            Ok(n) => (
                 match lang() {
-                    Lang::Tr => format!("{} geçerli anahtar.", k.len()),
-                    Lang::En => format!("{} valid key(s).", k.len()),
+                    Lang::Tr => format!("{n} geçerli anahtar."),
+                    Lang::En => format!("{n} valid key(s)."),
                 },
                 pal.ok,
             ),
@@ -2008,8 +2106,7 @@ impl App {
                 .pick_file()
         {
             match std::fs::read_to_string(&p) {
-                Ok(t) if logic::parse_recipients(&t).is_ok_and(|k| !k.is_empty()) => {
-                    self.append_key(&t);
+                Ok(t) if self.append_keys_from(&t) => {
                     self.error = None;
                 }
                 _ => {
@@ -2113,7 +2210,11 @@ impl App {
             self.confirm.clear();
             match logic::create_identity(&path, &pwd, self.kdf_mib) {
                 Ok((pk, paper)) => {
-                    self.append_key(&pk);
+                    let pub_text =
+                        std::fs::read_to_string(path.with_extension("pub")).unwrap_or_default();
+                    if !(self.pq && self.append_keys_from(&pub_text)) {
+                        self.append_key(&pk);
+                    }
                     self.created_pub = Some(pk);
                     self.paper = Some(paper);
                     self.show_keygen = false;
