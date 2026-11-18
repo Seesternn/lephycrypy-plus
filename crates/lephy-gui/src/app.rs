@@ -166,6 +166,10 @@ pub struct App {
     /// Result of the last integration change, shown on the settings page.
     #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     settings_note: Option<String>,
+    /// Leftover temp items (crash leftovers) found by a scan.
+    stale: maintenance::Stale,
+    /// Scan the usual folders for leftovers on the first frame (the real app, not tests).
+    scan_on_start: bool,
 }
 
 impl Default for App {
@@ -237,6 +241,8 @@ impl Default for App {
             edit_recipients: false,
             confirm_shell: false,
             settings_note: None,
+            stale: maintenance::Stale::default(),
+            scan_on_start: false,
         }
     }
 }
@@ -760,6 +766,9 @@ impl App {
     /// The whole UI for one frame.
     pub fn draw(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        if std::mem::take(&mut self.scan_on_start) {
+            self.stale.scan(&ctx, logic::usual_output_dirs());
+        }
         self.poll(&ctx);
         self.handle_signal(&ctx);
         self.handle_open_requests(&ctx);
@@ -2655,10 +2664,13 @@ impl App {
 /// Pencereye verilecek uygulama.
 #[must_use]
 pub fn boxed() -> Box<dyn eframe::App> {
-    Box::new(App::with_prefs(crate::settings::Settings::load()))
+    let mut app = App::with_prefs(crate::settings::Settings::load());
+    app.scan_on_start = true;
+    Box::new(app)
 }
 
 mod help;
+mod maintenance;
 mod pages;
 
 impl eframe::App for App {
@@ -3182,6 +3194,12 @@ mod tests {
             app.page = page;
             frame(&ctx, &mut app);
         }
+        app.stale.found = vec![d.join(".lphy-tmp-x")];
+        app.page = pages::Page::Home;
+        frame(&ctx, &mut app);
+        app.page = pages::Page::Settings;
+        frame(&ctx, &mut app);
+        app.stale.found.clear();
         for step in 0..3 {
             app.page = pages::Page::Welcome;
             app.welcome_step = step;

@@ -339,6 +339,44 @@ pub struct Outcome {
     pub executables: usize,
 }
 
+/// Folders scanned at start for leftover temp items: the home folder, Desktop, Downloads and
+/// Documents (top level only).
+#[must_use]
+pub fn usual_output_dirs() -> Vec<PathBuf> {
+    let Some(home) = std::env::home_dir() else {
+        return Vec::new();
+    };
+    let mut v: Vec<PathBuf> = ["Desktop", "Downloads", "Documents"]
+        .iter()
+        .map(|d| home.join(d))
+        .filter(|d| d.is_dir())
+        .collect();
+    v.insert(0, home);
+    v
+}
+
+/// Leftover `.lphy-tmp-*` items (from a crash or a forced quit) in `dirs`, older than `min_age`
+/// so the temp folder of a job that is still running is not reported.
+#[must_use]
+pub fn find_stale_temps(dirs: &[PathBuf], min_age: std::time::Duration) -> Vec<PathBuf> {
+    let now = std::time::SystemTime::now();
+    let mut out = Vec::new();
+    for d in dirs {
+        for p in lephy_core::io::scan_stale(d).unwrap_or_default() {
+            let old = p
+                .symlink_metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .is_some_and(|age| age >= min_age);
+            if old {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
 /// Names that run code when opened (double-click) on macOS or Windows.
 #[must_use]
 pub fn is_executable_name(name: &str) -> bool {
@@ -1703,6 +1741,23 @@ mod tests {
         std::fs::write(d.join("go.sh"), b"x").unwrap();
         assert_eq!(count_executables(&d), 2);
         assert_eq!(count_executables(&d.join("a.txt")), 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn stale_temps_are_found_by_age() {
+        let d = std::env::temp_dir().join(format!("lphy-gui-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join(".lphy-tmp-abc")).unwrap();
+        std::fs::write(d.join(".lphy-tmp-def"), b"x").unwrap();
+        std::fs::write(d.join("other.txt"), b"x").unwrap();
+        let dirs = [d.clone()];
+        assert_eq!(find_stale_temps(&dirs, std::time::Duration::ZERO).len(), 2);
+        // Too new: a job may still be using them.
+        assert!(find_stale_temps(&dirs, std::time::Duration::from_mins(10)).is_empty());
+        let found = find_stale_temps(&dirs, std::time::Duration::ZERO);
+        assert_eq!(lephy_core::io::cleanup(&found).unwrap(), 2);
+        assert!(d.join("other.txt").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 

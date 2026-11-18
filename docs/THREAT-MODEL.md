@@ -80,6 +80,13 @@ tmpfs, a RAM disk or a pipe. Windows named-pipe squatting: an attacker who opens
 same name first could supply their own password → only local pipes owned by the same user SID are
 accepted.
 
+A decryption that is cut short (crash, power loss, forced quit) can leave a hidden
+`.lphy-tmp-*` item with decrypted data next to the destination. `lephycrypy cleanup DIR` finds
+and deletes them; the desktop app checks the home folder, Desktop, Downloads and Documents (top
+level) at start, offers to delete what it finds (with confirmation), and can search any folder
+from Settings › Maintenance. Items younger than ten minutes are skipped (a job may still use
+them). Deleting does not overwrite the data, so the limits above apply.
+
 ## Operating-system leaks
 Even though the tool keeps plaintext only in its own memory and temporary files, OS background
 services may copy, index or upload temporary or final plaintext, names or the fact that a file

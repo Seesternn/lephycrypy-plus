@@ -519,6 +519,7 @@ impl App {
 
     #[allow(clippy::too_many_lines, reason = "one page laid out top to bottom")]
     pub(super) fn home_view(&mut self, ui: &mut Ui, pal: Palette) {
+        self.stale_banner(ui, pal);
         ui.label(
             RichText::new(tr("Ne yapmak istersiniz?", "What would you like to do?"))
                 .font(fonts::semibold(20.0))
@@ -1149,6 +1150,16 @@ impl App {
                 #[cfg(windows)]
                 self.explorer_integration(ui, pal);
             },
+        );
+        section(
+            ui,
+            pal,
+            tr("Bakım", "Maintenance"),
+            tr(
+                "Uygulama ya da bilgisayar bir şifre çözme sırasında kapanırsa, hedef klasörde şifresi çözülmüş veri içeren gizli bir .lphy-tmp öğesi kalabilir. Açılışta Masaüstü, İndirilenler, Belgeler ve ev klasörü kendiliğinden taranır; başka bir klasörü buradan tarayabilirsiniz.",
+                "If the app or the computer stops during a decryption, a hidden .lphy-tmp item with decrypted data can be left in the destination folder. Desktop, Downloads, Documents and the home folder are checked at start; search any other folder here.",
+            ),
+            |ui| self.stale_settings(ui, pal),
         );
         section(ui, pal, tr("Hakkında", "About"), "", |ui| {
             ui.label(

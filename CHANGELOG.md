@@ -95,6 +95,9 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Desktop app: leftover `.lphy-tmp-*` items from a decryption that was cut short are found at
+  start (home, Desktop, Downloads, Documents) and can be deleted after confirmation; Settings ›
+  Maintenance searches any folder.
 - Desktop app start screen: a welcome on first launch, then cards for Encrypt, Decrypt, My keys
   and Settings. "My keys" creates key pairs, shows an identity's public, signer and post-quantum
   keys with copy links, and its paper backup. Settings are laid out in sections.
