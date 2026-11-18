@@ -285,6 +285,23 @@ removed from the existing list individually.
 | 14 | 1 | 0 | 0 | `"to a public key"`, two recipients `sk1 = 80..9f`, `sk2 = a0..bf`; `e1 = c0..df`, `wrap_nonce1 = 40..57`; `e2 = e0..ff`, `wrap_nonce2 = 58..6f`; prefix and FK as above | byte-identical both ways |
 | 15 | 1 | 0 | 0 | vector 14 with its recipients replaced by `sk2` only: `e = 10..2f`, `wrap_nonce = 30..47`; same chunks | byte-identical |
 
+## Paper backup of an identity
+
+The 32-byte identity secret `sk` can be written down as 22 words of the EFF large wordlist (the
+same list as the passphrase generator, 7776 words in their published, alphabetical order):
+
+```
+checksum = BLAKE3("lphy+/paper/v1" ‖ sk)[0..2]
+N        = big-endian integer of sk ‖ checksum            (272 bits)
+words    = N in base 7776, 22 digits, most significant first; digit d → word d (0 = "abacus")
+```
+
+22 digits hold about 284 bits, so the first word is always `abacus` or `abdomen`. A reader
+accepts any case and spaces, line breaks, hyphens or commas between words; it rejects (code 1)
+a wrong word count or an unknown word (reporting only its position), and (code 4) a value
+≥ 2^272 or a checksum mismatch. The reference produces the words for `sk1 = 80..9f`
+(`paper_words` in `vectors.json`).
+
 ## Split output (informative)
 
 Splitting is a container below the format and has no header flag. A file `name.lphy` is cut into

@@ -122,7 +122,11 @@ pub fn parse_recipients(text: &str) -> std::result::Result<Vec<PublicKey>, Strin
 ///
 /// # Errors
 /// Password policy, existing files, I/O.
-pub fn create_identity(path: &Path, password: &SecretBytes, kdf_mib: u32) -> Result<String> {
+pub fn create_identity(
+    path: &Path,
+    password: &SecretBytes,
+    kdf_mib: u32,
+) -> Result<(String, SecretBytes)> {
     let nfc = password::normalize_nfc(password)?;
     password::check_encrypt_policy(&nfc)?;
     let pub_path = path.with_extension("pub");
@@ -141,7 +145,15 @@ pub fn create_identity(path: &Path, password: &SecretBytes, kdf_mib: u32) -> Res
         .create_new(true)
         .open(&pub_path)
         .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{pk}\n").as_bytes()))?;
-    Ok(pk)
+    let paper = id.paper_backup()?;
+    Ok((pk, paper))
+}
+
+/// An identity file (`.lphykey`) by its name: it must never be decrypted to disk, which would
+/// write the secret key unprotected.
+#[must_use]
+pub fn is_identity_file(path: &Path) -> bool {
+    lower_ext(path).as_deref() == Some("lphykey")
 }
 
 /// Puts non-secret text (a public key) on the system clipboard with the system's own tool. The
@@ -1042,8 +1054,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("m.txt"), b"shared").unwrap();
-        let pa = create_identity(&d.join("a.lphykey"), &secret("identity pass a"), 64).unwrap();
-        let pb = create_identity(&d.join("b.lphykey"), &secret("identity pass b"), 64).unwrap();
+        let pa = create_identity(&d.join("a.lphykey"), &secret("identity pass a"), 64)
+            .unwrap()
+            .0;
+        let pb = create_identity(&d.join("b.lphykey"), &secret("identity pass b"), 64)
+            .unwrap()
+            .0;
         let job = |mode, input: &str, output: &str, keys: &str, id: Option<&str>, pw: &str| Job {
             list_only: false,
             only: Vec::new(),
@@ -1110,7 +1126,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("a.txt"), b"for my friend").unwrap();
-        let pk = create_identity(&d.join("me.lphykey"), &secret("identity pass 1"), 64).unwrap();
+        let (pk, paper) =
+            create_identity(&d.join("me.lphykey"), &secret("identity pass 1"), 64).unwrap();
+        // The paper backup restores the same public key.
+        let restored = Identity::from_paper(paper.expose()).unwrap();
+        assert_eq!(restored.public().to_string(), pk);
+        assert!(is_identity_file(&d.join("me.lphykey")));
+        assert_eq!(detect_mode(&d.join("me.lphykey")), Mode::Decrypt);
         assert!(d.join("me.pub").exists());
         // An existing identity is never overwritten.
         assert!(create_identity(&d.join("me.lphykey"), &secret("identity pass 1"), 64).is_err());

@@ -932,6 +932,14 @@ fn run(cmd: &Command, log: &mut dyn FnMut(&str)) -> Result<()> {
             recover,
             only,
         } => {
+            if input
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("lphykey"))
+            {
+                return Err(Error::Environment(
+                    "this is an identity file; decrypting it would write the secret key unprotected (use `identity backup` for a paper backup)".into(),
+                ));
+            }
             let (keyfile, nfc, id) = unlock_material(input, identity.as_deref(), pw, *unlock, log)?;
             memory_warning(unlock.strict_memory)?;
             let unlock_opts = UnlockOptions {

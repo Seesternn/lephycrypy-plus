@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- Identity files (`.lphykey`) are refused as decryption input in the app and the CLI; decrypting
+  one would have written the secret key to disk unprotected.
 - Desktop app: an encrypted file with error correction (`--error-correction`) was offered for
   encryption again instead of decryption, because only the bare `.lphy` header was recognised.
   Files are now recognised through the envelope and split sets as well; any part of a set opens the
@@ -76,7 +78,8 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
-- Paper backup of an identity: `lephycrypy identity backup ID` shows 22 words (EFF wordlist,
+- Paper backup of an identity (also shown once, masked until hovered, after the app creates a
+  key pair): `lephycrypy identity backup ID` shows 22 words (EFF wordlist,
   2-byte checksum; the first word is always `abacus` or `abdomen`), `identity restore OUT`
   recreates the identity file from them. The Python reference produces the same words.
 - Change who can open a file encrypted to public keys (`lephycrypy recipients FILE -i ID -r KEY…`,

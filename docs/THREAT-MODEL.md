@@ -169,7 +169,11 @@ it. A recipient who can open the file can also learn the file key and could re-e
 content for the other recipients. `rekey`/`reencrypt` do not apply to these files; instead any
 recipient can replace the recipient list (`recipients`). That keeps the file key, so removing a
 recipient only stops access to the new file: a removed recipient who kept a copy of the old file,
-or noted its file key, can still read the content. There is no
+or noted its file key, can still read the content.
+The paper backup (22 words) is the identity secret itself, without a password: whoever reads it can
+open every file encrypted to that key. It is shown only on request (the CLI refuses to print it
+into a pipe or file without `--force`; the app shows it masked until hovered, once). Identity
+files are refused as decryption input, so the secret key is never written to disk unprotected. There is no
 post-quantum protection: a future quantum computer that records the file could recover the file
 key from the stanzas.
 

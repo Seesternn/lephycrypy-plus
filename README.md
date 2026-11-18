@@ -118,7 +118,12 @@ lephycrypy recipients report.lphy -i me.lphykey -r me.pub -r new-colleague.pub
 ```
 
 The content is not re-encrypted; a removed recipient who kept a copy of the old file can still
-open that copy. In the app: **Change the recipient list…** on the identity screen.
+open that copy.
+
+Keep a paper backup of your identity: `lephycrypy identity backup me.lphykey` shows 22 words (the
+app shows them once, right after it creates a key pair), and
+`lephycrypy identity restore me.lphykey` recreates the identity file from them. Anyone with the
+words can open every file encrypted to that key. An identity file itself is never decrypted. In the app: **Change the recipient list…** on the identity screen.
 
 ### Password sources
 

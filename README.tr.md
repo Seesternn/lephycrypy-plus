@@ -105,6 +105,12 @@ lephycrypy recipients rapor.lphy -i ben.lphykey -r ben.pub -r yeni-is-arkadasi.p
 ```
 
 İçerik yeniden şifrelenmez; çıkarılan biri eski dosyanın bir kopyasını sakladıysa onu açabilir.
+
+Kimliğinizin kâğıt yedeğini alın: `lephycrypy identity backup ben.lphykey` 22 kelime gösterir
+(uygulama da anahtar çiftini oluşturduktan hemen sonra bir kez gösterir);
+`lephycrypy identity restore ben.lphykey` kimlik dosyasını bu kelimelerden yeniden oluşturur.
+Kelimelere sahip olan herkes o anahtara şifrelenen her dosyayı açabilir. Kimlik dosyasının kendisi
+hiçbir zaman çözülmez.
 Uygulamada: kimlik ekranında **Alıcı listesini değiştir…**.
 
 Parola argv'den ya da ortam değişkeninden **asla** okunmaz; betikler için `--password-stdin`,

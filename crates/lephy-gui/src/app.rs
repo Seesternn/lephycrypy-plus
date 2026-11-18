@@ -109,6 +109,8 @@ pub struct App {
     show_keygen: bool,
     /// Public key of the key pair created in this session (shown with a copy link).
     created_pub: Option<String>,
+    /// Paper backup (22 words) of the key pair created in this session, until hidden.
+    paper: Option<lephy_sys::mem::SecretBytes>,
     /// Files received from the operating system, not yet applied.
     pending_open: Vec<PathBuf>,
     /// The settings page (language, system integration) is open instead of the drop zone.
@@ -168,6 +170,7 @@ impl Default for App {
             identity_required: false,
             show_keygen: false,
             created_pub: None,
+            paper: None,
             pending_open: Vec::new(),
             show_settings: false,
             is_archive: false,
@@ -187,6 +190,18 @@ impl Default for App {
 
 impl App {
     fn set_source(&mut self, p: &Path) {
+        if logic::is_identity_file(p) {
+            // Decrypting it would write the secret key to disk unprotected.
+            self.reset();
+            self.error = Some(
+                tr(
+                    "Bu bir kimlik dosyası (.lphykey); çözülmez. Açık anahtarlı dosyaları açmak için şifreli dosyayı bırakın, kimliği o ekranda seçin.",
+                    "This is an identity file (.lphykey); it is not decrypted. To open a file encrypted to a public key, drop that file and choose the identity on its screen.",
+                )
+                .into(),
+            );
+            return;
+        }
         let mode = logic::detect_mode(p);
         let (name, detail) = logic::describe_source(p, mode);
         self.output = Some(logic::default_output(p, mode));
@@ -1981,6 +1996,7 @@ impl App {
                 }
             });
         }
+        self.paper_card(ui, pal);
         if let Some(ok) = copied {
             self.error = (!ok).then(|| {
                 tr("Panoya kopyalanamadı.", "Could not copy to the clipboard.").to_string()
@@ -2034,14 +2050,52 @@ impl App {
             let pwd = self.password.take();
             self.confirm.clear();
             match logic::create_identity(&path, &pwd, self.kdf_mib) {
-                Ok(pk) => {
+                Ok((pk, paper)) => {
                     self.append_key(&pk);
                     self.created_pub = Some(pk);
+                    self.paper = Some(paper);
                     self.show_keygen = false;
                     self.error = None;
                 }
                 Err(e) => self.error = Some(logic::describe_error(&e)),
             }
+        }
+    }
+
+    /// Paper backup of the key pair just created: 22 words, shown only while the pointer rests on
+    /// them, until "I wrote them down" hides them for good.
+    fn paper_card(&mut self, ui: &mut Ui, pal: Palette) {
+        let Some(words) = &self.paper else { return };
+        let mut hide = false;
+        ui.add_space(10.0);
+        egui::Frame::new()
+            .fill(pal.accent_soft)
+            .corner_radius(CornerRadius::same(theme::R_INPUT))
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    RichText::new(tr(
+                        "Kâğıt yedeği (22 kelime)",
+                        "Paper backup (22 words)",
+                    ))
+                    .font(fonts::semibold(13.5))
+                    .color(pal.ink),
+                );
+                reveal_on_hover(ui, pal, words.expose());
+                ui.label(
+                    RichText::new(tr(
+                        "Bu kelimeleri kâğıda yazıp bilgisayardan ayrı saklayın. Kimlik dosyası ya da parolası kaybolursa `lephycrypy identity restore` ile geri getirilir. Kelimelere sahip olan herkes bu anahtara şifrelenen her dosyayı açabilir; bir daha gösterilmez.",
+                        "Write these words on paper and keep them apart from this computer. If the identity file or its password is lost, `lephycrypy identity restore` brings it back. Anyone with the words can open every file encrypted to this key; they are not shown again.",
+                    ))
+                    .color(pal.muted)
+                    .size(12.5),
+                );
+                hide = link_button(ui, pal, tr("Yazdım, gizle", "I wrote them down, hide them"))
+                    .clicked();
+            });
+        if hide {
+            self.paper = None;
         }
     }
 
@@ -2645,8 +2699,8 @@ fn reveal_on_hover(ui: &mut Ui, pal: Palette, secret: &[u8]) {
             egui::Role::Button,
             true,
             tr(
-                "Üretilen parola (görmek için üzerine gelin)",
-                "Generated password (hover to show)",
+                "Gizli metin (görmek için üzerine gelin)",
+                "Secret text (hover to show)",
             ),
         )
     });
@@ -2656,8 +2710,8 @@ fn reveal_on_hover(ui: &mut Ui, pal: Palette, secret: &[u8]) {
         drop(shown);
         let n = secret.len().min(32);
         ui.painter().text(
-            rect.left_center(),
-            egui::Align2::LEFT_CENTER,
+            rect.left_top(),
+            egui::Align2::LEFT_TOP,
             "•".repeat(n),
             font,
             pal.ink,
@@ -2667,13 +2721,13 @@ fn reveal_on_hover(ui: &mut Ui, pal: Palette, secret: &[u8]) {
     ui.label(
         RichText::new(if visible {
             tr(
-                "İmleci çekince parola yeniden gizlenir.",
-                "The password hides again when the pointer leaves.",
+                "İmleci çekince yeniden gizlenir.",
+                "Hidden again when the pointer leaves.",
             )
         } else {
             tr(
-                "Parolayı görmek için imleci üzerine getirin.",
-                "Hover over the dots to show the password.",
+                "Görmek için imleci noktaların üzerine getirin.",
+                "Hover over the dots to show it.",
             )
         })
         .color(pal.muted)
@@ -2983,12 +3037,19 @@ mod tests {
         frame(&ctx, &mut app);
         assert!(!app.can_start(), "must not start without a key");
         app.show_keygen = false;
-        let pk = crate::logic::create_identity(
+        let (pk, paper) = crate::logic::create_identity(
             &d.join("me.lphykey"),
             &lephy_sys::mem::SecretBytes::from_slice(b"identity pass 1").unwrap(),
             64,
         )
         .unwrap();
+        app.paper = Some(paper);
+        frame(&ctx, &mut app);
+        app.paper = None;
+        // An identity file is refused as a source.
+        let mut other = App::default();
+        other.set_source(&d.join("me.lphykey"));
+        assert!(other.source.is_none() && other.error.is_some());
         app.recipients_text = format!("{pk}\n");
         frame(&ctx, &mut app);
         assert!(app.can_start());
