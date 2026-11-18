@@ -135,11 +135,17 @@ cargo test --locked --workspace
 scripts/macos-app.sh --dmg
 ```
 
-## Katkı ve güvenlik
+## Güvenlik
 
-[CONTRIBUTING.md](CONTRIBUTING.md) ve [SECURITY.md](SECURITY.md) (İngilizce). Zafiyetleri herkese
-açık issue olarak değil, SECURITY.md'deki yolla bildirin.
+Zafiyetleri herkese açık issue olarak değil, [SECURITY.md](SECURITY.md)'deki yolla (İngilizce)
+bildirin.
 
 ## Lisans
 
-MIT veya Apache-2.0, tercihinize göre. Üçüncü taraf içerik için NOTICE.
+lephycrypy+ yalnızca [Apache License 2.0](LICENSE) ile lisanslanır.
+
+Atıf zorunludur: dağıtılan her kopya, değiştirilmiş sürüm ya da türev çalışma (ticari ya da
+kişisel, kaynak ya da ikili biçimde) [LICENSE](LICENSE) ve [NOTICE](NOTICE) dosyalarını korumalı ve
+**lephycrypy+ contributors** adına atıf yapmalıdır (https://github.com/Seesternn/lephycrypy-plus).
+Değiştirilen dosyalarda değiştirildikleri belirtilmelidir. Projeyi kullanıyor ya da çatallıyorsanız
+lütfen aynı şekilde atıf yapın. Üçüncü taraf içerik için NOTICE.

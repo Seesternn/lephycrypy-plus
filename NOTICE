@@ -1,8 +1,15 @@
 lephycrypy+
 Copyright 2026 lephycrypy+ contributors
 
-This product is licensed under the MIT license or the Apache License 2.0, at your option
-(LICENSE-MIT, LICENSE-APACHE).
+This product includes software developed by lephycrypy+ contributors.
+Licensed under the Apache License, Version 2.0 (LICENSE or http://www.apache.org/licenses/LICENSE-2.0).
+
+Attribution:
+
+Any copy, modified version or other derivative work of lephycrypy+, distributed in source or
+binary form, must keep this NOTICE file (or reproduce its contents where third-party notices
+normally appear) and credit "lephycrypy+ contributors"
+(https://github.com/Seesternn/lephycrypy-plus), as required by section 4 of the Apache License 2.0.
 
 Third-party content:
 

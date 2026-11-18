@@ -221,11 +221,17 @@ docs/THREAT-MODEL.md.
 Release binaries use `PT_DENY_ATTACH` on macOS; `--allow-debugger` does not allow attaching a
 debugger to a notarized binary. Use a local unsigned build for debugging.
 
-## Contributing and security
+## Security
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Please report vulnerabilities privately as described in
-[SECURITY.md](SECURITY.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-MIT or Apache-2.0, at your option. See NOTICE for third-party content.
+lephycrypy+ is licensed under the [Apache License 2.0](LICENSE) only.
+
+Attribution is required: every copy, modified version or other derivative work that is
+distributed — commercial or personal, in source or binary form — must keep the [LICENSE](LICENSE)
+and [NOTICE](NOTICE) files and credit **lephycrypy+ contributors**
+(https://github.com/Seesternn/lephycrypy-plus). Modified files must say that they were changed.
+If you use or fork the project, please credit it the same way. See NOTICE for third-party
+content.

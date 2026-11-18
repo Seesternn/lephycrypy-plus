@@ -47,6 +47,8 @@ Fixes from the November 2026 internal review (not an independent audit):
   whose time range is narrower; the time is simply not applied.
 
 ### Changed
+- License: Apache License 2.0 only (MIT removed). NOTICE now states the attribution required
+  when copies, modified versions or derivative works are distributed.
 - The command line, error messages, code comments, build and CI configuration are now in English
   (the desktop app stays bilingual). Confirmation prompts ask for `yes` (`evet` is still accepted).
 - The "Copy" link next to a new public key now really copies it (through the system tool); the
@@ -60,8 +62,8 @@ Fixes from the November 2026 internal review (not an independent audit):
 
 ### Added
 - Documentation in English: README (Turkish version in README.tr.md), SECURITY, the file format
-  and the threat model; new CONTRIBUTING, CODE_OF_CONDUCT, issue and pull-request templates, and
-  a sourced comparison with age, Picocrypt, VeraCrypt and Cryptomator (docs/COMPARISON.md).
+  and the threat model; issue and pull-request templates, and a sourced comparison with age, Picocrypt,
+  VeraCrypt and Cryptomator (docs/COMPARISON.md).
 - Opening files from the system. macOS: double-clicking a `.lphy` file opens it in the app, any
   file or folder can be opened with "Open With → lephycrypy+" in Finder, and files can be dropped
   on the Dock icon (the app bundle declares the `.lphy` type). Windows: an optional Explorer
