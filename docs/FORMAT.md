@@ -133,12 +133,15 @@ Consecutive entries inside the plaintext stream:
 - File data: `[u32 len][bytes]…[u32 0]` frames; `len` 1..=16 MiB.
 - Symlink: the target in a single frame `[u32 len][target][u32 0]`, 1..=4096 B, no NUL, `/`
   separator, no NFC; the writer writes 0 for `mode`/`mtime`, the reader ignores them.
-- Directory: no data. END: path_len 0, mode 0, mtime 0, no data.
+- Directory: no data. END: path_len 0, mtime 0, no data; `mode` holds flags: bit 0 (`END_FOLDER`)
+  = the source was a folder, every other bit 0 (otherwise code 4).
 - Order: the writer writes a directory's entry before its children; the reader rejects a path
   without a parent directory entry (code 4). Children are written in ascending order of their
   name bytes (reproducibility).
-- The root name is not stored: when a folder is encrypted, entries are relative to its content;
-  when a single file is encrypted, the only entry is the file's name.
+- The root name is not stored: when a folder is encrypted, entries are relative to its content
+  and END has `END_FOLDER` set; when a single file is encrypted, the only entry is the file's name.
+- A reader writes an archive whose only entry is a top-level file straight to the destination as
+  that file, unless `END_FOLDER` is set: then the destination is always a folder.
 - `mode`: POSIX; the reader clears setuid/setgid/sticky, `& 0o777`. `mtime`: Unix seconds,
   ∈ [−2^40, 2^40].
 

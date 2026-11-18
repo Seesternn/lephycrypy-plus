@@ -271,8 +271,9 @@ def archive_entry(kind: int, path: str, mode: int, mtime: int, data: bytes | Non
     return out
 
 
-def archive_end() -> bytes:
-    return bytes([255]) + struct.pack("<H", 0) + struct.pack("<I", 0) + struct.pack("<q", 0)
+def archive_end(folder: bool = False) -> bytes:
+    # mode bit 0 (END_FOLDER): the source was a folder, never flattened to a single file.
+    return bytes([255]) + struct.pack("<H", 0) + struct.pack("<I", 1 if folder else 0) + struct.pack("<q", 0)
 
 
 def archive_padded(entries: bytes) -> bytes:

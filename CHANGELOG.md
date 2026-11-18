@@ -47,6 +47,11 @@ Fixes from the November 2026 internal review (not an independent audit):
   whose time range is narrower; the time is simply not applied.
 
 ### Changed
+- A folder that is encrypted now always comes back as a folder, even when it holds a single file
+  (it used to be written out as that file). The archive's END entry records that the source was a
+  folder (`END_FOLDER`, docs/FORMAT.md); files encrypted from a single file are unchanged.
+- The desktop app's password generator shows the new password as dots until the pointer rests on
+  it, so it is not readable over the shoulder or in a screen recording.
 - License: Apache License 2.0 only (MIT removed). NOTICE now states the attribution required
   when copies, modified versions or derivative works are distributed.
 - The command line, error messages, code comments, build and CI configuration are now in English

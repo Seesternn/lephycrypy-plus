@@ -34,6 +34,9 @@ pub const T_DIR: u8 = 1;
 pub const T_SYMLINK: u8 = 2;
 /// END.
 pub const T_END: u8 = 255;
+/// END `mode` flag: the source was a folder, so the result is always a folder (never flattened to
+/// a single file, even when the folder held exactly one file).
+pub const END_FOLDER: u32 = 1;
 /// Writer frame size.
 const WRITE_FRAME: usize = 1024 * 1024;
 /// Fixed entry header: kind (1) + `path_len` (2) + mode (4) + mtime (8), without the path.
@@ -160,6 +163,8 @@ pub struct ArchiveWriter {
     entries: usize,
     total_path_bytes: u64,
     dedup: HashSet<[u8; 16]>,
+    /// The source is a folder ([`END_FOLDER`]).
+    folder: bool,
     /// Report (skipped entries, folding-collision warnings).
     pub report: Report,
 }
@@ -206,6 +211,7 @@ impl ArchiveWriter {
             });
         }
         Ok(Self {
+            folder: root_dir.is_some(),
             root: root_dir,
             stack,
             state: WState::Next,
@@ -320,7 +326,8 @@ impl ArchiveWriter {
                 }
                 WState::Next => {
                     let Some(w) = self.stack.pop() else {
-                        self.put_record(T_END, "", 0, 0);
+                        let flags = if self.folder { END_FOLDER } else { 0 };
+                        self.put_record(T_END, "", flags, 0);
                         self.report.entries = self.entries;
                         self.state = WState::Done;
                         return Ok(true);
@@ -791,8 +798,12 @@ impl Extractor {
         let mtime = i64::from_le_bytes(self.hdr[7 + plen..15 + plen].try_into().unwrap_or([0; 8]));
         self.hdr.clear();
         if ty == T_END {
-            if plen != 0 || mode != 0 || mtime != 0 {
+            if plen != 0 || (mode & !END_FOLDER) != 0 || mtime != 0 {
                 return Err(Self::violation("END entry fields must be zero"));
+            }
+            if mode & END_FOLDER != 0 {
+                // A folder stays a folder, even with a single file inside.
+                self.single_file = None;
             }
             self.end_seen = true;
             self.end_at = self.consumed;
@@ -1349,7 +1360,7 @@ mod tests {
                 "mtime",
                 [record(T_FILE, "a", 0o644, 1 << 41), frames(b"1"), end()].concat(),
             ),
-            ("bad-end", [record(T_END, "", 1, 0)].concat()),
+            ("bad-end", [record(T_END, "", 2, 0)].concat()),
         ];
         for (name, bytes) in cases {
             let (out, r) = extract_all(&bytes, ExtractOptions::default(), name);

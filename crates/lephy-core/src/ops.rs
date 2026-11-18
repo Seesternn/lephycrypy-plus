@@ -2459,6 +2459,95 @@ mod tests {
     }
 
     #[test]
+    fn folder_with_one_file_decrypts_to_a_folder() {
+        let d = tmpdir("onefile");
+        let src = d.join("folder");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("only.txt"), b"one").unwrap();
+        let p = pwd("parola parola");
+        let mut log = |_: &str| {};
+        let dopts = || DecryptOptions {
+            unlock: UnlockOptions::default(),
+            extract: ExtractOptions::default(),
+        };
+        // A folder (even with a single file inside) comes back as a folder.
+        let out = d.join("f.lphy");
+        encrypt(
+            &Input::Path(&src),
+            &out,
+            &p,
+            None,
+            &opts(false, None),
+            &mut OsEntropy,
+            &mut log,
+        )
+        .unwrap();
+        let dst = d.join("back");
+        decrypt(
+            &out,
+            &Output::Path(&dst, false),
+            &p,
+            None,
+            dopts(),
+            &mut log,
+        )
+        .unwrap();
+        assert!(dst.is_dir());
+        assert_eq!(std::fs::read(dst.join("only.txt")).unwrap(), b"one");
+        // A single file still comes back as that file.
+        let out = d.join("s.lphy");
+        let file = src.join("only.txt");
+        encrypt(
+            &Input::Path(&file),
+            &out,
+            &p,
+            None,
+            &opts(false, None),
+            &mut OsEntropy,
+            &mut log,
+        )
+        .unwrap();
+        let dst = d.join("single");
+        decrypt(
+            &out,
+            &Output::Path(&dst, false),
+            &p,
+            None,
+            dopts(),
+            &mut log,
+        )
+        .unwrap();
+        assert!(dst.is_file());
+        assert_eq!(std::fs::read(&dst).unwrap(), b"one");
+        // An empty folder comes back as an empty folder.
+        let empty = d.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let out = d.join("e.lphy");
+        encrypt(
+            &Input::Path(&empty),
+            &out,
+            &p,
+            None,
+            &opts(false, None),
+            &mut OsEntropy,
+            &mut log,
+        )
+        .unwrap();
+        let dst = d.join("empty-back");
+        decrypt(
+            &out,
+            &Output::Path(&dst, false),
+            &p,
+            None,
+            dopts(),
+            &mut log,
+        )
+        .unwrap();
+        assert!(dst.is_dir());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn archive_roundtrip_dir_single_file_and_strings() {
         let d = tmpdir("arc");
         let src = d.join("tree");

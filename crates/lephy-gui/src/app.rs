@@ -1265,14 +1265,7 @@ impl App {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 if let Some(p) = &self.generated {
-                    // The displayed text ends up in the toolkit's memory copies; the zeroizing
-                    // allocator wipes them when freed (THREAT-MODEL).
-                    let text = String::from_utf8_lossy(p.expose());
-                    ui.label(
-                        RichText::new(text.as_ref())
-                            .font(fonts::semibold(15.5))
-                            .color(pal.ink),
-                    );
+                    reveal_on_hover(ui, pal, p.expose());
                 }
                 ui.label(
                     RichText::new(tr(
@@ -2288,6 +2281,60 @@ fn segmented<T: PartialEq + Copy>(
             ));
         }
     }
+}
+
+/// The generated password, masked until the pointer rests on it (or it has keyboard focus), so
+/// it is not readable over the shoulder or in a screen recording while the window is just open.
+fn reveal_on_hover(ui: &mut Ui, pal: Palette, secret: &[u8]) {
+    let font = fonts::semibold(15.5);
+    let width = ui.available_width();
+    // The displayed text ends up in the toolkit's memory copies; the zeroizing allocator wipes
+    // them when freed (THREAT-MODEL).
+    let text = String::from_utf8_lossy(secret);
+    let shown = ui
+        .painter()
+        .layout(text.into_owned(), font.clone(), pal.ink, width);
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, shown.size().y), Sense::click());
+    let visible = resp.hovered() || resp.has_focus();
+    resp.widget_info(|| {
+        WidgetInfo::labeled(
+            egui::Role::Button,
+            true,
+            tr(
+                "Üretilen parola (görmek için üzerine gelin)",
+                "Generated password (hover to show)",
+            ),
+        )
+    });
+    if visible {
+        ui.painter().galley(rect.min, shown, pal.ink);
+    } else {
+        drop(shown);
+        let n = secret.len().min(32);
+        ui.painter().text(
+            rect.left_center(),
+            egui::Align2::LEFT_CENTER,
+            "•".repeat(n),
+            font,
+            pal.ink,
+        );
+    }
+    let _ = resp.on_hover_cursor(CursorIcon::Default);
+    ui.label(
+        RichText::new(if visible {
+            tr(
+                "İmleci çekince parola yeniden gizlenir.",
+                "The password hides again when the pointer leaves.",
+            )
+        } else {
+            tr(
+                "Parolayı görmek için imleci üzerine getirin.",
+                "Hover over the dots to show the password.",
+            )
+        })
+        .color(pal.muted)
+        .size(12.5),
+    );
 }
 
 /// Gear icon that opens the settings page.

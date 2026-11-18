@@ -433,6 +433,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    #[cfg_attr(miri, ignore = "file system; does not run under Miri")]
     fn install_and_uninstall_in_a_scratch_folder() {
         let d = scratch("ok");
         assert!(!is_installed(&d));
@@ -451,6 +452,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    #[cfg_attr(miri, ignore = "file system; does not run under Miri")]
     fn foreign_workflow_is_left_alone() {
         let d = scratch("foreign");
         std::fs::create_dir_all(d.join(WORKFLOW).join("Contents")).unwrap();
@@ -463,6 +465,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system; does not run under Miri")]
     fn bad_bundle_id_is_rejected() {
         let d = scratch("bad");
         assert!(install(&d, "Menu", "x; rm -rf /").is_err());

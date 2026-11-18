@@ -118,7 +118,7 @@ jobs:
       - run: cargo check --locked --workspace
       - name: canary scan (/proc/self/mem)
         run: cargo test --locked -p lephy-core --features test-vectors --test canary -- --nocapture
-      - name: miri (lephy-sys, cfg(miri) arka ucu)
+      - name: miri (lephy-sys, cfg(miri) backend)
         run: |
           set -euo pipefail
           rustup toolchain install nightly-2026-11-01 --component miri,rust-src --profile minimal
@@ -127,7 +127,7 @@ jobs:
       - uses: taiki-e/install-action@328a871ad8f62ecac78390391f463ccabc974b72 # v2.69.9
         with:
           tool: cargo-fuzz@0.13.2
-      - name: fuzz smoke (60 sn/hedef)
+      - name: fuzz smoke (60 s per target)
         working-directory: fuzz
         run: |
           set -euo pipefail
