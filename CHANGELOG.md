@@ -95,6 +95,9 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Desktop app: My keys › Restore from a paper backup rebuilds an identity from its 22 words with
+  a new password (live word check; the words are wiped after use and the window is hidden from
+  screen capture while they are typed).
 - Desktop app: while paper-backup words, a generated password or the lock screen are shown, the
   window is hidden from screenshots, screen recordings and screen sharing (macOS and Windows).
 - Desktop app: leftover `.lphy-tmp-*` items from a decryption that was cut short are found at

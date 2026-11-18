@@ -147,8 +147,8 @@ impl Topic {
                     "Write down the 22 words shown when the key is created. You can take the paper backup later as well: My keys → \"Open my identity\".",
                 ),
                 tr(
-                    "Kelimelerden kimliği geri getirmek için: lephycrypy identity restore yeni.lphykey (komut satırında). Kelimeleri gören herkes dosyalarınızı açabilir; fotoğrafını çekmeyin, buluta koymayın.",
-                    "To restore the identity from the words: lephycrypy identity restore new.lphykey (command line). Anyone who sees the words can open your files; do not photograph them or store them in the cloud.",
+                    "Kelimelerden kimliği geri getirmek için: Anahtarlarım › \"Kâğıt yedeğinden geri yükle\" (ya da komut satırında lephycrypy identity restore). Kelimeleri gören herkes dosyalarınızı açabilir; fotoğrafını çekmeyin, buluta koymayın.",
+                    "To restore the identity from the words: My keys › \"Restore from a paper backup\" (or lephycrypy identity restore on the command line). Anyone who sees the words can open your files; do not photograph them or store them in the cloud.",
                 ),
                 tr(
                     "Parolayla şifrelenmiş dosyalar için kurtarma yoktur: parolayı bir parola yöneticisinde saklayın.",

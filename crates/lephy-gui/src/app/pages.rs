@@ -381,6 +381,7 @@ impl App {
     pub(super) fn go_home(&mut self) {
         self.page = Page::Home;
         self.welcome_step = 0;
+        self.restore.reset();
         self.confirm_shell = false;
         self.settings_note = None;
         self.lock_edit = false;
@@ -1039,13 +1040,15 @@ impl App {
                 }
             },
         );
-        ui.label(
-            RichText::new(tr(
-                "Kâğıt yedeğinden geri yüklemek için: lephycrypy identity restore",
-                "To restore from a paper backup: lephycrypy identity restore",
-            ))
-            .color(pal.muted)
-            .size(12.0),
+        section(
+            ui,
+            pal,
+            tr("Kâğıt yedeğinden geri yükle", "Restore from a paper backup"),
+            tr(
+                "Kimlik dosyanız ya da parolası kaybolduysa, 22 kelimeyle kimliği yeni bir parolayla yeniden oluşturun. Aynı anahtar geri gelir; eski dosyalarınız açılır.",
+                "If your identity file or its password is lost, rebuild the identity from the 22 words with a new password. The same key comes back; your old files open again.",
+            ),
+            |ui| self.restore_section(ui, pal),
         );
         if let Some(ok) = copied {
             self.error = (!ok).then(|| {

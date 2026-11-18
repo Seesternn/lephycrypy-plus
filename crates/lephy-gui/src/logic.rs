@@ -139,7 +139,7 @@ pub fn parse_recipients(text: &str) -> std::result::Result<Vec<PublicKey>, Strin
 }
 
 /// Creates a key pair: password-protected identity at `path`, public key next to it as
-/// `<name>.pub`. Returns the public key text.
+/// `<name>.pub`. Returns the public key text and the paper-backup words.
 ///
 /// # Errors
 /// Password policy, existing files, I/O.
@@ -148,18 +148,46 @@ pub fn create_identity(
     password: &SecretBytes,
     kdf_mib: u32,
 ) -> Result<(String, SecretBytes)> {
+    let id = Identity::generate(&mut OsEntropy)?;
+    let pk = save_identity(&id, path, password, kdf_mib)?;
+    let paper = id.paper_backup()?;
+    Ok((pk, paper))
+}
+
+/// Brings an identity back from its paper-backup words, saved like a new one (`path` and
+/// `<name>.pub`, nothing overwritten). Returns the public key text.
+///
+/// # Errors
+/// Wrong words or checksum, password policy, existing files, I/O.
+pub fn restore_identity(
+    words: &[u8],
+    path: &Path,
+    password: &SecretBytes,
+    kdf_mib: u32,
+) -> Result<String> {
+    let id = Identity::from_paper(words)?;
+    save_identity(&id, path, password, kdf_mib)
+}
+
+/// Writes `id` password-protected to `path` and its public keys to `<name>.pub` (three lines:
+/// `lphy1…`, `lphysig1…`, `lphypq1…`).
+fn save_identity(
+    id: &Identity,
+    path: &Path,
+    password: &SecretBytes,
+    kdf_mib: u32,
+) -> Result<String> {
     let nfc = password::normalize_nfc(password)?;
     password::check_encrypt_policy(&nfc)?;
     let pub_path = path.with_extension("pub");
     if pub_path.exists() {
         return Err(Error::Exists(pub_path.display().to_string()));
     }
-    let id = Identity::generate(&mut OsEntropy)?;
     let kdf = KdfParams {
         m_kib: kdf_mib.saturating_mul(1024),
         ..KdfParams::DEFAULT
     };
-    lephy_core::recipient::write_identity_file(path, &id, &nfc, kdf, &mut OsEntropy, &mut |_| {})?;
+    lephy_core::recipient::write_identity_file(path, id, &nfc, kdf, &mut OsEntropy, &mut |_| {})?;
     let pk = id.public().to_string();
     let hybrid = id.hybrid_public()?;
     std::fs::OpenOptions::new()
@@ -172,8 +200,27 @@ pub fn create_identity(
                 format!("{pk}\n{}\n{hybrid}\n", id.signer()).as_bytes(),
             )
         })?;
-    let paper = id.paper_backup()?;
-    Ok((pk, paper))
+    Ok(pk)
+}
+
+/// Live check of typed paper-backup words: how many there are and the positions (1-based) of
+/// words that are not in the list. Nothing is kept.
+#[must_use]
+pub fn check_paper_words(text: &str) -> (usize, Vec<usize>) {
+    let list = lephy_core::passphrase::words();
+    let mut n = 0;
+    let mut bad = Vec::new();
+    for w in text
+        .split(|c: char| c.is_whitespace() || c == '-')
+        .filter(|w| !w.is_empty())
+    {
+        n += 1;
+        let lw = w.to_lowercase();
+        if list.binary_search(&lw.as_str()).is_err() {
+            bad.push(n);
+        }
+    }
+    (n, bad)
 }
 
 /// An identity file (`.lphykey`) by its name: it must never be decrypted to disk, which would
@@ -1758,6 +1805,29 @@ mod tests {
         let found = find_stale_temps(&dirs, std::time::Duration::ZERO);
         assert_eq!(lephy_core::io::cleanup(&found).unwrap(), 2);
         assert!(d.join("other.txt").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn identity_comes_back_from_paper() {
+        let d = std::env::temp_dir().join(format!("lphy-gui-paper-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let pw = secret("kimlik parolasi 123");
+        let (pk, paper) = create_identity(&d.join("a.lphykey"), &pw, 64).unwrap();
+        let text = std::str::from_utf8(paper.expose()).unwrap().to_owned();
+        assert_eq!(check_paper_words(&text), (22, Vec::new()));
+        assert_eq!(check_paper_words("abacus zzzz"), (2, vec![2]));
+        let back = restore_identity(text.as_bytes(), &d.join("b.lphykey"), &pw, 64).unwrap();
+        assert_eq!(back, pk);
+        assert!(d.join("b.pub").exists());
+        // Never overwrites, and a wrong word is refused.
+        assert!(restore_identity(text.as_bytes(), &d.join("b.lphykey"), &pw, 64).is_err());
+        let mut words: Vec<&str> = text.split_whitespace().collect();
+        words.swap(3, 4);
+        assert!(
+            restore_identity(words.join(" ").as_bytes(), &d.join("c.lphykey"), &pw, 64).is_err()
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -172,6 +172,8 @@ pub struct App {
     scan_on_start: bool,
     /// The window is currently kept out of screenshots and screen sharing.
     capture_protected: bool,
+    /// My keys › restore from paper backup.
+    restore: restore::Restore,
 }
 
 impl Default for App {
@@ -246,6 +248,7 @@ impl Default for App {
             stale: maintenance::Stale::default(),
             scan_on_start: false,
             capture_protected: false,
+            restore: restore::Restore::default(),
         }
     }
 }
@@ -862,6 +865,7 @@ impl App {
         self.paper.is_some()
             || self.generated.is_some()
             || (self.id_show_paper && self.page == pages::Page::Keys)
+            || self.restore.words_visible()
             || self.locked
     }
 
@@ -2696,6 +2700,7 @@ pub fn boxed() -> Box<dyn eframe::App> {
 mod help;
 mod maintenance;
 mod pages;
+mod restore;
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -3234,6 +3239,11 @@ mod tests {
         app.generated = None;
         frame(&ctx, &mut app);
         assert!(!app.capture_protected);
+        app.page = pages::Page::Keys;
+        app.restore.open = true;
+        frame(&ctx, &mut app);
+        app.go_home();
+        assert!(!app.restore.open);
         for step in 0..3 {
             app.page = pages::Page::Welcome;
             app.welcome_step = step;
