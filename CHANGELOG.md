@@ -99,6 +99,8 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- `scripts/macos-app.sh --dmg` writes a `.sha256` next to the disk image; README "Verify your
+  download" explains how to check releases (they are not notarized).
 - Desktop app: My keys › Restore from a paper backup rebuilds an identity from its 22 words with
   a new password (live word check; the words are wiped after use and the window is hidden from
   screen capture while they are typed).

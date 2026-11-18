@@ -247,6 +247,27 @@ scripts/macos-app.sh --dmg
 ```
 
 The bundle is signed ad hoc; it opens without warnings only on the Mac that built it.
+`--dmg` also writes `<image>.sha256`.
+
+### Verify your download
+
+Releases are not notarized by Apple or signed with a Windows code-signing certificate yet, so
+the operating system cannot tell you who made them. Check the file against the checksum
+published with the release (`SHA256SUMS*.txt`, or the `.sha256` next to a disk image) before
+opening it:
+
+```bash
+shasum -a 256 -c lephycrypy-plus-0.0.1.dmg.sha256
+```
+
+On Windows (PowerShell), compare the output with the published value:
+
+```powershell
+Get-FileHash .\lephycrypy.exe -Algorithm SHA256
+```
+
+A checksum only helps if you got it from a different place than the file, or over a channel you
+trust (the release page on GitHub over HTTPS).
 
 Fuzz targets live in `fuzz/` (a separate workspace; nightly and `cargo-fuzz`). Format vectors are
 compared byte for byte with a Python reference written only from FORMAT.md

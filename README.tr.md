@@ -207,6 +207,28 @@ cargo test --locked --workspace
 scripts/macos-app.sh --dmg
 ```
 
+`--dmg`, disk görüntüsünün yanına `<görüntü>.sha256` dosyasını da yazar.
+
+### İndirdiğiniz dosyayı doğrulayın
+
+Sürümler henüz Apple tarafından onaylanmıyor (notarization) ve Windows kod imzalama sertifikasıyla
+imzalanmıyor; bu yüzden işletim sistemi dosyayı kimin yaptığını size söyleyemez. Açmadan önce
+dosyayı sürümle birlikte yayımlanan sağlama toplamıyla (`SHA256SUMS*.txt` ya da disk görüntüsünün
+yanındaki `.sha256`) karşılaştırın:
+
+```bash
+shasum -a 256 -c lephycrypy-plus-0.0.1.dmg.sha256
+```
+
+Windows'ta (PowerShell) çıktıyı yayımlanan değerle karşılaştırın:
+
+```powershell
+Get-FileHash .\lephycrypy.exe -Algorithm SHA256
+```
+
+Sağlama toplamı, ancak onu dosyadan farklı bir yerden ya da güvendiğiniz bir kanaldan (GitHub
+sürüm sayfası, HTTPS) aldıysanız işe yarar.
+
 ## Güvenlik
 
 Zafiyetleri herkese açık issue olarak değil, [SECURITY.md](SECURITY.md)'deki yolla (İngilizce)

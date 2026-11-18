@@ -123,4 +123,5 @@ jobs:
             artifacts/sbom/**/*.cdx.json
           body: |
             Draft release. SHA256SUMS-unsigned.txt covers the reproducible unsigned binaries; the signed
-            binaries and SHA256SUMS.txt + .minisig are added by the maintainer by hand.
+            binaries and SHA256SUMS.txt + .minisig are added by the maintainer by hand. The builds are
+            not notarized; see "Verify your download" in the README.

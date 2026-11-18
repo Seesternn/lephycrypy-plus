@@ -89,5 +89,8 @@ if [ "${1:-}" = "--dmg" ]; then
   ln -s /Applications "$STAGE/Applications"
   hdiutil create -quiet -volname "lephycrypy+" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
   rm -rf "$STAGE"
+  # Checksum next to the image, for "Verify your download" in the README.
+  (cd "$(dirname "$DMG")" && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256")
   echo "$DMG"
+  echo "$DMG.sha256"
 fi
