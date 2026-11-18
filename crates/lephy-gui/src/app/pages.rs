@@ -2,8 +2,8 @@
 //! optional app lock and the quit confirmation.
 
 use super::{
-    App, Palette, draw_doc, draw_folder, draw_gear, draw_key, draw_lock, fonts, link_button, logic,
-    primary_button, reveal_on_hover, secondary_button, segmented, theme,
+    App, Palette, draw_doc, draw_folder, draw_gear, draw_key, draw_lock, fonts, help, link_button,
+    logic, primary_button, reveal_on_hover, secondary_button, segmented, theme,
 };
 use crate::i18n::{Lang, lang, tr};
 use crate::settings::LockVerifier;
@@ -27,6 +27,8 @@ pub(super) enum Page {
     Encrypt,
     /// Decrypt: choose an encrypted file.
     Decrypt,
+    /// Help: every help topic, unfolded.
+    Help,
     /// Key pairs: create one, show the keys of an identity, paper backup.
     Keys,
     /// Language, app lock, system integration, about.
@@ -594,6 +596,21 @@ impl App {
         if clicked[3] {
             self.page = Page::Settings;
         }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if link_button(
+                ui,
+                pal,
+                tr(
+                    "? Yardım: parola, anahtarlar, kimlik dosyası",
+                    "? Help: passwords, keys, identity files",
+                ),
+            )
+            .clicked()
+            {
+                self.page = Page::Help;
+            }
+        });
         ui.add_space(14.0);
         Self::drop_area(
             ui,
@@ -810,6 +827,45 @@ impl App {
     }
 
     // -----------------------------------------------------------------------------------------
+    // Help
+
+    pub(super) fn help_view(&mut self, ui: &mut Ui, pal: Palette) {
+        page_title(
+            ui,
+            pal,
+            tr("Yardım", "Help"),
+            tr(
+                "Sık sorulanlar; her biri ilgili ekranda da \"?\" kutusu olarak bulunur.",
+                "Common questions; each also appears as a \"?\" box on the screen it is about.",
+            ),
+        );
+        for topic in help::Topic::ALL {
+            section(ui, pal, topic.title(), "", |ui| {
+                help::body_ui(ui, pal, topic);
+            });
+        }
+        let w = (ui.available_width() - 10.0) / 2.0;
+        ui.horizontal(|ui| {
+            if secondary_button(ui, pal, tr("Anahtarlarım'a git", "Go to My keys"), w, 36.0)
+                .clicked()
+            {
+                self.page = Page::Keys;
+            }
+            if secondary_button(
+                ui,
+                pal,
+                tr("Şifrelemeye başla", "Start encrypting"),
+                w,
+                36.0,
+            )
+            .clicked()
+            {
+                self.page = Page::Encrypt;
+            }
+        });
+    }
+
+    // -----------------------------------------------------------------------------------------
     // Keys
 
     #[allow(clippy::too_many_lines, reason = "one page laid out top to bottom")]
@@ -821,6 +877,9 @@ impl App {
                 .color(pal.ink),
         );
         ui.add_space(12.0);
+        help::help_box(ui, pal, help::Topic::Identity);
+        help::help_box(ui, pal, help::Topic::Backup);
+        ui.add_space(4.0);
         let mut copied = None;
         section(
             ui,

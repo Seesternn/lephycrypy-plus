@@ -66,6 +66,9 @@ Fixes from the November 2026 internal review (not an independent audit):
   (`DecryptOptions::restore_name`). A folder has no stored name and keeps the destination's name.
 - Desktop app: Encrypt and Decrypt open their own pages from the home screen, and the first-launch
   welcome is a short three-step introduction.
+- Desktop app: fold-out "?" help boxes next to identity files, public keys and signatures (what an
+  identity file is, how to create and share keys, how to back them up), and a Help page from the
+  home screen with all of them.
 - Touch ID / Windows Hello unlock of identities was evaluated and not added: without a signed
   release the biometric check is not enforced (macOS legacy keychain) or not bound to the data
   (Windows DPAPI). See the threat model.

@@ -823,6 +823,7 @@ impl App {
                                     pages::Page::Home => self.home_view(ui, pal),
                                     pages::Page::Encrypt => self.encrypt_view(ui, pal),
                                     pages::Page::Decrypt => self.decrypt_view(ui, pal),
+                                    pages::Page::Help => self.help_view(ui, pal),
                                     pages::Page::Keys => self.keys_view(ui, pal),
                                     pages::Page::Settings => self.settings_view(ui, pal),
                                 },
@@ -1109,7 +1110,9 @@ impl App {
                 self.show_keygen = false;
                 self.error = None;
             }
-            ui.add_space(16.0);
+            ui.add_space(8.0);
+            help::help_box(ui, pal, help::Topic::PasswordOrKeys);
+            ui.add_space(8.0);
         }
         let mut submit = false;
         if mode == Mode::Encrypt && self.use_keys {
@@ -1945,6 +1948,7 @@ impl App {
             .color(pal.muted)
             .size(12.5),
         );
+        help::help_box(ui, pal, help::Topic::Signatures);
         ui.horizontal(|ui| {
             let name = self.sign_identity.as_ref().map_or_else(
                 || tr("Kimlik dosyası seçilmedi", "No identity file selected").to_string(),
@@ -1991,7 +1995,9 @@ impl App {
             .color(pal.muted)
             .size(13.0),
         );
-        ui.add_space(6.0);
+        ui.add_space(8.0);
+        help::help_box(ui, pal, help::Topic::PublicKeys);
+        help::help_box(ui, pal, help::Topic::Identity);
         ui.checkbox(
             &mut self.pq,
             tr(
@@ -2233,7 +2239,9 @@ impl App {
             .color(pal.muted)
             .size(13.0),
         );
-        ui.add_space(10.0);
+        ui.add_space(8.0);
+        help::help_box(ui, pal, help::Topic::OpenWithIdentity);
+        help::help_box(ui, pal, help::Topic::Identity);
         let name = self.identity.as_ref().map(|k| {
             k.file_name()
                 .map(|f| escape_display(&f.to_string_lossy()))
@@ -2639,6 +2647,7 @@ pub fn boxed() -> Box<dyn eframe::App> {
     Box::new(App::with_prefs(crate::settings::Settings::load()))
 }
 
+mod help;
 mod pages;
 
 impl eframe::App for App {
@@ -3155,6 +3164,7 @@ mod tests {
             pages::Page::Welcome,
             pages::Page::Encrypt,
             pages::Page::Decrypt,
+            pages::Page::Help,
             pages::Page::Keys,
             pages::Page::Settings,
         ] {
