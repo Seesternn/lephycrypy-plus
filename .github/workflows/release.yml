@@ -52,7 +52,7 @@ jobs:
             cp "$bin" out/
           done
           (cd out && shasum -a 256 lephycrypy* > "SHA256SUMS-${{ matrix.target }}-${{ matrix.attempt }}.txt")
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-${{ matrix.target }}-${{ matrix.attempt }}
           path: out/
@@ -79,7 +79,7 @@ jobs:
             for f in artifacts/build-$t-a/lephycrypy*; do mv "dist/$(basename "$f")" "dist/lephycrypy-$t${f##*lephycrypy}"; done
           done
           (cd dist && sha256sum * > SHA256SUMS-unsigned.txt)
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-unsigned
           path: dist/
@@ -99,7 +99,7 @@ jobs:
         with:
           tool: cargo-cyclonedx@0.5.10
       - run: cargo cyclonedx --locked --all --format json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
           path: "**/*.cdx.json"
