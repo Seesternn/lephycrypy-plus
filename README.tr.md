@@ -61,6 +61,8 @@ indirilir.
 
 age, Picocrypt, VeraCrypt ve Cryptomator ile karşılaştırma: [docs/COMPARISON.md](docs/COMPARISON.md).
 
+Adım adım nasıl çalıştığı: şifreleme, şifre çözme, kasalar, USB bellekler ve anahtar çiftlerinin [akış şemaları](https://seesternn.github.io/lephycrypy-plus/tr/) ([English](https://seesternn.github.io/lephycrypy-plus/en/)).
+
 ## Platformlar
 
 | Platform | Durum |

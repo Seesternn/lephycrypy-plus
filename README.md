@@ -62,6 +62,8 @@ effort** basis.
 See [docs/COMPARISON.md](docs/COMPARISON.md) for how it relates to age, Picocrypt, VeraCrypt and
 Cryptomator.
 
+How it works, step by step: [flowcharts](https://seesternn.github.io/lephycrypy-plus/en/) of encryption, decryption, vaults, USB sticks and key pairs ([Türkçe](https://seesternn.github.io/lephycrypy-plus/tr/)).
+
 ## Platforms
 
 | Platform | Status |
