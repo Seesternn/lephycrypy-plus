@@ -85,8 +85,8 @@ impl Topic {
                     "1. On the home screen open My keys and press \"Create a key pair…\".",
                 ),
                 tr(
-                    "2. Kimlik için bir parola belirleyin (en az 12 karakter) ve iki kez yazın.",
-                    "2. Choose a password for the identity (at least 12 characters) and type it twice.",
+                    "2. Kimlik için bir parola belirleyin (en az 8 karakter) ve iki kez yazın.",
+                    "2. Choose a password for the identity (at least 8 characters) and type it twice.",
                 ),
                 tr(
                     "3. Kaydedilecek yeri seçin. İki dosya oluşur: ad.lphykey (gizli; kimseye vermeyin) ve ad.pub (açık anahtar; paylaşın).",

@@ -75,6 +75,9 @@ Fixes from the November 2026 internal review (not an independent audit):
   whose time range is narrower; the time is simply not applied.
 
 ### Changed
+- README and README.tr: new screenshots (home, vault, preview, queue, settings) and the features
+  added since; the app-lock note now says where the lock is kept. The app's help and vault page
+  gave the minimum password length as 12 characters; it is 8.
 - Decrypting a single file now restores the name stored inside the encrypted file, next to the
   default destination: `7f3a9c2e.lphy` comes back as `photo.png`, not as `7f3a9c2e`. A taken name
   gets ` (2)`, ` (3)`… and nothing is overwritten. Applies in the desktop app (unless a

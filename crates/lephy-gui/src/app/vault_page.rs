@@ -197,8 +197,8 @@ impl App {
                             ok = f.pw.char_count() >= MIN_SCALARS && f.pw.same_as(&f.pw2);
                             ui.label(
                                 RichText::new(tr(
-                                    "En az 12 karakter. Bu parolayı unutursanız kasa açılamaz.",
-                                    "At least 12 characters. If you forget it the vault cannot be opened.",
+                                    "En az 8 karakter; uzun bir parola cümlesi daha iyidir. Bu parolayı unutursanız kasa açılamaz.",
+                                    "At least 8 characters; a long passphrase is better. If you forget it the vault cannot be opened.",
                                 ))
                                 .color(pal.muted)
                                 .size(12.0),

@@ -12,10 +12,16 @@ indirilir.
 > [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)'de anlatılır (İngilizce).
 
 <p>
-  <img src="docs/images/tr/pick.png" width="24%" alt="Dosya bırakma ekranı">
+  <img src="docs/images/tr/pick.png" width="24%" alt="Ana ekran">
   <img src="docs/images/tr/ready.png" width="24%" alt="Parola ve kayıt yeri ekranı">
   <img src="docs/images/tr/keys.png" width="24%" alt="Açık anahtarla şifreleme ekranı">
   <img src="docs/images/tr/done.png" width="24%" alt="İşlem tamamlandı ekranı">
+</p>
+<p>
+  <img src="docs/images/tr/vault.png" width="24%" alt="Açık bir kasa">
+  <img src="docs/images/tr/preview.png" width="24%" alt="Diske yazmadan önizleme">
+  <img src="docs/images/tr/queue.png" width="24%" alt="Dosya kuyruğu">
+  <img src="docs/images/tr/settings.png" width="24%" alt="Ayarlar">
 </p>
 
 ## Özellikler
@@ -36,6 +42,16 @@ indirilir.
   adımdan önce aygıt kimliğini yeniden denetler.
 - **Masaüstü uygulaması** (macOS ve Windows, Türkçe ve İngilizce): sürükle-bırak, `.lphy`
   dosyasına çift tıklama, isteğe bağlı sağ tık girişleri (Finder Hızlı İşlemi, Gezgin menüsü).
+- **Kasa.** Şifreli bir klasörü bir kez açıp içinde çalışın, sonra kaydedip yeniden kilitleyin;
+  macOS'ta açık kopya bir RAM diskte durur. Bilgisayarın başında değilken, ekran kilitlenince ya
+  da bilgisayar uykudan uyanınca kendiliğinden kaydedilip kilitlenir.
+- **Diske yazmadan önizleme.** Şifreli bir metin, PNG ya da JPEG'e bellekte bakın; diske hiçbir
+  şey yazılmaz.
+- **Kuyruk.** Birden çok dosya sırayla, her birinin durumu görünerek işlenir; iş sürerken yenileri
+  eklenebilir, başarısızlar yeniden denenebilir.
+- **Güvenlik ağları.** İndirilmiş dosyalar çözüldükten sonra indirme işaretini korur (Gatekeeper /
+  SmartScreen programları yine denetler), yarıda kalan bir şifre çözmenin artıkları bulunup
+  silinmesi önerilir, ekrandaki gizli bilgiler ekran görüntüsünden ve paylaşımından gizlenir.
 - **Mühendislik.** Tüm `unsafe` kod tek küçük crate'te; biçim bağımsız bir Python referansıyla bayt
   bayt karşılaştırılır; fuzz testleri; CI'da `cargo deny`, `cargo audit` ve `cargo vet`.
 
@@ -153,17 +169,24 @@ Ayrıntılar İngilizce README'dedir.
 
 ## Masaüstü uygulaması
 
-İlk açılışta kısa bir karşılama ekranı çıkar. Sonrasında açılış ekranında dört kart vardır:
+İlk açılışta üç adımlı kısa bir tanıtım çıkar. Sonrasında açılış ekranında altı kart vardır:
 **Şifrele**, **Şifreyi çöz**, **Anahtarlarım** (anahtar çifti oluşturma, bir kimliğin açık
-anahtarlarını gösterme, kâğıt yedeği) ve **Ayarlar**. Altında bir bırakma alanı bulunur.
+anahtarlarını gösterme, kâğıt yedeği alma ya da ondan geri yükleme), **Ayarlar**, **Kasa** ve
+**USB belleğe yaz**. Altında bir bırakma alanı bulunur. Her ekranda kısa **?** yardım kutuları
+vardır; açılış ekranındaki **Yardım** hepsini bir arada gösterir.
 
 1. Dosya ya da klasörleri pencereye bırakın veya **Şifrele** / **Şifreyi çöz** kartlarını kullanın.
    `.lphy` dosyaları açılır, diğer her şey şifrelenir.
 2. **Parolayla** ya da **Açık anahtarla** seçin. Parola iki kez istenir ve en az 8 karakter
    olmalıdır; güç tahmini ve parola üretici yardımcı olur. Açık anahtarla şifrelerken alıcıların
    anahtarlarını yapıştırın ya da kendi anahtar çiftinizi oluşturun.
-3. Gerekirse kayıt yerini değiştirip **Şifrele** ya da **Şifreyi çöz**'e basın.
+3. Gerekirse kayıt yerini değiştirip **Şifrele** ya da **Şifreyi çöz**'e basın. Çözülen dosya
+   özgün adıyla geri gelir (`.lphy` dosyasının rastgele adıyla değil, örneğin `foto.png` olarak).
 4. İş bitince **Klasörde göster** sonucu Finder'da ya da Gezgin'de açar.
+
+Şifre çözme ekranında **Önizle (diske yazmadan)** bir metni, PNG'yi ya da JPEG'i bellekte gösterir;
+**Diğer işlemler** altında **Yalnızca doğrula**, **Parolayı değiştir** ve **Dosya anahtarını
+yenile** vardır.
 
 macOS'ta `.lphy` dosyasına çift tıklamak onu uygulamada açar; her dosya ya da klasör **Birlikte
 Aç → lephycrypy+** ile açılabilir.
@@ -173,20 +196,29 @@ simgesi geri getirir. Uygulama yalnızca Cmd+Q ya da Dock → Çık ile kapanır
 sorar (iş iptal edilir, yarım dosya silinir). Windows'ta iş sürerken kapatmak pencereyi simge
 durumuna küçültür.
 
-**Ayarlar:**
+**Ayarlar**, sistem ayarlarındaki gibi kendi sayfalarını açan gruplanmış satırlardan oluşur.
 
 - **Dil:** Türkçe ya da İngilizce (seçene kadar sistem dili).
-- **Uygulama kilidi** (varsayılan kapalı): açarsanız uygulama her başlatıldığında parola ister.
-  Yalnızca başkalarının uygulamayı kullanmasını engeller; şifreli dosyalar kendi parolaları ve
-  anahtarlarıyla korunur. Parolayı unutursanız ayar dosyasını silerek kilidi kaldırabilirsiniz.
+- **Görünüm:** animasyonlar (sistemdeki "hareketi azalt" ayarına da uyar) ve açılış ekranındaki
+  "Bu oturumda" listesi.
+- **Uygulama kilidi** (varsayılan kapalı): açarsanız uygulama her başlatıldığında parola ister;
+  yanlış parolada bekleme süresi her seferinde uzar. Yalnızca bu masaüstü uygulamasının
+  kullanılmasını engeller (komut satırı aracını değil); şifreli dosyalar kendi parolaları ve
+  anahtarlarıyla korunur. Kilit Anahtar Zinciri'nde de (Windows'ta Kimlik Bilgisi Yöneticisi'nde)
+  saklanır; parolayı unutursanız oradaki "lephycrypy+" kaydını ve ayar dosyasını silin.
+- **Kasa:** açık bir kasayı 5, 15 (varsayılan), 30 ya da 60 dakika hareketsizlikten sonra
+  kilitleme ya da hiç kilitlememe; ekran kilitlenince ya da bilgisayar uykudan uyanınca kilitleme.
+- **Bakım:** bir klasörde yarıda kalan şifre çözmelerin artıklarını arama (ev klasörü,
+  Masaüstü, İndirilenler ve Belgeler açılışta kendiliğinden taranır).
 - **Finder Hızlı İşlemi** (macOS, yalnızca .app paketi): Finder'da sağ tık → **Hızlı İşlemler**
   altına "lephycrypy+ ile şifrele / aç" ekler. `~/Library/Services` içinde yalnızca geçerli
   kullanıcı için küçük bir iş akışıdır; seçilen öğeleri yalnızca uygulamada açar.
 - **Gezgin entegrasyonu** (Windows): yalnızca geçerli kullanıcı için `.lphy` çift tıklamayla açılır,
   her dosya ve klasöre sağ tık girişi eklenir.
 
-İki entegrasyon da yalnızca onaydan sonra eklenir ve kaldırılır. Uygulama yalnızca dili,
-karşılama ekranının görüldüğünü ve kilit açıksa doğrulayıcısını (Argon2id) kaydeder:
+İki entegrasyon da yalnızca onaydan sonra eklenir ve kaldırılır. En alttaki **GitHub deposu** bu
+projenin sayfasını açar. Uygulama yalnızca dili, yukarıdaki tercihleri, karşılama ekranının
+görüldüğünü ve kilit açıksa doğrulayıcısını (Argon2id) kaydeder:
 `~/Library/Application Support/lephycrypy+/settings` (Windows: `%APPDATA%\lephycrypy+`). Dosya
 adı ya da parola kaydedilmez.
 
@@ -202,12 +234,17 @@ listeler; liste yalnızca bellekte tutulur.
 
 ### Kasa (masaüstü uygulaması)
 
-Şifreli bir klasörü açın, parolasını girin ve **Kasa olarak aç…**a basın: klasör Finder'da /
-Gezgin'de açılır ve uygulamanın üstündeki şerit kasanın açık olduğunu gösterir. İçinde her
-zamanki gibi çalışın, sonra **Kaydet ve kilitle** ile aynı parolayla yeniden şifreleyip açık
-kopyayı kaldırın. macOS'ta açık kopya bir RAM diskte (yalnızca bellekte), Windows'ta gizli bir
-uygulama klasöründe durur ve kasa kapatılınca üzerine yazılarak silinir. Kasa açıkken çıkmak
-önce sorar.
+Ana sayfa › **Kasa**: **Kasa aç…** (şifreli bir klasör ve parolası) ya da **Yeni boş kasa
+oluştur…** (ad, yer ve parola). Klasör Finder'da / Gezgin'de açılır ve uygulamanın üstündeki şerit
+kasanın açık olduğunu gösterir. İçinde her zamanki gibi çalışın, sonra **Kaydet ve kilitle** ile
+aynı parolayla yeniden şifreleyip açık kopyayı kaldırın (**Kaydet** kasayı açık bırakır).
+macOS'ta açık kopya bir RAM diskte (yalnızca bellekte), Windows'ta gizli bir uygulama klasöründe
+durur ve kasa kapatılınca üzerine yazılarak silinir.
+
+Kasa, ayarlanan süre boyunca klavye ve fare kullanılmazsa (varsayılan 15 dakika), ekran
+kilitlenince ve bilgisayar uykudan uyanınca kendiliğinden kaydedilip kilitlenir; bu, pencere
+gizliyken de arka planda çalışır. Kasa açıkken çıkmak önce sorar; bir çökme yüzünden açık kalan
+kasa bir sonraki açılışta bulunur.
 
 ### USB belleğe yazma (masaüstü uygulaması)
 

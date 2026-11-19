@@ -12,10 +12,16 @@ effort** basis.
 > the security boundaries in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 
 <p>
-  <img src="docs/images/en/pick.png" width="24%" alt="Drop a file or folder">
+  <img src="docs/images/en/pick.png" width="24%" alt="Home screen">
   <img src="docs/images/en/ready.png" width="24%" alt="Password and destination">
   <img src="docs/images/en/keys.png" width="24%" alt="Encrypting to public keys">
   <img src="docs/images/en/done.png" width="24%" alt="Finished">
+</p>
+<p>
+  <img src="docs/images/en/vault.png" width="24%" alt="An open vault">
+  <img src="docs/images/en/preview.png" width="24%" alt="Preview without writing to disk">
+  <img src="docs/images/en/queue.png" width="24%" alt="Queue of files">
+  <img src="docs/images/en/settings.png" width="24%" alt="Settings">
 </p>
 
 ## Features
@@ -36,6 +42,16 @@ effort** basis.
   checks before every destructive step.
 - **Desktop app** for macOS and Windows in English and Turkish: drag and drop, double-click `.lphy`
   files, and optional right-click entries (a Finder Quick Action, an Explorer menu entry).
+- **Vault.** Open an encrypted folder once, work in it, then save and lock it again; on macOS the
+  open copy lives on a RAM disk. It saves and locks itself when you are away, the screen locks or
+  the computer wakes from sleep.
+- **Preview without writing.** Look at an encrypted text, PNG or JPEG in memory; nothing is written
+  to disk.
+- **Queue.** Several files one after another with per-item states; add more while it runs and
+  retry the failed ones.
+- **Safety nets.** Downloaded files keep their download mark after decryption (Gatekeeper /
+  SmartScreen still check programs), leftovers of an interrupted decryption are found and offered
+  for deletion, secrets on screen are hidden from screenshots and screen sharing.
 - **Engineering.** All `unsafe` code in one small crate; format checked byte for byte against an
   independent Python reference; fuzzing; `cargo deny`, `cargo audit` and `cargo vet` in CI.
 
@@ -180,17 +196,22 @@ NTFS resident files and wear levelling mean physical erasure is not guaranteed.
 ## Desktop app
 
 `lephycrypy-gui` (macOS and Windows) is a single, simple window. The first launch shows a short
-welcome; after that the start screen has four cards — **Encrypt**, **Decrypt**, **My keys**
-(create a key pair, show the public keys of an identity, take its paper backup) and **Settings** —
-and a drop area.
+three-step introduction; after that the start screen has six cards — **Encrypt**, **Decrypt**,
+**My keys** (create a key pair, show the public keys of an identity, take its paper backup or
+restore one from it), **Settings**, **Vault** and **Write to a USB stick** — and a drop area.
+Every screen has short **?** help boxes; **Help** on the start screen collects them.
 
 1. Drop files or folders on the window, or use the **Encrypt** / **Decrypt** cards. `.lphy` files
    are opened; everything else is encrypted.
 2. Choose **With a password** or **With public keys**. A password is asked twice and must be at
    least 8 characters; a strength estimate and a passphrase generator help. With public keys,
    paste the recipients' keys or create your own key pair.
-3. Change the destination if needed and press **Encrypt** or **Decrypt**.
+3. Change the destination if needed and press **Encrypt** or **Decrypt**. A decrypted file comes
+   back under its original name (`photo.png`, not the random name of the `.lphy`).
 4. When it is done, **Show in folder** opens the result in Finder or Explorer.
+
+On the decrypt screen, **Preview (nothing is written)** shows a text, PNG or JPEG in memory, and
+**More actions** offers **Verify only**, **Change the password** and **Renew the file key**.
 
 On macOS, double-clicking a `.lphy` file opens it in the app, and any file or folder can be
 opened with **Open With → lephycrypy+**.
@@ -200,19 +221,28 @@ Dock icon brings it back; the app quits only with Cmd+Q or Dock → Quit, which 
 job runs (the job is then cancelled and the partial file deleted). On Windows, closing while a job
 runs minimises the window.
 
-**Settings:**
+**Settings** are laid out like the system settings: grouped rows that open their own pages.
 
 - **Language:** English or Turkish (the system language until you choose).
+- **Appearance:** animations (they also follow the system "reduce motion" setting) and the
+  "This session" list on the start screen.
 - **App lock** (off by default): when you turn it on, the app asks for a password every time it
-  starts. It only keeps others from using the app; encrypted files are protected by their own
-  passwords and keys. Forgetting it is not fatal: delete the settings file to remove the lock.
+  starts; wrong passwords make it wait longer each time. It only keeps others from using this
+  desktop app (not the command-line tool); encrypted files are protected by their own passwords
+  and keys. The lock is also kept in the keychain (Credential Manager on Windows). If you forget
+  it, delete the "lephycrypy+" item there and the settings file.
+- **Vault:** lock an open vault after 5, 15 (default), 30 or 60 minutes without input, or never;
+  and when the screen locks or the computer wakes from sleep.
+- **Maintenance:** search a folder for leftovers of an interrupted decryption (the home, Desktop,
+  Downloads and Documents folders are checked at start).
 - **Finder Quick Action** (macOS, app bundle only): adds "Encrypt or open with lephycrypy+" under
   **Quick Actions** in Finder's right-click menu. It is a small workflow in
   `~/Library/Services` for the current user that only opens the selected items in the app.
 - **Explorer integration** (Windows): for the current user only, `.lphy` files open with a
   double-click and every file and folder gets a right-click entry.
 
-Both integrations are added and removed only after confirmation. The app saves only the language,
+Both integrations are added and removed only after confirmation. At the bottom, **GitHub
+repository** opens this project's page. The app saves only the language, the preferences above,
 whether the welcome screen was seen and, if the lock is on, its verifier (Argon2id) — in
 `~/Library/Application Support/lephycrypy+/settings` (Windows: `%APPDATA%\lephycrypy+`); no file
 names or passwords.
@@ -233,11 +263,17 @@ session's jobs; the list is kept in memory only.
 
 ### Vault (desktop app)
 
-Open an encrypted folder, enter its password and press **Open as a vault…**: the folder opens
-in Finder / Explorer and a bar at the top of the app shows it is open. Work in it as usual, then
-press **Save and lock** to encrypt it again with the same password and remove the open copy.
-On macOS the open copy lives on a RAM disk (memory only); on Windows in a hidden app folder that
-is overwritten and deleted when the vault is closed. Quitting with a vault open asks first.
+Home › **Vault**: **Open a vault…** (an encrypted folder and its password) or **Create a new
+vault…** (a name, a place and a password). The folder opens in Finder / Explorer and a bar at the
+top of the app shows it is open. Work in it as usual, then press **Save and lock** to encrypt it
+again with the same password and remove the open copy (**Save** keeps it open). On macOS the open
+copy lives on a RAM disk (memory only); on Windows in a hidden app folder that is overwritten and
+deleted when the vault is closed.
+
+The vault saves and locks itself after the set time without input (15 minutes by default), when
+the screen locks and when the computer wakes from sleep; this runs in the background even while
+the window is hidden. Quitting with a vault open asks first, and a vault left open by a crash is
+found at the next start.
 
 ### Write to a USB stick (desktop app)
 
