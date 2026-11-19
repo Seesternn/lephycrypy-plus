@@ -2,7 +2,8 @@
 //! settings), a retry of the failed items, and a short history of this session kept in memory
 //! only.
 
-use super::{App, Mode, Palette, link_button, logic};
+use super::buttons::{self as b, Icon, Kind};
+use super::{App, Mode, Palette, logic};
 use crate::i18n::{Lang, lang, tr};
 use crate::logic::{ItemState, JobTemplate, QueueProgress};
 use eframe::egui::{self, RichText, Ui};
@@ -257,7 +258,14 @@ impl App {
                         ui.label(RichText::new(e).size(11.5).color(pal.danger));
                     }
                     if *st == ItemState::Waiting
-                        && link_button(ui, pal, tr("Kaldır", "Remove")).clicked()
+                        && b::action(
+                            ui,
+                            pal,
+                            Kind::Secondary,
+                            Icon::Close,
+                            tr("Kaldır", "Remove"),
+                        )
+                        .clicked()
                     {
                         p.remove(i);
                     }
@@ -312,7 +320,7 @@ impl App {
             Lang::Tr => format!("Başarısız olanları yeniden dene ({n})"),
             Lang::En => format!("Retry the failed ones ({n})"),
         };
-        if link_button(ui, pal, &label).clicked() {
+        if b::action(ui, pal, Kind::Primary, Icon::Retry, &label).clicked() {
             self.retry_failed(ctx);
         }
     }

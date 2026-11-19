@@ -19,6 +19,7 @@ use crate::fonts;
 use crate::logic::{self, Job, Mode, Outcome};
 use crate::secret_field::SecretField;
 use crate::theme::{self, Palette};
+use buttons::{self as b, Icon, Kind};
 
 /// Maximum width of the content column.
 const COLUMN_W: f32 = 460.0;
@@ -729,9 +730,13 @@ impl App {
                     .size(12.5),
                 );
                 ui.horizontal(|ui| {
-                    replace = link_button(ui, pal, tr("Değiştir", "Replace")).clicked();
+                    replace =
+                        b::action(ui, pal, Kind::Danger, Icon::None, tr("Değiştir", "Replace"))
+                            .clicked();
                     ui.add_space(12.0);
-                    ignore = link_button(ui, pal, tr("Yoksay", "Ignore")).clicked();
+                    ignore =
+                        b::action(ui, pal, Kind::Secondary, Icon::None, tr("Yoksay", "Ignore"))
+                            .clicked();
                 });
             });
         ui.add_space(14.0);
@@ -1075,7 +1080,7 @@ impl App {
             } else {
                 tr("Hızlı İşlemi ekle", "Add the Quick Action")
             };
-            if link_button(ui, pal, label).clicked() {
+            if b::action(ui, pal, Kind::Secondary, Icon::None, label).clicked() {
                 self.confirm_shell = true;
                 self.settings_note = None;
             }
@@ -1097,9 +1102,10 @@ impl App {
             .size(12.5),
         );
         ui.horizontal(|ui| {
-            let ok = link_button(ui, pal, tr("Onayla", "Confirm")).clicked();
+            let ok =
+                b::action(ui, pal, Kind::Primary, Icon::Check, tr("Onayla", "Confirm")).clicked();
             ui.add_space(12.0);
-            if link_button(ui, pal, tr("Vazgeç", "Cancel")).clicked() {
+            if b::action(ui, pal, Kind::Secondary, Icon::None, tr("Vazgeç", "Cancel")).clicked() {
                 self.confirm_shell = false;
             }
             if ok {
@@ -1146,7 +1152,7 @@ impl App {
                     "Add to Explorer: open .lphy files with a double-click, encrypt from the right-click menu",
                 )
             };
-            if link_button(ui, pal, label).clicked() {
+            if b::action(ui, pal, Kind::Secondary, Icon::None, label).clicked() {
                 self.confirm_shell = true;
             }
             return;
@@ -1167,9 +1173,10 @@ impl App {
             .size(12.5),
         );
         ui.horizontal(|ui| {
-            let ok = link_button(ui, pal, tr("Onayla", "Confirm")).clicked();
+            let ok =
+                b::action(ui, pal, Kind::Primary, Icon::Check, tr("Onayla", "Confirm")).clicked();
             ui.add_space(12.0);
-            if link_button(ui, pal, tr("Vazgeç", "Cancel")).clicked() {
+            if b::action(ui, pal, Kind::Secondary, Icon::None, tr("Vazgeç", "Cancel")).clicked() {
                 self.confirm_shell = false;
             }
             if ok {
@@ -1252,7 +1259,14 @@ impl App {
                     );
                     if can_change {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            change = link_button(ui, pal, tr("Değiştir", "Change")).clicked();
+                            change = b::action(
+                                ui,
+                                pal,
+                                Kind::Secondary,
+                                Icon::None,
+                                tr("Değiştir", "Change"),
+                            )
+                            .clicked();
                         });
                     }
                 });
@@ -1611,7 +1625,7 @@ impl App {
                     .size(12.5),
                 );
                 if !self.selected.is_empty() {
-                    clear = link_button(ui, pal, tr("Seçimi temizle", "Clear selection")).clicked();
+                    clear = b::action(ui, pal, Kind::Secondary, Icon::Close, tr("Seçimi temizle", "Clear selection")).clicked();
                 }
             });
         if clear {
@@ -1751,7 +1765,15 @@ impl App {
                 ui.label(RichText::new(e).color(pal.danger).size(12.5));
             }
         }
-        if link_button(ui, pal, tr("Vazgeç, dosyayı aç", "Cancel, open the file")).clicked() {
+        if b::action(
+            ui,
+            pal,
+            Kind::Secondary,
+            Icon::None,
+            tr("Vazgeç, dosyayı aç", "Cancel, open the file"),
+        )
+        .clicked()
+        {
             self.edit_recipients = false;
         }
     }
@@ -1861,9 +1883,11 @@ impl App {
     /// "Generate a strong password": a 6-word passphrase is written to both fields and shown once.
     fn generator(&mut self, ui: &mut Ui, pal: Palette) {
         if self.generated.is_none() {
-            if link_button(
+            if b::action(
                 ui,
                 pal,
+                Kind::Secondary,
+                Icon::None,
                 tr("Güçlü bir parola üret", "Generate a strong password"),
             )
             .clicked()
@@ -1897,8 +1921,14 @@ impl App {
                     .color(pal.muted)
                     .size(12.5),
                 );
-                hide =
-                    link_button(ui, pal, tr("Yazdım, gizle", "I wrote it down, hide it")).clicked();
+                hide = b::action(
+                    ui,
+                    pal,
+                    Kind::Secondary,
+                    Icon::Check,
+                    tr("Yazdım, gizle", "I wrote it down, hide it"),
+                )
+                .clicked();
             });
         if hide {
             self.generated = None;
@@ -2042,7 +2072,14 @@ impl App {
                         },
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        change = link_button(ui, pal, tr("Değiştir", "Change")).clicked();
+                        change = b::action(
+                            ui,
+                            pal,
+                            Kind::Secondary,
+                            Icon::None,
+                            tr("Değiştir", "Change"),
+                        )
+                        .clicked();
                     });
                 });
             });
@@ -2191,7 +2228,7 @@ impl App {
                 },
             );
             ui.label(RichText::new(name).color(pal.ink).size(13.5));
-            if link_button(ui, pal, tr("Seç", "Choose")).clicked()
+            if b::action(ui, pal, Kind::Secondary, Icon::File, tr("Seç", "Choose")).clicked()
                 && let Some(p) = rfd::FileDialog::new()
                     .set_title(tr("İmza kimliğini seçin", "Choose the signing identity"))
                     .add_filter("lephycrypy identity", &["lphykey"])
@@ -2283,7 +2320,14 @@ impl App {
         let mut add = false;
         let mut toggle = false;
         ui.horizontal(|ui| {
-            add = link_button(ui, pal, tr("Dosyadan ekle…", "Add from file…")).clicked();
+            add = b::action(
+                ui,
+                pal,
+                Kind::Secondary,
+                Icon::Add,
+                tr("Dosyadan ekle…", "Add from file…"),
+            )
+            .clicked();
             ui.add_space(12.0);
             let label = if self.show_keygen {
                 tr("Anahtar çifti oluşturmayı kapat", "Close key-pair creation")
@@ -2342,7 +2386,8 @@ impl App {
                         );
                     },
                 );
-                if link_button(ui, pal, tr("Kopyala", "Copy")).clicked() {
+                if b::action(ui, pal, Kind::Secondary, Icon::Copy, tr("Kopyala", "Copy")).clicked()
+                {
                     copied = Some(logic::copy_to_clipboard(&pk).is_ok());
                 }
             });
@@ -2449,7 +2494,7 @@ impl App {
                     .color(pal.muted)
                     .size(12.5),
                 );
-                hide = link_button(ui, pal, tr("Yazdım, gizle", "I wrote them down, hide them"))
+                hide = b::action(ui, pal, Kind::Secondary, Icon::Check, tr("Yazdım, gizle", "I wrote them down, hide them"))
                     .clicked();
             });
         if hide {
@@ -2522,7 +2567,7 @@ impl App {
                         } else {
                             tr("Seç", "Choose")
                         };
-                        pick = link_button(ui, pal, label).clicked();
+                        pick = b::action(ui, pal, Kind::Secondary, Icon::File, label).clicked();
                     });
                 });
             });
@@ -2540,9 +2585,11 @@ impl App {
         *submit = s;
         if !self.edit_recipients
             && !self.batch()
-            && link_button(
+            && b::action(
                 ui,
                 pal,
+                Kind::Secondary,
+                Icon::None,
                 tr("Alıcı listesini değiştir…", "Change the recipient list…"),
             )
             .clicked()
@@ -2608,13 +2655,40 @@ impl App {
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if name.is_some() {
-                            clear = link_button(ui, pal, tr("Kaldır", "Remove")).clicked();
-                            pick = link_button(ui, pal, tr("Değiştir", "Change")).clicked();
+                            clear = b::action(
+                                ui,
+                                pal,
+                                Kind::Secondary,
+                                Icon::Close,
+                                tr("Kaldır", "Remove"),
+                            )
+                            .clicked();
+                            pick = b::action(
+                                ui,
+                                pal,
+                                Kind::Secondary,
+                                Icon::File,
+                                tr("Değiştir", "Change"),
+                            )
+                            .clicked();
                         } else {
-                            pick = link_button(ui, pal, tr("Seç", "Choose")).clicked();
+                            pick = b::action(
+                                ui,
+                                pal,
+                                Kind::Secondary,
+                                Icon::File,
+                                tr("Seç", "Choose"),
+                            )
+                            .clicked();
                             if !required {
-                                create = link_button(ui, pal, tr("Yeni oluştur", "Create new"))
-                                    .clicked();
+                                create = b::action(
+                                    ui,
+                                    pal,
+                                    Kind::Secondary,
+                                    Icon::Add,
+                                    tr("Yeni oluştur", "Create new"),
+                                )
+                                .clicked();
                             }
                         }
                     });
@@ -2745,7 +2819,9 @@ impl App {
                             .color(pal.muted)
                             .size(13.0),
                     );
-                } else if link_button(ui, pal, tr("İptal", "Cancel")).clicked() {
+                } else if b::action(ui, pal, Kind::Danger, Icon::Close, tr("İptal", "Cancel"))
+                    .clicked()
+                {
                     self.cancel_requested = true;
                     lephy_sys::signal::request_cancel();
                 }
@@ -2953,6 +3029,7 @@ pub fn boxed() -> Box<dyn eframe::App> {
     Box::new(app)
 }
 
+mod buttons;
 mod help;
 mod lockgate;
 mod maintenance;
@@ -2979,7 +3056,7 @@ impl eframe::App for App {
 // Buttons
 // ---------------------------------------------------------------------------------------------
 
-fn focus_ring(ui: &Ui, resp: &Response, rect: Rect, pal: Palette) {
+pub(super) fn focus_ring(ui: &Ui, resp: &Response, rect: Rect, pal: Palette) {
     if resp.has_focus() {
         ui.painter().rect_stroke(
             rect.expand(3.0),

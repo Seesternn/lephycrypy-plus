@@ -2,7 +2,8 @@
 //! open (show folder, save and lock, close without saving), the quit prompt, and leftovers from
 //! an earlier run.
 
-use super::{App, Palette, link_button, logic};
+use super::buttons::{self as b, Icon, Kind};
+use super::{App, Palette, logic};
 use crate::i18n::{Lang, lang, tr};
 use crate::vault::{self, Place, Vault};
 use eframe::egui::{self, CornerRadius, RichText, Stroke, Ui};
@@ -500,7 +501,7 @@ impl App {
         {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(m).color(pal.muted).size(12.5));
-                if link_button(ui, pal, tr("Tamam", "OK")).clicked() {
+                if b::action(ui, pal, Kind::Secondary, Icon::Check, tr("Tamam", "OK")).clicked() {
                     self.vault.msg = None;
                 }
             });
@@ -573,20 +574,59 @@ impl App {
             if let Some(m) = &self.vault.msg {
                 ui.label(RichText::new(m).color(pal.danger).size(12.5));
             }
-            ui.horizontal_wrapped(|ui| {
-                if link_button(ui, pal, tr("Klasörü göster", "Show folder")).clicked() {
-                    let _ = logic::reveal_in_folder(&root);
-                }
-                if link_button(ui, pal, tr("Kaydet", "Save")).clicked() {
-                    act = Some(After::Stay);
-                }
-                if link_button(ui, pal, tr("Kaydet ve kilitle", "Save and lock")).clicked() {
+            ui.add_space(6.0);
+            b::row(ui, |ui| {
+                if b::action(
+                    ui,
+                    pal,
+                    Kind::Primary,
+                    Icon::Lock,
+                    tr("Kaydet ve kilitle", "Save and lock"),
+                )
+                .clicked()
+                {
                     act = Some(After::Close);
                 }
-                if link_button(ui, pal, tr("Kaydetmeden kapat…", "Close without saving…")).clicked()
+                if b::action(
+                    ui,
+                    pal,
+                    Kind::Secondary,
+                    Icon::Folder,
+                    tr("Klasörü aç", "Open folder"),
+                )
+                .clicked()
                 {
-                    self.vault.confirm_discard = true;
+                    let _ = logic::reveal_in_folder(&root);
                 }
+                let more = b::action(ui, pal, Kind::Secondary, Icon::More, "")
+                    .on_hover_text(tr("Diğer seçenekler", "More options"));
+                egui::Popup::menu(&more).show(|ui| {
+                    ui.set_min_width(200.0);
+                    if b::action(
+                        ui,
+                        pal,
+                        Kind::Secondary,
+                        Icon::Save,
+                        tr("Yalnızca kaydet (açık kalsın)", "Save only (keep it open)"),
+                    )
+                    .clicked()
+                    {
+                        act = Some(After::Stay);
+                        ui.close();
+                    }
+                    if b::action(
+                        ui,
+                        pal,
+                        Kind::Danger,
+                        Icon::Close,
+                        tr("Kaydetmeden kapat…", "Close without saving…"),
+                    )
+                    .clicked()
+                    {
+                        self.vault.confirm_discard = true;
+                        ui.close();
+                    }
+                });
             });
             if self.vault.confirm_discard {
                 ui.label(
@@ -604,14 +644,24 @@ impl App {
                     .color(pal.danger)
                     .size(12.5),
                 );
-                ui.horizontal(|ui| {
-                    if link_button(ui, pal, tr("Evet, kapat", "Yes, close")).clicked() {
+                b::row(ui, |ui| {
+                    if b::action(
+                        ui,
+                        pal,
+                        Kind::Danger,
+                        Icon::Close,
+                        tr("Evet, kapat", "Yes, close"),
+                    )
+                    .clicked()
+                    {
                         self.vault.confirm_discard = false;
                         if self.close_vault(false) {
                             self.vault.msg = Some(tr("Kasa kapatıldı.", "Vault closed.").into());
                         }
                     }
-                    if link_button(ui, pal, tr("Vazgeç", "Cancel")).clicked() {
+                    if b::action(ui, pal, Kind::Secondary, Icon::None, tr("Vazgeç", "Cancel"))
+                        .clicked()
+                    {
                         self.vault.confirm_discard = false;
                     }
                 });
@@ -661,16 +711,34 @@ impl App {
                     .color(pal.danger)
                     .size(12.5),
                 );
-                ui.horizontal(|ui| {
-                    close = link_button(ui, pal, tr("Evet, kapat", "Yes, close")).clicked();
-                    if link_button(ui, pal, tr("Vazgeç", "Cancel")).clicked() {
+                b::row(ui, |ui| {
+                    close = b::action(
+                        ui,
+                        pal,
+                        Kind::Danger,
+                        Icon::Trash,
+                        tr("Evet, sil ve kapat", "Yes, delete and close"),
+                    )
+                    .clicked();
+                    if b::action(ui, pal, Kind::Secondary, Icon::None, tr("Vazgeç", "Cancel"))
+                        .clicked()
+                    {
                         self.vault.leftover_confirm = false;
                     }
                 });
             } else {
-                ui.horizontal(|ui| {
-                    show = link_button(ui, pal, tr("Göster", "Show")).clicked();
-                    if link_button(ui, pal, tr("Kapat…", "Close…")).clicked() {
+                b::row(ui, |ui| {
+                    show = b::action(
+                        ui,
+                        pal,
+                        Kind::Secondary,
+                        Icon::Folder,
+                        tr("Klasörü aç", "Open folder"),
+                    )
+                    .clicked();
+                    if b::action(ui, pal, Kind::Danger, Icon::Trash, tr("Kapat…", "Close…"))
+                        .clicked()
+                    {
                         self.vault.leftover_confirm = true;
                     }
                 });
@@ -702,9 +770,15 @@ impl App {
                 .font(crate::fonts::semibold(13.5))
                 .color(pal.ink),
             );
-            ui.horizontal_wrapped(|ui| {
-                if link_button(ui, pal, tr("Kaydet, kilitle ve çık", "Save, lock and quit"))
-                    .clicked()
+            b::row(ui, |ui| {
+                if b::action(
+                    ui,
+                    pal,
+                    Kind::Primary,
+                    Icon::Lock,
+                    tr("Kaydet, kilitle ve çık", "Save, lock and quit"),
+                )
+                .clicked()
                 {
                     choice = Some(0);
                 }
@@ -716,10 +790,16 @@ impl App {
                 } else {
                     tr("Kilitle ve çık", "Lock and quit")
                 };
-                if link_button(ui, pal, label).clicked() {
+                let kind = if changed {
+                    Kind::Danger
+                } else {
+                    Kind::Secondary
+                };
+                if b::action(ui, pal, kind, Icon::None, label).clicked() {
                     choice = Some(1);
                 }
-                if link_button(ui, pal, tr("Vazgeç", "Cancel")).clicked() {
+                if b::action(ui, pal, Kind::Secondary, Icon::None, tr("Vazgeç", "Cancel")).clicked()
+                {
                     choice = Some(2);
                 }
             });

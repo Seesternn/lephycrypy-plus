@@ -1,6 +1,7 @@
 //! Home › Vault: open an existing vault or create a new, empty one. While a vault is open the
 //! page shows it (the bar at the top has the actions).
 
+use super::buttons::{self as b, Icon, Kind};
 use super::{App, Palette, link_button, primary_button, secondary_button};
 use crate::i18n::{Lang, lang, tr};
 use crate::secret_field::SecretField;
@@ -214,7 +215,15 @@ impl App {
                                 },
                             );
                             ui.label(RichText::new(kf).color(pal.muted).size(12.5));
-                            if link_button(ui, pal, tr("Seç…", "Choose…")).clicked() {
+                            if b::action(
+                                ui,
+                                pal,
+                                Kind::Secondary,
+                                Icon::File,
+                                tr("Seç…", "Choose…"),
+                            )
+                            .clicked()
+                            {
                                 f.keyfile = rfd::FileDialog::new()
                                     .set_title(tr("Anahtar dosyası", "Key file"))
                                     .pick_file();

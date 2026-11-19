@@ -2,7 +2,8 @@
 //! and the identity is written again (`.lphykey` and `.pub`). The words live in a buffer that is
 //! wiped when the section is closed, after the job and when leaving the page.
 
-use super::{App, Palette, link_button, logic, primary_button, secondary_button};
+use super::buttons::{self as b, Icon, Kind};
+use super::{App, Palette, logic, primary_button, secondary_button};
 use crate::i18n::{Lang, lang, tr};
 use crate::secret_field::SecretField;
 use eframe::egui::{self, RichText, Ui};
@@ -112,12 +113,12 @@ impl App {
                     .truncate(),
             );
             ui.horizontal(|ui| {
-                if link_button(ui, pal, tr("Kopyala", "Copy")).clicked()
+                if b::action(ui, pal, Kind::Secondary, Icon::Copy, tr("Kopyala", "Copy")).clicked()
                     && logic::copy_to_clipboard(&pk).is_ok()
                 {
                     self.show_toast(ui.ctx(), tr("Panoya kopyalandı", "Copied to the clipboard"));
                 }
-                if link_button(ui, pal, tr("Tamam", "Done")).clicked() {
+                if b::action(ui, pal, Kind::Primary, Icon::Check, tr("Tamam", "Done")).clicked() {
                     self.restore.done = None;
                     self.restore.reset();
                 }
@@ -188,7 +189,9 @@ impl App {
         {
             self.start_restore(ui.ctx(), path);
         }
-        if !busy && link_button(ui, pal, tr("Vazgeç", "Cancel")).clicked() {
+        if !busy
+            && b::action(ui, pal, Kind::Secondary, Icon::None, tr("Vazgeç", "Cancel")).clicked()
+        {
             self.restore.reset();
         }
     }

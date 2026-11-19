@@ -3,7 +3,8 @@
 //! scanned in the background at start; any folder can be scanned from Settings. Nothing is
 //! deleted without confirmation, and no path is saved.
 
-use super::{App, Palette, link_button, logic};
+use super::buttons::{self as b, Icon, Kind};
+use super::{App, Palette, logic};
 use crate::i18n::{Lang, lang, tr};
 use eframe::egui::{self, CornerRadius, RichText, Stroke, Ui};
 use lephy_core::names::escape_display;
@@ -172,7 +173,15 @@ impl App {
                 .size(12.5),
             );
             ui.horizontal(|ui| {
-                if link_button(ui, pal, tr("Evet, sil", "Yes, delete")).clicked() {
+                if b::action(
+                    ui,
+                    pal,
+                    Kind::Danger,
+                    Icon::Trash,
+                    tr("Evet, sil", "Yes, delete"),
+                )
+                .clicked()
+                {
                     let found = std::mem::take(&mut self.stale.found);
                     self.stale.confirm = false;
                     self.stale.note = Some(match lephy_core::io::cleanup(&found) {
@@ -186,7 +195,8 @@ impl App {
                         },
                     });
                 }
-                if link_button(ui, pal, tr("Vazgeç", "Cancel")).clicked() {
+                if b::action(ui, pal, Kind::Secondary, Icon::None, tr("Vazgeç", "Cancel")).clicked()
+                {
                     self.stale.confirm = false;
                 }
             });
@@ -198,13 +208,15 @@ impl App {
             } else {
                 tr("Göster", "Show")
             };
-            if link_button(ui, pal, label).clicked() {
+            if b::action(ui, pal, Kind::Secondary, Icon::None, label).clicked() {
                 self.stale.show = !self.stale.show;
             }
-            if link_button(ui, pal, tr("Sil…", "Delete…")).clicked() {
+            if b::action(ui, pal, Kind::Danger, Icon::Trash, tr("Sil…", "Delete…")).clicked() {
                 self.stale.confirm = true;
             }
-            if dismissable && link_button(ui, pal, tr("Yoksay", "Ignore")).clicked() {
+            if dismissable
+                && b::action(ui, pal, Kind::Secondary, Icon::None, tr("Yoksay", "Ignore")).clicked()
+            {
                 self.stale.dismissed = true;
             }
         });

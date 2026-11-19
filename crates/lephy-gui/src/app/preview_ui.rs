@@ -1,7 +1,8 @@
 //! Preview window: decrypts one file into memory in the background and shows it (text, PNG,
 //! JPEG) over the app. Closing it drops the texture and wipes the decrypted bytes.
 
-use super::{App, Palette, link_button, logic};
+use super::buttons::{self as b, Icon, Kind};
+use super::{App, Palette, logic};
 use crate::i18n::{Lang, lang, tr};
 use crate::preview::{Content, Refusal};
 use eframe::egui::{self, RichText, TextureHandle, TextureOptions};
@@ -129,7 +130,9 @@ impl App {
                             .color(pal.ink),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        close = link_button(ui, pal, tr("Kapat", "Close")).clicked();
+                        close =
+                            b::action(ui, pal, Kind::Secondary, Icon::Close, tr("Kapat", "Close"))
+                                .clicked();
                     });
                 });
                 ui.label(

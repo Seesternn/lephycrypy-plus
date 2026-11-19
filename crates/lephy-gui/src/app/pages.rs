@@ -1,6 +1,7 @@
 //! Start-screen pages: welcome (first launch), home with action cards, keys, settings, the
 //! optional app lock and the quit confirmation.
 
+use super::buttons::{self as b, Icon, Kind};
 use super::{
     App, Palette, draw_doc, draw_folder, draw_gear, draw_key, draw_lock, fonts, help, link_button,
     lockgate, logic, primary_button, reveal_on_hover, secondary_button, segmented, theme,
@@ -40,7 +41,7 @@ pub(super) enum Page {
 }
 
 /// A line icon painted at a centre point.
-type Icon = fn(&egui::Painter, egui::Pos2, egui::Color32);
+type PageIcon = fn(&egui::Painter, egui::Pos2, egui::Color32);
 
 /// An identity opened on the keys page.
 pub(super) struct LoadedId {
@@ -79,7 +80,7 @@ fn action_card(
     ui: &mut Ui,
     pal: Palette,
     size: egui::Vec2,
-    icon: Icon,
+    icon: PageIcon,
     title: &str,
     subtitle: &str,
 ) -> Response {
@@ -173,7 +174,7 @@ fn key_row(ui: &mut Ui, pal: Palette, label: &str, key: &str) -> Option<bool> {
                     .truncate(),
             );
         });
-        if link_button(ui, pal, tr("Kopyala", "Copy")).clicked() {
+        if b::action(ui, pal, Kind::Secondary, Icon::Copy, tr("Kopyala", "Copy")).clicked() {
             copied = Some(logic::copy_to_clipboard(key).is_ok());
         }
     });
@@ -197,7 +198,7 @@ fn welcome_how(ui: &mut Ui, pal: Palette) {
     let p = ui.painter();
     let box_w = 92.0;
     let gap = (rect.width() - 3.0 * box_w) / 2.0;
-    let tiles: [(&str, Icon); 3] = [
+    let tiles: [(&str, PageIcon); 3] = [
         ("foto.png", draw_doc),
         (tr("parola", "password"), icon_lock),
         ("7f3a9c2e.lphy", draw_doc),
@@ -275,7 +276,7 @@ fn welcome_safe(ui: &mut Ui, pal: Palette) {
         ),
     );
     ui.add_space(16.0);
-    let rows: [(Icon, &str, &str); 3] = [
+    let rows: [(PageIcon, &str, &str); 3] = [
         (
             icon_lock,
             tr("Bu bilgisayarda kalır", "Stays on this computer"),
@@ -462,7 +463,8 @@ impl App {
             );
             if step + 1 < STEPS {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if link_button(ui, pal, tr("Atla", "Skip")).clicked() {
+                    if b::action(ui, pal, Kind::Secondary, Icon::None, tr("Atla", "Skip")).clicked()
+                    {
                         self.welcome_step = STEPS - 1;
                     }
                 });
@@ -989,7 +991,9 @@ impl App {
             |ui| {
                 if self.show_keygen {
                     self.keygen_card(ui, pal);
-                    if link_button(ui, pal, tr("Vazgeç", "Cancel")).clicked() {
+                    if b::action(ui, pal, Kind::Secondary, Icon::None, tr("Vazgeç", "Cancel"))
+                        .clicked()
+                    {
                         self.show_keygen = false;
                         self.password.clear();
                         self.confirm.clear();
@@ -1092,7 +1096,9 @@ impl App {
                             self.id_show_paper = !self.id_show_paper;
                         }
                         ui.add_space(12.0);
-                        if link_button(ui, pal, tr("Kapat", "Close")).clicked() {
+                        if b::action(ui, pal, Kind::Secondary, Icon::Close, tr("Kapat", "Close"))
+                            .clicked()
+                        {
                             self.id_loaded = None;
                             self.id_show_paper = false;
                         }
@@ -1109,7 +1115,8 @@ impl App {
                 );
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(name).color(pal.ink).size(13.5));
-                    if link_button(ui, pal, tr("Seç…", "Choose…")).clicked()
+                    if b::action(ui, pal, Kind::Secondary, Icon::File, tr("Seç…", "Choose…"))
+                        .clicked()
                         && let Some(p) = rfd::FileDialog::new()
                             .set_title(tr("Kimlik dosyasını seçin", "Choose the identity file"))
                             .add_filter("lephycrypy identity", &["lphykey"])
@@ -1221,9 +1228,11 @@ impl App {
             // Turning off needs the current password.
             self.lock_pw.ui(ui, true);
             ui.horizontal(|ui| {
-                let off = link_button(ui, pal, tr("Kapat", "Turn off")).clicked();
+                let off =
+                    b::action(ui, pal, Kind::Danger, Icon::None, tr("Kapat", "Turn off")).clicked();
                 ui.add_space(12.0);
-                if link_button(ui, pal, tr("Vazgeç", "Cancel")).clicked() {
+                if b::action(ui, pal, Kind::Secondary, Icon::None, tr("Vazgeç", "Cancel")).clicked()
+                {
                     self.lock_edit = false;
                     self.lock_pw.clear();
                 }
@@ -1269,7 +1278,7 @@ impl App {
                     )
                     .clicked();
                 ui.add_space(12.0);
-                if link_button(ui, pal, tr("Vazgeç", "Cancel")).clicked() {
+                if b::action(ui, pal, Kind::Secondary, Icon::None, tr("Vazgeç", "Cancel")).clicked() {
                     self.lock_edit = false;
                     self.lock_new.clear();
                     self.lock_new2.clear();
@@ -1391,9 +1400,23 @@ impl App {
                     .color(pal.ink),
                 );
                 ui.horizontal(|ui| {
-                    quit = link_button(ui, pal, tr("Yine de çık", "Quit anyway")).clicked();
+                    quit = b::action(
+                        ui,
+                        pal,
+                        Kind::Danger,
+                        Icon::None,
+                        tr("Yine de çık", "Quit anyway"),
+                    )
+                    .clicked();
                     ui.add_space(12.0);
-                    stay = link_button(ui, pal, tr("Çalışmaya devam et", "Keep working")).clicked();
+                    stay = b::action(
+                        ui,
+                        pal,
+                        Kind::Primary,
+                        Icon::None,
+                        tr("Çalışmaya devam et", "Keep working"),
+                    )
+                    .clicked();
                 });
             });
         ui.add_space(14.0);

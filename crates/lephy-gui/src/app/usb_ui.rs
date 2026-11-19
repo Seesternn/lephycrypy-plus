@@ -3,7 +3,8 @@
 //! volumes, a dry run of what will be deleted, the exact label and size typed to confirm, the
 //! device identity re-read before each step, and a read-back of the written file.
 
-use super::{App, Palette, link_button, logic, primary_button, secondary_button};
+use super::buttons::{self as b, Icon, Kind};
+use super::{App, Palette, logic, primary_button, secondary_button};
 use crate::i18n::{Lang, lang, tr};
 use eframe::egui::{self, RichText, Stroke, Ui};
 use lephy_core::names::escape_display;
@@ -273,7 +274,7 @@ impl App {
                     ui.label(RichText::new(s).monospace().size(11.5).color(pal.muted));
                 }
             });
-            if link_button(ui, pal, tr("İptal", "Cancel")).clicked() {
+            if b::action(ui, pal, Kind::Secondary, Icon::None, tr("İptal", "Cancel")).clicked() {
                 lephy_sys::signal::request_cancel();
             }
             return;
@@ -291,7 +292,7 @@ impl App {
             );
             ui.horizontal(|ui| {
                 ui.label(RichText::new(name).color(pal.ink).size(13.5));
-                if link_button(ui, pal, tr("Seç…", "Choose…")).clicked()
+                if b::action(ui, pal, Kind::Secondary, Icon::File, tr("Seç…", "Choose…")).clicked()
                     && let Some(p) = rfd::FileDialog::new()
                         .set_title(tr("Şifreli dosyayı seçin", "Choose the encrypted file"))
                         .add_filter("lephycrypy", &["lphy"])
@@ -383,7 +384,14 @@ impl App {
                     }
                 }
             }
-            if link_button(ui, pal, tr("Yeniden ara", "Search again")).clicked()
+            if b::action(
+                ui,
+                pal,
+                Kind::Secondary,
+                Icon::Retry,
+                tr("Yeniden ara", "Search again"),
+            )
+            .clicked()
                 || (self.usb.devices.is_none() && self.usb.list_rx.is_none())
             {
                 self.usb.scan(&ctx);

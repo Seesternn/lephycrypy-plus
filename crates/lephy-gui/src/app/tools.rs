@@ -1,7 +1,8 @@
 //! "More actions" on the decrypt screen: verify only, change the password, renew the file key.
 //! They use the password (or identity) typed above and change the file in place.
 
-use super::{App, Palette, link_button, primary_button};
+use super::buttons::{self as b, Icon, Kind};
+use super::{App, Palette, primary_button};
 use crate::i18n::tr;
 use crate::logic::{Tool, ToolKind};
 use crate::secret_field::SecretField;
@@ -64,7 +65,7 @@ impl App {
         } else {
             tr("Diğer işlemler…", "More actions…")
         };
-        if link_button(ui, pal, label).clicked() {
+        if super::link_button(ui, pal, label).clicked() {
             self.tools.open = !self.tools.open;
             self.tools.kind = None;
         }
@@ -150,12 +151,12 @@ impl App {
                             },
                         );
                         ui.label(RichText::new(name).color(pal.muted).size(12.5));
-                        if link_button(ui, pal, tr("Seç…", "Choose…")).clicked() {
+                        if b::action(ui, pal, Kind::Secondary, Icon::File, tr("Seç…", "Choose…")).clicked() {
                             self.tools.new_keyfile = rfd::FileDialog::new()
                                 .set_title(tr("Yeni anahtar dosyası", "New key file"))
                                 .pick_file();
                         }
-                        if link_button(ui, pal, tr("Yeni oluştur…", "Create new…")).clicked()
+                        if b::action(ui, pal, Kind::Secondary, Icon::Add, tr("Yeni oluştur…", "Create new…")).clicked()
                             && let Some(p) = rfd::FileDialog::new()
                                 .set_title(tr(
                                     "Yeni anahtar dosyasını kaydedin",
