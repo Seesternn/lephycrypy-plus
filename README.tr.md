@@ -1,6 +1,6 @@
 # lephycrypy+
 
-Türkçe · [English](README.md)
+Türkçe · [English](README.md) · **[Nasıl çalışır: akış şemaları](https://seesternn.github.io/lephycrypy-plus/tr/)**
 
 Rust ile yazılmış, açık kaynaklı dosya ve klasör şifreleme aracı. Parolayla ya da başka
 kişilerin açık anahtarlarına şifreler; dosya adları ve klasör yapısı her zaman şifrelidir; büyük
@@ -60,8 +60,6 @@ indirilir.
   bayt karşılaştırılır; fuzz testleri; CI'da `cargo deny`, `cargo audit` ve `cargo vet`.
 
 age, Picocrypt, VeraCrypt ve Cryptomator ile karşılaştırma: [docs/COMPARISON.md](docs/COMPARISON.md).
-
-Adım adım nasıl çalıştığı: şifreleme, şifre çözme, kasalar, USB bellekler ve anahtar çiftlerinin [akış şemaları](https://seesternn.github.io/lephycrypy-plus/tr/) ([English](https://seesternn.github.io/lephycrypy-plus/en/)).
 
 ## Platformlar
 

@@ -1,6 +1,6 @@
 # lephycrypy+
 
-[Türkçe](README.tr.md) · English
+[Türkçe](README.tr.md) · English · **[How it works: flowcharts](https://seesternn.github.io/lephycrypy-plus/en/)**
 
 An open-source file and folder encryption tool written in Rust. Encrypt with a password or to
 other people's public keys; file names and folder structure are always encrypted; large files are
@@ -61,8 +61,6 @@ effort** basis.
 
 See [docs/COMPARISON.md](docs/COMPARISON.md) for how it relates to age, Picocrypt, VeraCrypt and
 Cryptomator.
-
-How it works, step by step: [flowcharts](https://seesternn.github.io/lephycrypy-plus/en/) of encryption, decryption, vaults, USB sticks and key pairs ([Türkçe](https://seesternn.github.io/lephycrypy-plus/tr/)).
 
 ## Platforms
 
