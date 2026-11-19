@@ -1582,11 +1582,25 @@ mod tests {
         assert!(app.vault.is_open(&d.join("b.lphy")));
         app.start_vault_save(&ctx, ids[0], After::Close);
         let t = Instant::now();
-        while app.vault.open.len() == 3 && t.elapsed() < Duration::from_mins(1) {
+        // Saving runs Argon2 with the default settings: slow on small CI machines.
+        while app.vault.open.len() == 3
+            && app.vault.open[0].busy()
+            && t.elapsed() < Duration::from_mins(10)
+        {
             std::thread::sleep(Duration::from_millis(20));
             app.poll_vault(&ctx);
         }
-        assert_eq!(app.vault.open.len(), 2, "only the first one locked");
+        let notes: Vec<_> = app
+            .vault
+            .open
+            .iter()
+            .filter_map(|o| o.msg.clone())
+            .collect();
+        assert_eq!(
+            app.vault.open.len(),
+            2,
+            "only the first one locked: {notes:?}"
+        );
         assert!(!app.vault.is_open(&d.join("a.lphy")));
         assert!(app.vault.is_open(&d.join("b.lphy")));
         let v = Vault::open(&d.join("a.lphy"), &pw, None, Some(&d.join("q"))).unwrap();
