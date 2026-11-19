@@ -110,6 +110,24 @@ Fixes from the November 2026 internal review (not an independent audit):
 - Release: SBOM tool pinned. `cargo-audit` ignores carry a review date.
 
 ### Added
+- Desktop app: any number of vaults open at once, each with its own card, background watch and
+  save; RAM disks of all open vaults together must fit in half the memory.
+- Desktop app: vaults locked to public keys. The recipient list is kept inside the vault
+  (`.lephy-recipients`) and edited from the vault's card; saving needs the opener's own key in
+  the list so the result can be verified. `Identity::try_clone` in the core.
+- Desktop app: vaults save and lock before the computer sleeps (lephy-sys `power`: IOKit power
+  notifications on macOS, suspend notifications on Windows), and Settings › Vault has switches
+  for locking when the window is closed, on quit without asking, and when the vault folder is
+  closed in Finder / Explorer with no file in it open (after 30 s).
+- Desktop app: USB vaults. "Turn a USB stick into a vault" adds a vault and keeps the stick's
+  files, or wipes the stick first (typed label and size, same engine checks as Write to USB).
+  A plugged-in stick that holds a vault brings a bar to open it; pulling it out while its vault is
+  open turns the card red with "Save somewhere else…".
+- Desktop app: QR codes for the paper backup (with printing on macOS through an in-memory PDF)
+  and for public keys. New dependency: `qrcodegen` (no dependencies, no unsafe).
+- Desktop app: every action is a real button with an icon and a role (primary, secondary,
+  danger); plain links remain for navigation and show/hide only. The vault bar became a card
+  with "Save and lock", "Open folder" and a "⋯" menu.
 - Desktop app: job queue. Several files show per-item states (waiting, running, done, failed with
   the reason, removed); files dropped while a job runs join the queue with the same settings;
   "Retry the failed ones" on the done screen; a "This session" list on the home screen kept in

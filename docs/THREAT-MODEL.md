@@ -217,10 +217,46 @@ locks, and when the computer wakes from sleep (noticed from the clocks; macOS
 `GetLastInputInfo` / the input desktop). The watch runs on its own thread with its own handle on the
 vault, because the window draws nothing while it is hidden or the screen is locked; on macOS App
 Nap is held off while a vault is open. This only works while the app runs: it is not a
-substitute for locking by hand, and the vault stays open during sleep itself. Vaults are only for
-archives locked with a password: files encrypted to
-public keys (the recipients' keys are not in the file), with error correction, split files and
-raw streams are refused.
+substitute for locking by hand. Files with error correction, split files and raw streams are
+refused as vaults.
+
+Lock moments (Settings › Vault, each can be turned off): before the computer sleeps (macOS
+`IORegisterForSystemPower`: sleep waits up to about 25 s for the vaults to save; Windows
+`PowerRegisterSuspendResumeNotification`: Windows waits only about two seconds, so a large vault
+may not finish and then locks after waking), when the window is closed or hidden, on quit without
+asking (asks if saving fails), and when the vault folder is closed. The last one asks Finder for
+the folders its windows show (`osascript`; macOS asks once for Automation permission, and a
+refusal turns the check off) and `lsof` for open files, every 10 s; Windows only checks
+Explorer windows (PowerShell `Shell.Application`). It locks once the folder was seen open and then
+stayed closed with no open file for 30 s, so a program that keeps a file open without a window
+holds the vault open.
+
+Several vaults: each has its own watch and save; all RAM disks together may use at most half the
+memory.
+
+Vaults locked to public keys: opened with an identity file (its password is used once to read the
+identity, which then stays in locked memory while the vault is open, because each save is
+verified with it). The recipient list is `.lephy-recipients` at the vault root, encrypted with the
+vault; anyone who can open the vault can change it, and so can any program running as the user
+while it is open. Saving refuses an empty list, invalid keys, or a list without the opener's own
+key. As with `set-recipients`, a key removed from the list still opens copies saved before.
+
+USB vaults: the open copy is not on the stick; only the encrypted file is written there on save
+(temporary file, verify, replace; on FAT/exFAT the replace is not atomic everywhere). If the stick
+is pulled out the vault stays open and cannot be saved there; "Save somewhere else" writes it to
+a new file. Turning a stick into a vault with "wipe" uses the USB engine's checks (eligible USB
+stick, typed label and size, identity read again, deletion through a checked handle); files
+deleted from flash memory may be recoverable, so "keep the files" leaves what was there.
+Plugged-in sticks are noticed by polling the mounted volumes every 3 s; nothing is opened
+without the password.
+
+## QR codes
+The paper backup can be shown as a QR code (it holds the same 22 words, so it is as secret as
+they are; it is drawn only after "Show QR code" and the window is hidden from screen capture) and
+printed on macOS: a one-page PDF is built in memory and passed to `lp` on its standard input, but
+the print system may keep a copy in its spool until the job is printed. The QR encoder
+(`qrcodegen`) keeps working buffers that are not wiped; the module grid kept by the app is. Public
+keys are shown as QR codes for scanning; they are not secret. There is no camera scanning.
 
 ## Preview
 The desktop app can show a decrypted text, PNG or JPEG file without writing it anywhere: the

@@ -42,9 +42,13 @@ effort** basis.
   checks before every destructive step.
 - **Desktop app** for macOS and Windows in English and Turkish: drag and drop, double-click `.lphy`
   files, and optional right-click entries (a Finder Quick Action, an Explorer menu entry).
-- **Vault.** Open an encrypted folder once, work in it, then save and lock it again; on macOS the
-  open copy lives on a RAM disk. It saves and locks itself when you are away, the screen locks or
-  the computer wakes from sleep.
+- **Vaults.** Open an encrypted folder once, work in it, then save and lock it again; on macOS the
+  open copy lives on a RAM disk. Any number can be open; a vault can be locked with a password or
+  to public keys; any USB stick can hold one. They save and lock themselves when you are away,
+  the screen locks, before the computer sleeps, when the window is closed or the folder is put
+  away.
+- **QR codes** for the paper backup of a key (with printing on macOS) and for sharing a public
+  key with a phone.
 - **Preview without writing.** Look at an encrypted text, PNG or JPEG in memory; nothing is written
   to disk.
 - **Queue.** Several files one after another with per-item states; add more while it runs and
@@ -197,8 +201,8 @@ NTFS resident files and wear levelling mean physical erasure is not guaranteed.
 
 `lephycrypy-gui` (macOS and Windows) is a single, simple window. The first launch shows a short
 three-step introduction; after that the start screen has six cards — **Encrypt**, **Decrypt**,
-**My keys** (create a key pair, show the public keys of an identity, take its paper backup or
-restore one from it), **Settings**, **Vault** and **Write to a USB stick** — and a drop area.
+**My keys** (create a key pair, show the public keys of an identity — also as a QR code — take
+its paper backup with a QR code, print it on macOS, or restore one from it), **Settings**, **Vault** and **Write to a USB stick** — and a drop area.
 Every screen has short **?** help boxes; **Help** on the start screen collects them.
 
 1. Drop files or folders on the window, or use the **Encrypt** / **Decrypt** cards. `.lphy` files
@@ -231,8 +235,9 @@ runs minimises the window.
   desktop app (not the command-line tool); encrypted files are protected by their own passwords
   and keys. The lock is also kept in the keychain (Credential Manager on Windows). If you forget
   it, delete the "lephycrypy+" item there and the settings file.
-- **Vault:** lock an open vault after 5, 15 (default), 30 or 60 minutes without input, or never;
-  and when the screen locks or the computer wakes from sleep.
+- **Vault:** lock open vaults after 5, 15 (default), 30 or 60 minutes without input, or never;
+  and, each with its own switch, when the screen locks (also before sleep and after waking), when
+  the window is closed, on quit without asking, and when the vault folder is closed.
 - **Maintenance:** search a folder for leftovers of an interrupted decryption (the home, Desktop,
   Downloads and Documents folders are checked at start).
 - **Finder Quick Action** (macOS, app bundle only): adds "Encrypt or open with lephycrypy+" under
@@ -263,17 +268,32 @@ session's jobs; the list is kept in memory only.
 
 ### Vault (desktop app)
 
-Home › **Vault**: **Open a vault…** (an encrypted folder and its password) or **Create a new
-vault…** (a name, a place and a password). The folder opens in Finder / Explorer and a bar at the
-top of the app shows it is open. Work in it as usual, then press **Save and lock** to encrypt it
-again with the same password and remove the open copy (**Save** keeps it open). On macOS the open
-copy lives on a RAM disk (memory only); on Windows in a hidden app folder that is overwritten and
+Home › **Vault**: **Open a vault…**, **Create a new vault…** or **Turn a USB stick into a
+vault…**. The folder opens in Finder / Explorer and a card at the top of the app shows each open
+vault with three buttons: **Save and lock** (encrypt it again and remove the open copy),
+**Open folder**, and **⋯** (**Save only**, **Close without saving…**). Any number of vaults can be
+open at once. On macOS the open copy lives on a RAM disk (memory only; all open vaults together
+may use at most half the memory); on Windows in a hidden app folder that is overwritten and
 deleted when the vault is closed.
 
-The vault saves and locks itself after the set time without input (15 minutes by default), when
-the screen locks and when the computer wakes from sleep; this runs in the background even while
-the window is hidden. Quitting with a vault open asks first, and a vault left open by a crash is
-found at the next start.
+A new vault is locked **with a password** or **to public keys**. A vault locked to public keys
+is opened with an identity file; its recipient list is kept inside the vault
+(`.lephy-recipients`, encrypted with it) and edited from the card's **Recipients** button. The
+list must keep your own key, so every save can be checked.
+
+**USB sticks.** "Turn a USB stick into a vault" either adds a vault file and keeps the stick's
+other files, or wipes the stick first (after you type its label and size). When a stick holding a
+vault is plugged in, a bar offers to open it (it asks for the password; nothing opens by itself).
+The open copy stays in this computer's memory; only the encrypted file is written to the stick
+when you lock. If the stick is pulled out while its vault is open, the card turns red and offers
+**Save somewhere else…**.
+
+Vaults save and lock themselves after the set time without input (15 minutes by default), when
+the screen locks, before the computer sleeps and after it wakes, when the window is closed, on
+quit, and when the vault's Finder / Explorer window is closed and none of its files is open (after
+30 seconds; on macOS this asks once for permission to control Finder). Each moment has a switch
+in Settings › Vault. The checks run in the background even while the window is hidden. A vault
+left open by a crash is found at the next start.
 
 ### Write to a USB stick (desktop app)
 

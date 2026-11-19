@@ -42,9 +42,13 @@ indirilir.
   adımdan önce aygıt kimliğini yeniden denetler.
 - **Masaüstü uygulaması** (macOS ve Windows, Türkçe ve İngilizce): sürükle-bırak, `.lphy`
   dosyasına çift tıklama, isteğe bağlı sağ tık girişleri (Finder Hızlı İşlemi, Gezgin menüsü).
-- **Kasa.** Şifreli bir klasörü bir kez açıp içinde çalışın, sonra kaydedip yeniden kilitleyin;
-  macOS'ta açık kopya bir RAM diskte durur. Bilgisayarın başında değilken, ekran kilitlenince ya
-  da bilgisayar uykudan uyanınca kendiliğinden kaydedilip kilitlenir.
+- **Kasalar.** Şifreli bir klasörü bir kez açıp içinde çalışın, sonra kaydedip yeniden
+  kilitleyin; macOS'ta açık kopya bir RAM diskte durur. Aynı anda istediğiniz kadar kasa açık
+  olabilir; kasa parolayla ya da açık anahtarlarla kilitlenir; her USB bellek kasa olabilir.
+  Bilgisayarın başında değilken, ekran kilitlenince, uykudan önce, pencere kapatılınca ya da
+  klasörü kapatılınca kendiliğinden kaydedilip kilitlenir.
+- **QR kod:** anahtarın kâğıt yedeği için (macOS'ta yazdırma ile) ve açık anahtarı telefonla
+  paylaşmak için.
 - **Diske yazmadan önizleme.** Şifreli bir metin, PNG ya da JPEG'e bellekte bakın; diske hiçbir
   şey yazılmaz.
 - **Kuyruk.** Birden çok dosya sırayla, her birinin durumu görünerek işlenir; iş sürerken yenileri
@@ -171,7 +175,8 @@ Ayrıntılar İngilizce README'dedir.
 
 İlk açılışta üç adımlı kısa bir tanıtım çıkar. Sonrasında açılış ekranında altı kart vardır:
 **Şifrele**, **Şifreyi çöz**, **Anahtarlarım** (anahtar çifti oluşturma, bir kimliğin açık
-anahtarlarını gösterme, kâğıt yedeği alma ya da ondan geri yükleme), **Ayarlar**, **Kasa** ve
+anahtarlarını gösterme — QR kod olarak da — kâğıt yedeğini QR koduyla alma, macOS'ta yazdırma
+ya da ondan geri yükleme), **Ayarlar**, **Kasa** ve
 **USB belleğe yaz**. Altında bir bırakma alanı bulunur. Her ekranda kısa **?** yardım kutuları
 vardır; açılış ekranındaki **Yardım** hepsini bir arada gösterir.
 
@@ -206,8 +211,9 @@ durumuna küçültür.
   kullanılmasını engeller (komut satırı aracını değil); şifreli dosyalar kendi parolaları ve
   anahtarlarıyla korunur. Kilit Anahtar Zinciri'nde de (Windows'ta Kimlik Bilgisi Yöneticisi'nde)
   saklanır; parolayı unutursanız oradaki "lephycrypy+" kaydını ve ayar dosyasını silin.
-- **Kasa:** açık bir kasayı 5, 15 (varsayılan), 30 ya da 60 dakika hareketsizlikten sonra
-  kilitleme ya da hiç kilitlememe; ekran kilitlenince ya da bilgisayar uykudan uyanınca kilitleme.
+- **Kasa:** açık kasaları 5, 15 (varsayılan), 30 ya da 60 dakika hareketsizlikten sonra
+  kilitleme ya da hiç kilitlememe; ayrıca her biri ayrı anahtarla: ekran kilitlenince (uykudan
+  önce ve uyanınca da), pencere kapatılınca, çıkarken sormadan ve kasa klasörü kapatılınca.
 - **Bakım:** bir klasörde yarıda kalan şifre çözmelerin artıklarını arama (ev klasörü,
   Masaüstü, İndirilenler ve Belgeler açılışta kendiliğinden taranır).
 - **Finder Hızlı İşlemi** (macOS, yalnızca .app paketi): Finder'da sağ tık → **Hızlı İşlemler**
@@ -234,17 +240,31 @@ listeler; liste yalnızca bellekte tutulur.
 
 ### Kasa (masaüstü uygulaması)
 
-Ana sayfa › **Kasa**: **Kasa aç…** (şifreli bir klasör ve parolası) ya da **Yeni boş kasa
-oluştur…** (ad, yer ve parola). Klasör Finder'da / Gezgin'de açılır ve uygulamanın üstündeki şerit
-kasanın açık olduğunu gösterir. İçinde her zamanki gibi çalışın, sonra **Kaydet ve kilitle** ile
-aynı parolayla yeniden şifreleyip açık kopyayı kaldırın (**Kaydet** kasayı açık bırakır).
-macOS'ta açık kopya bir RAM diskte (yalnızca bellekte), Windows'ta gizli bir uygulama klasöründe
-durur ve kasa kapatılınca üzerine yazılarak silinir.
+Ana sayfa › **Kasa**: **Kasa aç…**, **Yeni boş kasa oluştur…** ya da **USB belleği kasa
+yap…**. Klasör Finder'da / Gezgin'de açılır ve uygulamanın üstünde her açık kasa için bir kart
+çıkar; kartta üç düğme vardır: **Kaydet ve kilitle** (yeniden şifreleyip açık kopyayı kaldırır),
+**Klasörü aç** ve **⋯** (**Yalnızca kaydet**, **Kaydetmeden kapat…**). Aynı anda istediğiniz
+kadar kasa açık olabilir. macOS'ta açık kopya bir RAM diskte (yalnızca bellekte; açık kasaların
+toplamı belleğin en çok yarısını kullanabilir), Windows'ta gizli bir uygulama klasöründe durur
+ve kasa kapatılınca üzerine yazılarak silinir.
 
-Kasa, ayarlanan süre boyunca klavye ve fare kullanılmazsa (varsayılan 15 dakika), ekran
-kilitlenince ve bilgisayar uykudan uyanınca kendiliğinden kaydedilip kilitlenir; bu, pencere
-gizliyken de arka planda çalışır. Kasa açıkken çıkmak önce sorar; bir çökme yüzünden açık kalan
-kasa bir sonraki açılışta bulunur.
+Yeni bir kasa **parolayla** ya da **açık anahtarlarla** kilitlenir. Açık anahtarlarla kilitli
+bir kasa kimlik dosyasıyla açılır; alıcı listesi kasanın içinde (`.lephy-recipients`, kasayla
+birlikte şifreli) tutulur ve kartın **Alıcılar** düğmesiyle düzenlenir. Her kaydetmenin
+doğrulanabilmesi için listede kendi anahtarınız kalmalıdır.
+
+**USB bellekler.** "USB belleği kasa yap" ya belleğe bir kasa dosyası ekler ve diğer dosyaları
+korur, ya da belleği önce siler (adını ve boyutunu yazdıktan sonra). Kasa içeren bir bellek
+takılınca üstte bir şerit onu açmayı önerir (parola sorar; kendiliğinden hiçbir şey açılmaz).
+Açık kopya bu bilgisayarın belleğinde durur; belleğe yalnızca kilitlerken şifreli dosya yazılır.
+Kasası açıkken bellek çıkarılırsa kart kırmızıya döner ve **Başka yere kaydet…** önerir.
+
+Kasalar, ayarlanan süre boyunca klavye ve fare kullanılmazsa (varsayılan 15 dakika), ekran
+kilitlenince, bilgisayar uykuya geçmeden önce ve uyanınca, pencere kapatılınca, çıkarken ve
+kasanın Finder / Gezgin penceresi kapatılıp içindeki hiçbir dosya açık değilken (30 saniye sonra;
+macOS bunun için bir kez Finder'ı denetleme izni ister) kendiliğinden kaydedilip kilitlenir. Her
+anın Ayarlar › Kasa'da ayrı bir anahtarı vardır. Denetimler pencere gizliyken de arka planda
+çalışır. Bir çökme yüzünden açık kalan kasa bir sonraki açılışta bulunur.
 
 ### USB belleğe yazma (masaüstü uygulaması)
 
