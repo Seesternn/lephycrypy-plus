@@ -37,6 +37,7 @@ features = [
     "Win32_UI_WindowsAndMessaging", # capture.rs: window display affinity
     "Win32_UI_Input_KeyboardAndMouse", # idle.rs: GetLastInputInfo
     "Win32_System_StationsAndDesktops", # idle.rs: locked-workstation check
+    "Win32_System_Power",   # power.rs: suspend notification
 ]
 
 # The workspace table contains `unsafe_code = "forbid"`; this crate uses its own table.

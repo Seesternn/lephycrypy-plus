@@ -45,6 +45,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <key>NSAppleEventsUsageDescription</key><string>Checks whether an open vault's folder is still shown in a Finder window, to lock the vault when it is closed. Nothing else is read or changed.</string>
   <key>UTExportedTypeDeclarations</key>
   <array>
     <dict>
@@ -79,7 +80,18 @@ PLIST
 
 # Extended attributes (provenance, Finder info) make codesign refuse the bundle.
 xattr -cr "$APP"
-codesign --force --options runtime --sign - "$APP"
+# Apple events: the "lock when the vault folder is closed" check asks Finder for its windows.
+ENT="$OUT/entitlements.plist"
+cat > "$ENT" <<'ENTS'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.automation.apple-events</key><true/>
+</dict>
+</plist>
+ENTS
+codesign --force --options runtime --entitlements "$ENT" --sign - "$APP"
 echo "$APP"
 
 if [ "${1:-}" = "--dmg" ]; then

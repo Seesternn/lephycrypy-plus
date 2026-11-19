@@ -41,6 +41,9 @@ lephy-usb = { workspace = true }
 # Preview: PNG and JPEG only, decoded in memory with size and allocation limits (preview.rs).
 # `image` is already in the graph through eframe (PNG); this adds the JPEG decoder (zune-jpeg).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# QR codes for the paper backup and for sharing a public key (drawn as rectangles; no images).
+# Nayuki's reference implementation: no dependencies, no unsafe.
+qrcodegen = "1.8"
 
 [lints]
 workspace = true

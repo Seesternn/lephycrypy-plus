@@ -137,6 +137,12 @@ pub struct App {
     id_loaded: Option<pages::LoadedId>,
     id_job: Option<Receiver<std::result::Result<pages::LoadedId, String>>>,
     id_show_paper: bool,
+    /// QR window of a public key.
+    qr_key: Option<(String, crate::qr::Qr)>,
+    /// QR code of the paper backup on screen.
+    paper_qr: Option<crate::qr::Qr>,
+    /// Note after printing the paper backup.
+    paper_note: Option<String>,
     /// Encrypting to public keys: use the recipients' post-quantum hybrid keys.
     pq: bool,
     /// The chosen encrypted file uses post-quantum hybrid recipients.
@@ -191,6 +197,8 @@ pub struct App {
     usb: usb_ui::Usb,
     /// Open folder vault, its background steps and leftovers.
     vault: vault_ui::VaultUi,
+    /// USB sticks that hold vaults.
+    sticks: usb_vault::Sticks,
     /// Queue of the running job, files added meanwhile, this session's history.
     queue: queue_ui::QueueUi,
     /// When the app started (history times).
@@ -250,6 +258,9 @@ impl Default for App {
             id_loaded: None,
             id_job: None,
             id_show_paper: false,
+            qr_key: None,
+            paper_qr: None,
+            paper_note: None,
             pq: false,
             file_pq: false,
             sign: false,
@@ -278,6 +289,7 @@ impl Default for App {
             preview: None,
             usb: usb_ui::Usb::default(),
             vault: vault_ui::VaultUi::default(),
+            sticks: usb_vault::Sticks::default(),
             queue: queue_ui::QueueUi::default(),
             started: Instant::now(),
         }
@@ -632,19 +644,29 @@ impl App {
         }
     }
 
+    /// Cmd+Q / Dock → Quit (or closing the window on Windows): with vaults open and no job,
+    /// save and lock them and quit unless the user wants to be asked; otherwise ask.
+    fn quit_requested(&mut self, ctx: &egui::Context) {
+        if !self.running() && self.vault.any_open() && !self.prefs.vault_ask_on_quit {
+            self.save_all_and_quit(ctx);
+        } else {
+            self.quit_confirm = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+    }
+
     /// SIGINT/SIGTERM/Ctrl+C: when idle, close the window; when a job runs, the job stops first (temp
     /// files removed), then it closes. Repaints regularly to notice a signal while idle.
     fn handle_signal(&mut self, ctx: &egui::Context) {
         // An open vault holds decrypted files: quitting asks first.
-        lephy_sys::lifecycle::set_busy(self.running() || self.vault.open.is_some());
+        lephy_sys::lifecycle::set_busy(self.running() || self.vault.any_open());
         // SIGINT/SIGTERM: the job (if any) stops on its own; then the app closes.
         if lephy_sys::signal::signalled() {
             self.quitting = true;
         }
         // Cmd+Q / Dock → Quit while a job runs: ask first.
         if lephy_sys::lifecycle::take_quit_request() {
-            self.quit_confirm = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.quit_requested(ctx);
         }
         // The close button only hides the window; the job continues and the Dock icon brings the
         // window back. Quitting is Cmd+Q or Dock → Quit (Windows: closing while a job runs
@@ -652,7 +674,14 @@ impl App {
         if !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
             if cfg!(target_os = "macos") {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                if self.vault.any_open() && !self.prefs.vault_keep_on_hide {
+                    vault_ui::lock_on_hide();
+                }
                 let _ = lephy_sys::lifecycle::hide_app();
+            } else if self.vault.any_open() {
+                // Closing the window ends the app here: the vaults are saved and locked first.
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.quit_requested(ctx);
             } else if self.running() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
@@ -834,10 +863,13 @@ impl App {
     pub fn draw(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         if std::mem::take(&mut self.scan_on_start) {
+            vault_ui::install_sleep_hook();
+            self.sticks.start(&ctx);
             self.stale.scan(&ctx, logic::usual_output_dirs());
             self.vault.leftovers = crate::vault::leftovers();
         }
         self.poll_vault(&ctx);
+        self.poll_sticks();
         self.auto_lock_vault(&ctx);
         crate::motion::set_enabled(!self.prefs.anim_off && !self.reduce_motion);
         self.poll(&ctx);
@@ -909,6 +941,7 @@ impl App {
                                 return;
                             }
                             self.open_request_banner(ui, &ctx, pal);
+                            self.stick_bar(ui, pal);
                             self.vault_bar(ui, &ctx, pal);
                             match self.stage {
                                 Stage::Pick => match self.page {
@@ -929,6 +962,7 @@ impl App {
                         });
                         self.toast_view(&ctx, pal);
                         self.preview_window(&ctx, pal);
+                        self.qr_window(&ctx, pal);
                         let h = r.response.rect.height();
                         if (h - self.content_h).abs() > 1.0 {
                             self.content_h = h;
@@ -2494,11 +2528,20 @@ impl App {
                     .color(pal.muted)
                     .size(12.5),
                 );
+                qr_ui::paper_extras(
+                    ui,
+                    pal,
+                    words.expose(),
+                    &mut self.paper_qr,
+                    &mut self.paper_note,
+                );
                 hide = b::action(ui, pal, Kind::Secondary, Icon::Check, tr("Yazdım, gizle", "I wrote them down, hide them"))
                     .clicked();
             });
         if hide {
             self.paper = None;
+            self.paper_qr = None;
+            self.paper_note = None;
         }
     }
 
@@ -3035,11 +3078,13 @@ mod lockgate;
 mod maintenance;
 mod pages;
 mod preview_ui;
+mod qr_ui;
 mod queue_ui;
 mod restore;
 mod settings_ui;
 mod tools;
 mod usb_ui;
+mod usb_vault;
 mod vault_page;
 mod vault_ui;
 

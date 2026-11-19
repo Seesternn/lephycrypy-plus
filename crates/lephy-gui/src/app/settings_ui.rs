@@ -679,6 +679,10 @@ impl App {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pane: idle time and four switches"
+    )]
     fn pane_vault(&mut self, ui: &mut Ui, pal: Palette) {
         page_head(ui, pal, tr("Kasa", "Vault"));
         let cur = self.prefs.vault_idle_minutes();
@@ -715,31 +719,80 @@ impl App {
                 "If the keyboard and mouse are not used for this long, an open vault saves and locks itself.",
             ),
         );
-        let mut flip = false;
+        let mut flips = [false; 4];
+        ui.label(
+            RichText::new(tr("Ne zaman kilitlensin", "Also lock"))
+                .color(pal.muted)
+                .size(12.5),
+        );
+        ui.add_space(4.0);
         group(ui, pal, |ui| {
-            flip = switch_row(
+            flips[0] = switch_row(
                 ui,
                 pal,
                 None,
-                tr("Ekran kilitlenince kilitle", "Lock when the screen locks"),
-                Some(tr("Uykudan uyanınca da", "Also after waking from sleep")),
+                tr("Ekran kilitlenince", "When the screen locks"),
+                Some(tr(
+                    "Uykuya geçmeden önce ve uykudan uyanınca da",
+                    "Also before the computer sleeps and after it wakes",
+                )),
                 !self.prefs.vault_keep_on_lock,
+            );
+            divider(ui, pal, 12.0);
+            flips[1] = switch_row(
+                ui,
+                pal,
+                None,
+                tr("Pencere kapatılınca", "When the window is closed"),
+                Some(tr(
+                    "Kırmızı düğme ya da gizleme; uygulama arka planda kalır",
+                    "Red button or hide; the app stays in the background",
+                )),
+                !self.prefs.vault_keep_on_hide,
+            );
+            divider(ui, pal, 12.0);
+            flips[2] = switch_row(
+                ui,
+                pal,
+                None,
+                tr("Uygulamadan çıkınca, sormadan", "On quit, without asking"),
+                Some(tr(
+                    "Kaydedip kilitler, sonra çıkar; kaydedilemezse sorar",
+                    "Saves and locks, then quits; asks if saving fails",
+                )),
+                !self.prefs.vault_ask_on_quit,
+            );
+            divider(ui, pal, 12.0);
+            flips[3] = switch_row(
+                ui,
+                pal,
+                None,
+                tr(
+                    "Kasa klasörü kapatılınca",
+                    "When the vault folder is closed",
+                ),
+                Some(folder_note()),
+                !self.prefs.vault_keep_on_folder_close,
             );
         });
         footer(
             ui,
             pal,
             tr(
-                "Kaydetme başarısız olursa (örneğin bir dosya başka bir programda açıksa) kasa açık kalır ve üstteki şerit uyarır.",
-                "If saving fails (for example a file is open in another program) the vault stays open and the bar says so.",
+                "Kaydetme başarısız olursa (örneğin bir dosya başka bir programda açıksa) kasa açık kalır ve kartı uyarır. Klasör takibi için macOS ilk kullanımda Finder'ı denetleme izni ister; yalnızca pencerelerin hangi klasörü gösterdiğine bakılır.",
+                "If saving fails (for example a file is open in another program) the vault stays open and its card says so. For the folder check macOS asks once for permission to control Finder; only which folders its windows show is read.",
             ),
         );
         if let Some(m) = pick {
             self.prefs.vault_idle = Some(m);
             self.save_prefs();
         }
-        if flip {
-            self.prefs.vault_keep_on_lock = !self.prefs.vault_keep_on_lock;
+        if flips.iter().any(|f| *f) {
+            let p = &mut self.prefs;
+            p.vault_keep_on_lock ^= flips[0];
+            p.vault_keep_on_hide ^= flips[1];
+            p.vault_ask_on_quit ^= flips[2];
+            p.vault_keep_on_folder_close ^= flips[3];
             self.save_prefs();
         }
     }
@@ -890,6 +943,21 @@ fn integration_on() -> bool {
     #[cfg(windows)]
     {
         lephy_sys::shell::is_registered(lephy_sys::shell::CLASSES)
+    }
+}
+
+/// What "vault folder closed" watches on this system.
+fn folder_note() -> &'static str {
+    if cfg!(target_os = "macos") {
+        tr(
+            "Finder penceresi ve içindeki dosyalar kapanınca, 30 sn sonra",
+            "When its Finder window and files are closed, after 30 s",
+        )
+    } else {
+        tr(
+            "Gezgin penceresi kapanınca, 30 sn sonra",
+            "When its Explorer window is closed, after 30 s",
+        )
     }
 }
 

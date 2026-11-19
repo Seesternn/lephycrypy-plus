@@ -55,6 +55,12 @@ pub struct Settings {
     pub vault_idle: Option<u32>,
     /// Do not lock an open vault when the screen locks or the computer wakes from sleep.
     pub vault_keep_on_lock: bool,
+    /// Do not lock open vaults when the window is closed or hidden.
+    pub vault_keep_on_hide: bool,
+    /// Ask before quitting with open vaults (instead of saving and locking them).
+    pub vault_ask_on_quit: bool,
+    /// Do not lock a vault when its folder window is closed and nothing in it is open.
+    pub vault_keep_on_folder_close: bool,
     /// Do not show this session's finished jobs on the home screen.
     pub history_off: bool,
 }
@@ -107,6 +113,9 @@ impl Settings {
                 ("vault_idle", v) => s.vault_idle = v.parse().ok().filter(|m| *m <= 24 * 60),
                 ("vault_screen", "0") => s.vault_keep_on_lock = true,
                 ("history", "0") => s.history_off = true,
+                ("vault_hide", "0") => s.vault_keep_on_hide = true,
+                ("vault_quit", "ask") => s.vault_ask_on_quit = true,
+                ("vault_folder", "0") => s.vault_keep_on_folder_close = true,
                 ("lock", v) => {
                     s.lock = v.split_once(':').and_then(|(a, b)| {
                         Some(LockVerifier {
@@ -144,6 +153,15 @@ impl Settings {
         }
         if self.history_off {
             out.push_str("history=0\n");
+        }
+        if self.vault_keep_on_hide {
+            out.push_str("vault_hide=0\n");
+        }
+        if self.vault_ask_on_quit {
+            out.push_str("vault_quit=ask\n");
+        }
+        if self.vault_keep_on_folder_close {
+            out.push_str("vault_folder=0\n");
         }
         if let Some(l) = &self.lock {
             let _ = writeln!(out, "lock={}:{}", hex(&l.salt), hex(&l.tag));
@@ -276,6 +294,9 @@ mod tests {
             anim_off: true,
             vault_idle: Some(30),
             vault_keep_on_lock: true,
+            vault_keep_on_hide: true,
+            vault_ask_on_quit: true,
+            vault_keep_on_folder_close: true,
             history_off: true,
         };
         assert_eq!(Settings::parse(&s.to_text()), s);

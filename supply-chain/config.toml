@@ -887,6 +887,11 @@ criteria = "safe-to-run"
 version = "0.1.30"
 criteria = "safe-to-deploy"
 
+[[exemptions.qrcodegen]]
+version = "1.8.0"
+criteria = "safe-to-deploy"
+notes = "Nayuki's reference QR encoder (MIT, no dependencies, forbids unsafe): QR codes for the paper backup and public keys in the desktop app; no audit imported yet"
+
 [[exemptions.quick-xml]]
 version = "0.41.0"
 criteria = "safe-to-deploy"

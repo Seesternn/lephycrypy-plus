@@ -18,6 +18,8 @@ const _: () = assert!(
 #[cfg(any(target_os = "macos", windows))]
 mod app;
 #[cfg(any(target_os = "macos", windows))]
+mod folder_watch;
+#[cfg(any(target_os = "macos", windows))]
 mod fonts;
 #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 mod i18n;
@@ -29,6 +31,8 @@ mod motion;
 mod preview;
 #[cfg(any(target_os = "macos", windows))]
 mod preview_decode;
+#[cfg(any(target_os = "macos", windows))]
+mod qr;
 #[cfg(any(target_os = "macos", windows))]
 mod secret_field;
 #[cfg(any(target_os = "macos", windows))]

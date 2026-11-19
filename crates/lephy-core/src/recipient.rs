@@ -266,6 +266,18 @@ impl Identity {
     pub const fn public(&self) -> PublicKey {
         self.public
     }
+
+    /// A second copy (secret copied into locked memory), e.g. for a background thread.
+    ///
+    /// # Errors
+    /// Locked-memory error.
+    pub fn try_clone(&self) -> Result<Self> {
+        let secret = SecretBytes::from_slice(self.secret.expose()).map_err(arena_err)?;
+        Ok(Self {
+            secret,
+            public: self.public,
+        })
+    }
 }
 
 impl fmt::Debug for Identity {

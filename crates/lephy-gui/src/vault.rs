@@ -21,6 +21,16 @@ use lephy_sys::ramdisk::RamDisk;
 
 use crate::i18n::tr;
 
+/// RAM disks of this process and their sizes: several vaults together must still fit in half the
+/// memory.
+static RAM_USED: std::sync::Mutex<Vec<(PathBuf, u64)>> = std::sync::Mutex::new(Vec::new());
+
+fn ram_in_use() -> u64 {
+    RAM_USED
+        .lock()
+        .map_or(0, |v| v.iter().map(|(_, s)| *s).sum())
+}
+
 /// Where the open vault lives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Place {
@@ -41,6 +51,102 @@ impl Place {
     }
 }
 
+/// Name of the recipient list kept at the root of a vault locked to public keys (one key per
+/// line). It is encrypted with the vault.
+pub const RECIPIENTS_FILE: &str = ".lephy-recipients";
+
+/// What locks a vault.
+pub enum Lock {
+    /// A password (normalised, in locked memory) and an optional key-file digest.
+    Password {
+        /// The password.
+        nfc: SecretBytes,
+        /// The key-file digest.
+        keyfile: Option<zeroize::Zeroizing<[u8; 32]>>,
+    },
+    /// Public keys listed in [`RECIPIENTS_FILE`]; the opener's identity checks each save.
+    Recipients {
+        /// The identity that opened it.
+        identity: lephy_core::recipient::Identity,
+        /// Post-quantum hybrid keys (`lphypq1…`) instead of classic ones (`lphy1…`).
+        pq: bool,
+    },
+}
+
+impl Lock {
+    fn try_clone(&self) -> Option<Self> {
+        Some(match self {
+            Self::Password { nfc, keyfile } => Self::Password {
+                nfc: SecretBytes::from_slice(nfc.expose()).ok()?,
+                keyfile: keyfile.clone(),
+            },
+            Self::Recipients { identity, pq } => Self::Recipients {
+                identity: identity.try_clone().ok()?,
+                pq: *pq,
+            },
+        })
+    }
+}
+
+/// The opener's own key as a recipient-list line.
+fn own_key_line(identity: &lephy_core::recipient::Identity, pq: bool) -> Result<String> {
+    Ok(if pq {
+        identity.hybrid_public()?.to_string()
+    } else {
+        identity.public().to_string()
+    })
+}
+
+/// An empty password (files locked to public keys need none).
+fn no_password() -> Result<SecretBytes> {
+    SecretBytes::with_capacity(1).map_err(|e| Error::Environment(e.to_string()))
+}
+
+fn list_error() -> Error {
+    Error::Environment(
+        tr(
+            "kasanın alıcı listesi (.lephy-recipients) okunamadı; kasa açık kaldı",
+            "the vault's recipient list (.lephy-recipients) could not be read; the vault stays open",
+        )
+        .into(),
+    )
+}
+
+/// The recipient list must hold at least one valid key of the vault's kind and the opener's own
+/// key (so the saved vault can be checked, and the opener is not locked out by mistake).
+///
+/// # Errors
+/// An empty or invalid list, or one without the opener's key.
+pub fn check_list(text: &str, identity: &lephy_core::recipient::Identity, pq: bool) -> Result<()> {
+    let own = own_key_line(identity, pq)?;
+    let (n, has_own) = if pq {
+        let keys = crate::logic::parse_hybrid(text).map_err(Error::Environment)?;
+        (keys.len(), keys.iter().any(|k| k.to_string() == own))
+    } else {
+        let keys = crate::logic::parse_recipients(text).map_err(Error::Environment)?;
+        (keys.len(), keys.iter().any(|k| k.to_string() == own))
+    };
+    if n == 0 {
+        return Err(Error::Environment(
+            tr(
+                "alıcı listesi boş; kasa açık kaldı",
+                "the recipient list is empty; the vault stays open",
+            )
+            .into(),
+        ));
+    }
+    if !has_own {
+        return Err(Error::Environment(
+            tr(
+                "alıcı listesinde kendi anahtarınız yok; kaydedilen kasa doğrulanamaz. Anahtarınızı listeye geri ekleyin",
+                "your own key is not in the recipient list, so the saved vault cannot be checked. Add your key back to the list",
+            )
+            .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// An open vault.
 pub struct Vault {
     /// The encrypted file it came from (replaced on lock).
@@ -49,8 +155,7 @@ pub struct Vault {
     pub place: Place,
     /// The open folder.
     pub root: PathBuf,
-    nfc: SecretBytes,
-    keyfile: Option<zeroize::Zeroizing<[u8; 32]>>,
+    lock: Lock,
     alg: AlgId,
     kdf: KdfParams,
     pad: bool,
@@ -81,10 +186,6 @@ pub fn unsuitable(path: &Path) -> Option<&'static str> {
     }
     match ops::info(path) {
         Err(_) => Some(tr("Dosya okunamadı.", "The file could not be read.")),
-        Ok(h) if h.recipients > 0 => Some(tr(
-            "Açık anahtarla şifrelenmiş dosyalar kasa olarak açılamaz (yeniden şifrelemek için alıcıların anahtarları gerekir).",
-            "Files encrypted to public keys cannot be opened as a vault (locking again needs the recipients' keys).",
-        )),
         Ok(h) if h.content_type != ContentType::Archive => Some(tr(
             "Yalnızca şifreli klasörler kasa olarak açılabilir.",
             "Only encrypted folders can be opened as a vault.",
@@ -130,17 +231,21 @@ fn make_place(content: u64, folder: Option<&Path>) -> Result<Place> {
     }
     let size = lephy_sys::ramdisk::size_for(content);
     if let Some(mem) = lephy_sys::ramdisk::memory_bytes()
-        && size > mem / 2
+        && size.saturating_add(ram_in_use()) > mem / 2
     {
         return Err(Error::Environment(
             tr(
-                "kasa bu bilgisayarın belleğine sığmıyor",
-                "the vault does not fit in this computer's memory",
+                "kasa, açık kasalarla birlikte bu bilgisayarın belleğine sığmıyor",
+                "the vault does not fit in this computer's memory together with the open ones",
             )
             .into(),
         ));
     }
-    Ok(Place::Ram(lephy_sys::ramdisk::create(&t, size)?))
+    let disk = lephy_sys::ramdisk::create(&t, size)?;
+    if let Ok(mut v) = RAM_USED.lock() {
+        v.push((disk.mount.clone(), size));
+    }
+    Ok(Place::Ram(disk))
 }
 
 /// Overwrites every regular file once with random data, then removes the tree. Symbolic links
@@ -183,7 +288,13 @@ fn wipe_tree(root: &Path) -> std::io::Result<()> {
 /// A program still has a file open (RAM disk without `force`), or I/O.
 pub fn destroy_place(place: &Place, force: bool) -> std::io::Result<()> {
     match place {
-        Place::Ram(d) => lephy_sys::ramdisk::destroy(d, force),
+        Place::Ram(d) => {
+            lephy_sys::ramdisk::destroy(d, force)?;
+            if let Ok(mut v) = RAM_USED.lock() {
+                v.retain(|(m, _)| *m != d.mount);
+            }
+            Ok(())
+        }
         Place::Folder(p) => wipe_tree(p),
     }
 }
@@ -233,7 +344,8 @@ fn folder_name(source: &Path) -> String {
 }
 
 impl Vault {
-    /// Opens `source` into a new place. `folder`: a private folder base instead of a RAM disk.
+    /// Opens `source` (locked with a password) into a new place. `folder`: a private folder
+    /// base instead of a RAM disk.
     ///
     /// # Errors
     /// Unsuitable file, wrong password, no room, I/O. The place is destroyed again on failure.
@@ -243,24 +355,83 @@ impl Vault {
         keyfile: Option<&Path>,
         folder: Option<&Path>,
     ) -> Result<Self> {
-        if let Some(why) = unsuitable(source) {
-            return Err(Error::Environment(why.into()));
-        }
-        let h = ops::info(source)?;
         let nfc = password::normalize_nfc(password)?;
         let kf = keyfile
             .map(password::keyfile_digest_from_path)
             .transpose()?;
+        Self::open_with(source, Lock::Password { nfc, keyfile: kf }, folder)
+    }
+
+    /// Opens `source` (locked to public keys) with the identity file `identity` and its
+    /// password. Without a recipient list inside, one is written with the opener's own key.
+    ///
+    /// # Errors
+    /// As [`Self::open`]; also a wrong identity password or an identity the file is not for.
+    pub fn open_with_identity(
+        source: &Path,
+        identity: &Path,
+        password: &SecretBytes,
+        folder: Option<&Path>,
+    ) -> Result<Self> {
+        let h = ops::info(source)?;
+        let nfc = password::normalize_nfc(password)?;
+        let id = lephy_core::recipient::read_identity_file(
+            identity,
+            &nfc,
+            UnlockOptions::default(),
+            &mut |_| {},
+        )?;
+        drop(nfc);
+        let v = Self::open_with(
+            source,
+            Lock::Recipients {
+                identity: id,
+                pq: h.pq,
+            },
+            folder,
+        )?;
+        let list = v.root.join(RECIPIENTS_FILE);
+        if list.symlink_metadata().is_err()
+            && let Lock::Recipients { identity, pq } = &v.lock
+        {
+            let line = own_key_line(identity, *pq)?;
+            if let Err(e) = std::fs::write(&list, format!("{line}\n")) {
+                let _ = v.close(true);
+                return Err(e.into());
+            }
+        }
+        // Not counted as a change.
+        let mut v = v;
+        v.opened = fingerprint(&v.root);
+        Ok(v)
+    }
+
+    fn open_with(source: &Path, lock: Lock, folder: Option<&Path>) -> Result<Self> {
+        if let Some(why) = unsuitable(source) {
+            return Err(Error::Environment(why.into()));
+        }
+        let h = ops::info(source)?;
         let content = crate::logic::estimate_total(crate::logic::Mode::Decrypt, source);
         let place = make_place(content, folder)?;
         let root = place.base().join(folder_name(source));
+        let empty;
+        let (nfc, kf, identity) = match &lock {
+            Lock::Password { nfc, keyfile } => (nfc, keyfile.as_deref(), None),
+            Lock::Recipients { identity, .. } => {
+                empty = no_password()?;
+                (&empty, None, Some(identity))
+            }
+        };
         let r = ops::decrypt(
             source,
             &Output::Path(&root, false),
-            &nfc,
-            kf.as_deref(),
+            nfc,
+            kf,
             DecryptOptions {
-                unlock: UnlockOptions::default(),
+                unlock: UnlockOptions {
+                    identity,
+                    ..UnlockOptions::default()
+                },
                 ..DecryptOptions::default()
             },
             &mut |_| {},
@@ -284,8 +455,7 @@ impl Vault {
             source: source.to_path_buf(),
             place,
             root,
-            nfc,
-            keyfile: kf,
+            lock,
             alg: h.alg,
             kdf: h.kdf,
             pad: h.padded,
@@ -345,6 +515,98 @@ impl Vault {
         Self::open(dest, password, keyfile, folder)
     }
 
+    /// Creates a new, empty vault at `dest` locked to the public key of the identity file
+    /// `identity` (opened with `password`), then opens it. More recipients can be added to its
+    /// list later. `pq`: post-quantum hybrid keys.
+    ///
+    /// # Errors
+    /// `dest` exists, wrong identity password, I/O, or as [`Self::open`].
+    pub fn create_for_identity(
+        dest: &Path,
+        identity: &Path,
+        password: &SecretBytes,
+        pq: bool,
+        folder: Option<&Path>,
+    ) -> Result<Self> {
+        if dest.symlink_metadata().is_ok() {
+            return Err(Error::Exists(dest.display().to_string()));
+        }
+        let nfc = password::normalize_nfc(password)?;
+        let id = lephy_core::recipient::read_identity_file(
+            identity,
+            &nfc,
+            UnlockOptions::default(),
+            &mut |_| {},
+        )?;
+        let line = own_key_line(&id, pq)?;
+        let empty = std::env::temp_dir()
+            .join(format!("lphy-new-{}", tag()?))
+            .join(folder_name(dest));
+        std::fs::create_dir_all(&empty)?;
+        let opts = EncryptOptions {
+            alg: AlgId::XChaCha20Poly1305,
+            chunk_code: 2,
+            kdf: KdfParams::DEFAULT,
+            force: false,
+            strict_memory: false,
+            raw: false,
+            pad: Some(true),
+            strict: false,
+            compress: false,
+            ecc: false,
+        };
+        let r = std::fs::write(empty.join(RECIPIENTS_FILE), format!("{line}\n"))
+            .map_err(Error::from)
+            .and_then(|()| {
+                let input = Input::Path(&empty);
+                if pq {
+                    ops::encrypt_to_hybrid(
+                        &input,
+                        dest,
+                        &[id.hybrid_public()?],
+                        &opts,
+                        &mut OsEntropy,
+                        &mut |_| {},
+                    )
+                } else {
+                    ops::encrypt_to_recipients(
+                        &input,
+                        dest,
+                        &[id.public()],
+                        &opts,
+                        &mut OsEntropy,
+                        &mut |_| {},
+                    )
+                }
+            });
+        if let Some(parent) = empty.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
+        r?;
+        Self::open_with(dest, Lock::Recipients { identity: id, pq }, folder)
+    }
+
+    /// Locked to public keys (not a password).
+    #[must_use]
+    pub const fn uses_recipients(&self) -> bool {
+        matches!(self.lock, Lock::Recipients { .. })
+    }
+
+    /// The opener's own key line (vaults locked to public keys).
+    #[must_use]
+    pub fn own_key(&self) -> Option<String> {
+        match &self.lock {
+            Lock::Recipients { identity, pq } => own_key_line(identity, *pq).ok(),
+            Lock::Password { .. } => None,
+        }
+    }
+
+    /// Post-quantum hybrid keys.
+    #[must_use]
+    pub const fn pq(&self) -> bool {
+        matches!(self.lock, Lock::Recipients { pq: true, .. })
+    }
+
     /// A second handle on the same open vault (secrets copied into locked memory), for the
     /// background watch that locks it while the window cannot run.
     #[must_use]
@@ -353,14 +615,19 @@ impl Vault {
             source: self.source.clone(),
             place: self.place.clone(),
             root: self.root.clone(),
-            nfc: SecretBytes::from_slice(self.nfc.expose()).ok()?,
-            keyfile: self.keyfile.clone(),
+            lock: self.lock.try_clone()?,
             alg: self.alg,
             kdf: self.kdf,
             pad: self.pad,
             compress: self.compress,
             opened: self.opened,
         })
+    }
+
+    /// Treats the folder as changed (the next save writes it even if nothing changed inside,
+    /// e.g. after the vault was given a new file).
+    pub fn mark_changed(&mut self) {
+        self.opened = [0; 32];
     }
 
     /// Something in the folder changed since it was opened.
@@ -394,28 +661,71 @@ impl Vault {
             compress: self.compress,
             ecc: false,
         };
-        let kf = self.keyfile.as_deref();
-        let r = ops::encrypt(
-            &Input::Path(&self.root),
-            &tmp,
-            &self.nfc,
-            kf,
-            &opts,
-            &mut OsEntropy,
-            &mut |_| {},
-        )
-        .and_then(|_| {
-            ops::verify(
-                &tmp,
-                &self.nfc,
-                kf,
-                UnlockOptions {
-                    allow_large_kdf: true,
-                    ..UnlockOptions::default()
-                },
-                &mut |_| {},
-            )
-        })
+        let r = match &self.lock {
+            Lock::Password { nfc, keyfile } => {
+                let kf = keyfile.as_deref();
+                ops::encrypt(
+                    &Input::Path(&self.root),
+                    &tmp,
+                    nfc,
+                    kf,
+                    &opts,
+                    &mut OsEntropy,
+                    &mut |_| {},
+                )
+                .and_then(|_| {
+                    ops::verify(
+                        &tmp,
+                        nfc,
+                        kf,
+                        UnlockOptions {
+                            allow_large_kdf: true,
+                            ..UnlockOptions::default()
+                        },
+                        &mut |_| {},
+                    )
+                })
+            }
+            Lock::Recipients { identity, pq } => {
+                let text = std::fs::read_to_string(self.root.join(RECIPIENTS_FILE))
+                    .map_err(|_| list_error())?;
+                check_list(&text, identity, *pq)?;
+                if *pq {
+                    let keys = crate::logic::parse_hybrid(&text).map_err(Error::Environment)?;
+                    ops::encrypt_to_hybrid(
+                        &Input::Path(&self.root),
+                        &tmp,
+                        &keys,
+                        &opts,
+                        &mut OsEntropy,
+                        &mut |_| {},
+                    )
+                } else {
+                    let keys = crate::logic::parse_recipients(&text).map_err(Error::Environment)?;
+                    ops::encrypt_to_recipients(
+                        &Input::Path(&self.root),
+                        &tmp,
+                        &keys,
+                        &opts,
+                        &mut OsEntropy,
+                        &mut |_| {},
+                    )
+                }
+                .and_then(|_| {
+                    ops::verify(
+                        &tmp,
+                        &no_password()?,
+                        None,
+                        UnlockOptions {
+                            allow_large_kdf: true,
+                            identity: Some(identity),
+                            ..UnlockOptions::default()
+                        },
+                        &mut |_| {},
+                    )
+                })
+            }
+        }
         .and_then(|_| lephy_sys::fs::rename_replace(&tmp, &self.source).map_err(Error::from));
         if r.is_err() {
             let _ = std::fs::remove_file(&tmp);
@@ -592,6 +902,52 @@ mod tests {
             )
             .is_err()
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A vault locked to public keys: created for one identity, a second key added to the list
+    /// inside, saved; both identities open it. An empty list or one without the opener's key
+    /// is refused and the original stays as it was.
+    #[test]
+    fn recipient_vault() {
+        let d = std::env::temp_dir().join(format!("lphy-vault-rcp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let pw = secret("identity pass 1234");
+        let (_, _) = crate::logic::create_identity(&d.join("a.lphykey"), &pw, 64).unwrap();
+        let (pk_b, _) = crate::logic::create_identity(&d.join("b.lphykey"), &pw, 64).unwrap();
+        let dest = d.join("Ortak.lphy");
+        let mut v =
+            Vault::create_for_identity(&dest, &d.join("a.lphykey"), &pw, false, Some(&d.join("p")))
+                .unwrap();
+        assert!(v.uses_recipients());
+        let list = v.root.join(RECIPIENTS_FILE);
+        let own = v.own_key().unwrap();
+        assert_eq!(std::fs::read_to_string(&list).unwrap().trim(), own);
+        std::fs::write(v.root.join("plan.txt"), b"shared").unwrap();
+        std::fs::write(&list, format!("{own}\n{}\n", pk_b.lines().next().unwrap())).unwrap();
+        v.save().unwrap();
+        // Refused lists: empty, and without the opener's key.
+        let before = std::fs::read(&dest).unwrap();
+        std::fs::write(&list, "# nobody\n").unwrap();
+        assert!(v.save().is_err());
+        std::fs::write(&list, format!("{}\n", pk_b.lines().next().unwrap())).unwrap();
+        assert!(v.save().is_err());
+        assert_eq!(std::fs::read(&dest).unwrap(), before, "original untouched");
+        v.close(true).unwrap();
+        for who in ["a", "b"] {
+            let v = Vault::open_with_identity(
+                &dest,
+                &d.join(format!("{who}.lphykey")),
+                &pw,
+                Some(&d.join("p")),
+            )
+            .unwrap();
+            assert_eq!(std::fs::read(v.root.join("plan.txt")).unwrap(), b"shared");
+            assert!(!v.changed());
+            v.close(false).unwrap();
+        }
+        assert!(unsuitable(&dest).is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
 

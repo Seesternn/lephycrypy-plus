@@ -27,6 +27,7 @@ pub mod mem;
 pub(crate) mod objc;
 pub mod open_docs;
 pub mod platform;
+pub mod power;
 pub mod quarantine;
 pub mod quick_action;
 pub mod ramdisk;

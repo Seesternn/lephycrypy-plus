@@ -45,6 +45,10 @@ pub(super) enum Icon {
     Add,
     /// Three dots.
     More,
+    /// QR squares.
+    Qr,
+    /// Printer.
+    Print,
     /// Page with lines.
     File,
 }
@@ -304,6 +308,36 @@ pub(super) fn draw_icon(p: &egui::Painter, c: Pos2, icon: Icon, color: Color32) 
             for x in [-4.5, 0.0, 4.5] {
                 p.circle_filled(v(x, 0.0), 1.5, color);
             }
+        }
+        Icon::Qr => {
+            for (x, y) in [(-6.0, -6.0), (1.0, -6.0), (-6.0, 1.0)] {
+                p.rect_stroke(
+                    Rect::from_min_size(v(x, y), vec2(5.0, 5.0)),
+                    0.5,
+                    st,
+                    StrokeKind::Middle,
+                );
+            }
+            p.rect_filled(Rect::from_min_size(v(2.0, 2.0), vec2(2.0, 2.0)), 0.0, color);
+            p.rect_filled(Rect::from_min_size(v(4.5, 4.5), vec2(2.0, 2.0)), 0.0, color);
+        }
+        Icon::Print => {
+            p.rect_stroke(
+                Rect::from_min_max(v(-6.5, -2.0), v(6.5, 4.0)),
+                1.5,
+                st,
+                StrokeKind::Middle,
+            );
+            p.add(egui::Shape::line(
+                vec![v(-3.5, -2.0), v(-3.5, -6.0), v(3.5, -6.0), v(3.5, -2.0)],
+                st,
+            ));
+            p.rect_stroke(
+                Rect::from_min_max(v(-3.5, 1.5), v(3.5, 6.5)),
+                0.5,
+                st,
+                StrokeKind::Middle,
+            );
         }
         Icon::File => {
             p.add(egui::Shape::line(

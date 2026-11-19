@@ -167,7 +167,7 @@ fn key_row(ui: &mut Ui, pal: Palette, label: &str, key: &str) -> Option<bool> {
     ui.label(RichText::new(label).color(pal.muted).size(12.5));
     let mut copied = None;
     ui.horizontal(|ui| {
-        let w = (ui.available_width() - 70.0).max(60.0);
+        let w = (ui.available_width() - 215.0).max(60.0);
         ui.allocate_ui_with_layout(vec2(w, 20.0), Layout::left_to_right(Align::Center), |ui| {
             ui.add(
                 egui::Label::new(RichText::new(key).monospace().size(12.0).color(pal.ink))
@@ -176,6 +176,15 @@ fn key_row(ui: &mut Ui, pal: Palette, label: &str, key: &str) -> Option<bool> {
         });
         if b::action(ui, pal, Kind::Secondary, Icon::Copy, tr("Kopyala", "Copy")).clicked() {
             copied = Some(logic::copy_to_clipboard(key).is_ok());
+        }
+        if b::action(ui, pal, Kind::Secondary, Icon::Qr, "QR")
+            .on_hover_text(tr(
+                "Telefonla okutmak için QR kodu",
+                "QR code to scan with a phone",
+            ))
+            .clicked()
+        {
+            super::qr_ui::ask(key);
         }
     });
     ui.add_space(4.0);
@@ -1084,6 +1093,13 @@ impl App {
                                     .color(pal.muted)
                                     .size(12.5),
                                 );
+                                super::qr_ui::paper_extras(
+                                    ui,
+                                    pal,
+                                    id.paper.expose(),
+                                    &mut self.paper_qr,
+                                    &mut self.paper_note,
+                                );
                             });
                     }
                     ui.horizontal(|ui| {
@@ -1094,6 +1110,8 @@ impl App {
                         };
                         if link_button(ui, pal, label).clicked() {
                             self.id_show_paper = !self.id_show_paper;
+                            self.paper_qr = None;
+                            self.paper_note = None;
                         }
                         ui.add_space(12.0);
                         if b::action(ui, pal, Kind::Secondary, Icon::Close, tr("Kapat", "Close"))
@@ -1101,6 +1119,7 @@ impl App {
                         {
                             self.id_loaded = None;
                             self.id_show_paper = false;
+                            self.paper_qr = None;
                         }
                     });
                     return;
@@ -1205,6 +1224,7 @@ impl App {
             Ok(Ok(id)) => {
                 self.id_loaded = Some(id);
                 self.id_show_paper = false;
+                self.paper_qr = None;
                 self.id_job = None;
             }
             Ok(Err(e)) => {
@@ -1373,7 +1393,7 @@ impl App {
             return;
         }
         if !self.running() {
-            if self.vault.open.is_some() {
+            if self.vault.any_open() {
                 let ctx = ui.ctx().clone();
                 self.vault_quit_prompt(ui, &ctx, pal);
                 return;

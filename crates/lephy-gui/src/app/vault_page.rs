@@ -20,6 +20,8 @@ pub(super) enum Form {
     Open,
     /// Create a new one.
     Create,
+    /// Turn a USB stick into a vault (then [`Form::Create`]).
+    Usb,
 }
 
 /// The page's form fields.
@@ -30,6 +32,14 @@ pub(super) struct PageForm {
     pw: SecretField,
     pw2: SecretField,
     keyfile: Option<PathBuf>,
+    /// Locked to public keys: opened with an identity file.
+    use_identity: bool,
+    identity: Option<PathBuf>,
+    idpw: SecretField,
+    /// Creating: post-quantum hybrid keys.
+    pq: bool,
+    /// The USB form.
+    make: super::usb_vault::MakeUsb,
 }
 
 impl Default for PageForm {
@@ -41,6 +51,11 @@ impl Default for PageForm {
             pw: SecretField::new("Kasa parolası", "Vault password"),
             pw2: SecretField::new("Parolayı tekrar girin", "Repeat the password"),
             keyfile: None,
+            use_identity: false,
+            identity: None,
+            idpw: SecretField::new("Kimlik dosyasının parolası", "Identity file password"),
+            pq: false,
+            make: super::usb_vault::MakeUsb::default(),
         }
     }
 }
@@ -49,6 +64,28 @@ impl PageForm {
     /// Back to the two choices; passwords wiped.
     pub(super) fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// Prepares opening the vault file `p` (asks for its password or identity).
+    pub(super) fn open_path(&mut self, p: PathBuf) {
+        self.reset();
+        self.why = crate::vault::unsuitable(&p);
+        self.use_identity = crate::logic::needs_identity(&p);
+        self.path = Some(p);
+        self.form = Form::Open;
+    }
+
+    /// Prepares creating a vault at `p`.
+    fn create_at(&mut self, p: PathBuf) {
+        self.reset();
+        self.why = p.symlink_metadata().is_ok().then(|| {
+            tr(
+                "Bu adda bir dosya zaten var.",
+                "A file with this name exists.",
+            )
+        });
+        self.path = Some(p);
+        self.form = Form::Create;
     }
 }
 
@@ -88,32 +125,31 @@ impl App {
         );
         ui.add_space(12.0);
         super::help::help_box(ui, pal, super::help::Topic::Vault);
-        if let Some(v) = &self.vault.open {
-            let root = v.root.clone();
+        let names = self.vault.names();
+        if !names.is_empty() {
             card(ui, pal, |ui| {
                 ui.label(
-                    RichText::new(tr("Bir kasa açık", "A vault is open"))
-                        .font(crate::fonts::semibold(14.5))
-                        .color(pal.ink),
+                    RichText::new(match lang() {
+                        Lang::Tr => format!("Açık kasalar ({})", names.len()),
+                        Lang::En => format!("Open vaults ({})", names.len()),
+                    })
+                    .font(crate::fonts::semibold(14.5))
+                    .color(pal.ink),
                 );
-                ui.label(
-                    RichText::new(escape_display(&root.display().to_string()))
-                        .monospace()
-                        .size(12.0)
-                        .color(pal.muted),
-                );
+                for n in &names {
+                    ui.label(RichText::new(n).monospace().size(12.0).color(pal.muted));
+                }
                 ui.label(
                     RichText::new(tr(
-                        "Üstteki şeritten kaydedin ya da kilitleyin. Aynı anda tek kasa açık olabilir.",
-                        "Save or lock it from the bar at the top. One vault can be open at a time.",
+                        "Her birini üstteki kartından kaydedin ya da kilitleyin. Başka bir kasa da açabilirsiniz.",
+                        "Save or lock each one from its card at the top. You can open another vault too.",
                     ))
                     .color(pal.muted)
                     .size(12.5),
                 );
             });
-            return;
         }
-        if self.vault.busy() {
+        if self.vault.opening() {
             return;
         }
         let f = &mut self.vault.page;
@@ -127,9 +163,7 @@ impl App {
                             .add_filter("lephycrypy", &["lphy"])
                             .pick_file()
                     {
-                        f.why = crate::vault::unsuitable(&p);
-                        f.path = Some(p);
-                        f.form = Form::Open;
+                        f.open_path(p);
                     }
                     if secondary_button(
                         ui,
@@ -150,16 +184,31 @@ impl App {
                         } else {
                             p.with_extension("lphy")
                         };
-                        f.why = p.symlink_metadata().is_ok().then(|| {
-                            tr(
-                                "Bu adda bir dosya zaten var.",
-                                "A file with this name exists.",
-                            )
-                        });
-                        f.path = Some(p);
-                        f.form = Form::Create;
+                        f.create_at(p);
                     }
                 });
+                ui.add_space(10.0);
+                if secondary_button(
+                    ui,
+                    pal,
+                    tr("USB belleği kasa yap…", "Turn a USB stick into a vault…"),
+                    ui.available_width(),
+                    40.0,
+                )
+                .clicked()
+                {
+                    f.reset();
+                    f.form = Form::Usb;
+                }
+            }
+            Form::Usb => {
+                let mut done = None;
+                card(ui, pal, |ui| done = f.make.ui(ui, pal));
+                match done {
+                    Some(super::usb_vault::MakeDone::Create(p)) => f.create_at(p),
+                    Some(super::usb_vault::MakeDone::Back) => f.reset(),
+                    None => {}
+                }
             }
             Form::Open | Form::Create => {
                 let create = f.form == Form::Create;
@@ -190,45 +239,29 @@ impl App {
                     if let Some(why) = f.why {
                         ui.label(RichText::new(why).color(pal.danger).size(12.5));
                     } else {
-                        let (_, enter) = f.pw.ui(ui, true);
-                        let mut ok = !f.pw.is_empty();
                         if create {
+                            b::row(ui, |ui| {
+                                for (on, label) in [
+                                    (false, tr("Parolayla kilitle", "Lock with a password")),
+                                    (true, tr("Açık anahtarlarla kilitle", "Lock to public keys")),
+                                ] {
+                                    let kind = if f.use_identity == on {
+                                        Kind::Primary
+                                    } else {
+                                        Kind::Secondary
+                                    };
+                                    if b::action(ui, pal, kind, Icon::None, label).clicked() {
+                                        f.use_identity = on;
+                                    }
+                                }
+                            });
                             ui.add_space(4.0);
-                            f.pw2.ui(ui, true);
-                            ok = f.pw.char_count() >= MIN_SCALARS && f.pw.same_as(&f.pw2);
-                            ui.label(
-                                RichText::new(tr(
-                                    "En az 8 karakter; uzun bir parola cümlesi daha iyidir. Bu parolayı unutursanız kasa açılamaz.",
-                                    "At least 8 characters; a long passphrase is better. If you forget it the vault cannot be opened.",
-                                ))
-                                .color(pal.muted)
-                                .size(12.0),
-                            );
                         }
-                        ui.horizontal(|ui| {
-                            let kf = f.keyfile.as_ref().map_or_else(
-                                || tr("Anahtar dosyası yok", "No key file").to_owned(),
-                                |p| {
-                                    p.file_name()
-                                        .map(|n| escape_display(&n.to_string_lossy()))
-                                        .unwrap_or_default()
-                                },
-                            );
-                            ui.label(RichText::new(kf).color(pal.muted).size(12.5));
-                            if b::action(
-                                ui,
-                                pal,
-                                Kind::Secondary,
-                                Icon::File,
-                                tr("Seç…", "Choose…"),
-                            )
-                            .clicked()
-                            {
-                                f.keyfile = rfd::FileDialog::new()
-                                    .set_title(tr("Anahtar dosyası", "Key file"))
-                                    .pick_file();
-                            }
-                        });
+                        let (ok, enter) = if f.use_identity {
+                            identity_fields(ui, pal, f, create)
+                        } else {
+                            password_fields(ui, pal, f, create)
+                        };
                         ui.add_space(6.0);
                         let label = if create {
                             tr("Oluştur ve aç", "Create and open")
@@ -242,13 +275,102 @@ impl App {
                 if back {
                     f.reset();
                 } else if go && let Some(path) = f.path.clone() {
-                    let pw = f.pw.take();
-                    f.pw2.clear();
-                    let keyfile = f.keyfile.clone();
+                    let how = match (&f.identity, f.use_identity) {
+                        (Some(id), true) => {
+                            super::vault_ui::OpenHow::Identity(id.clone(), f.idpw.take(), f.pq)
+                        }
+                        _ => super::vault_ui::OpenHow::Password(f.pw.take(), f.keyfile.clone()),
+                    };
                     f.reset();
-                    self.start_vault_job(&ctx, path, pw, keyfile, create);
+                    self.start_vault_job(&ctx, path, how, create);
                 }
             }
         }
     }
+}
+
+/// Password, repeat (creating) and key file. Returns (ready, Enter pressed).
+fn password_fields(ui: &mut Ui, pal: Palette, f: &mut PageForm, create: bool) -> (bool, bool) {
+    let (_, enter) = f.pw.ui(ui, true);
+    let mut ok = !f.pw.is_empty();
+    if create {
+        ui.add_space(4.0);
+        f.pw2.ui(ui, true);
+        ok = f.pw.char_count() >= MIN_SCALARS && f.pw.same_as(&f.pw2);
+        ui.label(
+            RichText::new(tr(
+                "En az 8 karakter; uzun bir parola cümlesi daha iyidir. Bu parolayı unutursanız kasa açılamaz.",
+                "At least 8 characters; a long passphrase is better. If you forget it the vault cannot be opened.",
+            ))
+            .color(pal.muted)
+            .size(12.0),
+        );
+    }
+    ui.horizontal(|ui| {
+        let kf = f.keyfile.as_ref().map_or_else(
+            || tr("Anahtar dosyası yok", "No key file").to_owned(),
+            |p| {
+                p.file_name()
+                    .map(|n| escape_display(&n.to_string_lossy()))
+                    .unwrap_or_default()
+            },
+        );
+        ui.label(RichText::new(kf).color(pal.muted).size(12.5));
+        if b::action(ui, pal, Kind::Secondary, Icon::File, tr("Seç…", "Choose…")).clicked() {
+            f.keyfile = rfd::FileDialog::new()
+                .set_title(tr("Anahtar dosyası", "Key file"))
+                .pick_file();
+        }
+    });
+    (ok, enter)
+}
+
+/// Identity file and its password (vaults locked to public keys). Returns (ready, Enter).
+fn identity_fields(ui: &mut Ui, pal: Palette, f: &mut PageForm, create: bool) -> (bool, bool) {
+    ui.label(
+        RichText::new(if create {
+            tr(
+                "Kasa, kimlik dosyanızın açık anahtarına kilitlenir. Başka kişilerin anahtarlarını sonra kasanın içindeki alıcı listesine ekleyebilirsiniz.",
+                "The vault is locked to your identity file's public key. You can add other people's keys to the recipient list inside the vault later.",
+            )
+        } else {
+            tr(
+                "Bu kasa açık anahtarlara kilitli; kimlik dosyanızla açılır.",
+                "This vault is locked to public keys; open it with your identity file.",
+            )
+        })
+        .color(pal.muted)
+        .size(12.5),
+    );
+    ui.horizontal(|ui| {
+        let name = f.identity.as_ref().map_or_else(
+            || tr("Kimlik dosyası seçilmedi", "No identity file chosen").to_owned(),
+            |p| {
+                p.file_name()
+                    .map(|n| escape_display(&n.to_string_lossy()))
+                    .unwrap_or_default()
+            },
+        );
+        ui.label(RichText::new(name).color(pal.muted).size(12.5));
+        if b::action(ui, pal, Kind::Secondary, Icon::File, tr("Seç…", "Choose…")).clicked()
+            && let Some(p) = rfd::FileDialog::new()
+                .set_title(tr("Kimlik dosyasını seçin", "Choose the identity file"))
+                .add_filter("lephycrypy identity", &["lphykey"])
+                .pick_file()
+        {
+            f.identity = Some(p);
+        }
+    });
+    let (_, enter) = f.idpw.ui(ui, true);
+    if create {
+        ui.checkbox(
+            &mut f.pq,
+            tr(
+                "Kuantuma dayanıklı anahtarlar (lphypq1…)",
+                "Post-quantum keys (lphypq1…)",
+            ),
+        );
+    }
+    let ok = f.identity.is_some() && !f.idpw.is_empty();
+    (ok, enter)
 }
