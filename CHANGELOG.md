@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- Desktop app: a vault's auto-lock did not fire when the screen was locked or the window hidden,
+  because the check ran only while the window drew (it draws nothing then). The watch now runs
+  on its own thread with its own handle on the vault and saves and locks it there; App Nap is
+  held off while a vault is open.
 - Desktop app: paper-backup words are typed into locked memory (no undo history, not exposed to
   accessibility clients) instead of an ordinary text field. The app-lock wrong-try counter is kept
   in the credential store, so restarting the app no longer resets the wait. The lock page states

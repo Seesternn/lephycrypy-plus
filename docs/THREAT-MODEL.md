@@ -214,7 +214,9 @@ offers to close it. An open vault saves and locks itself after a set time withou
 mouse input anywhere in the session (default 15 minutes; Settings › Vault), when the screen
 locks, and when the computer wakes from sleep (noticed from the clocks; macOS
 `CGEventSourceSecondsSinceLastEventType` / `CGSSessionScreenIsLocked`, Windows
-`GetLastInputInfo` / the input desktop). This only works while the app runs: it is not a
+`GetLastInputInfo` / the input desktop). The watch runs on its own thread with its own handle on the
+vault, because the window draws nothing while it is hidden or the screen is locked; on macOS App
+Nap is held off while a vault is open. This only works while the app runs: it is not a
 substitute for locking by hand, and the vault stays open during sleep itself. Vaults are only for
 archives locked with a password: files encrypted to
 public keys (the recipients' keys are not in the file), with error correction, split files and

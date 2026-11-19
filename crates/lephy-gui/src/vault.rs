@@ -345,6 +345,24 @@ impl Vault {
         Self::open(dest, password, keyfile, folder)
     }
 
+    /// A second handle on the same open vault (secrets copied into locked memory), for the
+    /// background watch that locks it while the window cannot run.
+    #[must_use]
+    pub fn duplicate(&self) -> Option<Self> {
+        Some(Self {
+            source: self.source.clone(),
+            place: self.place.clone(),
+            root: self.root.clone(),
+            nfc: SecretBytes::from_slice(self.nfc.expose()).ok()?,
+            keyfile: self.keyfile.clone(),
+            alg: self.alg,
+            kdf: self.kdf,
+            pad: self.pad,
+            compress: self.compress,
+            opened: self.opened,
+        })
+    }
+
     /// Something in the folder changed since it was opened.
     #[must_use]
     pub fn changed(&self) -> bool {

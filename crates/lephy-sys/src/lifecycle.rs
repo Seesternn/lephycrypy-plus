@@ -55,6 +55,16 @@ pub fn hide_app() -> bool {
     }
 }
 
+/// Keeps macOS from napping the app (App Nap slows the timers of apps that are not visible)
+/// while `on`, so background work such as a vault's auto-lock watch keeps its pace while the
+/// window is hidden or the screen is locked. No-op elsewhere.
+pub fn keep_running(on: bool) {
+    #[cfg(target_os = "macos")]
+    macos::keep_running(on);
+    #[cfg(not(target_os = "macos"))]
+    let _ = on;
+}
+
 /// Installs `applicationShouldTerminate:` on the window library's application delegate. Returns
 /// `false` if the class is missing or already has the method.
 #[cfg(target_os = "macos")]
@@ -72,8 +82,45 @@ pub fn install_macos_quit_guard(_delegate_class: &str) -> bool {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use crate::objc::{Id, Sel, class, class_addMethod, sel, send_void_id, shared_app};
+    use crate::objc::{
+        Id, Sel, class, class_addMethod, sel, send_id, send_id_cstr, send_id_u64_id, send_void_id,
+        shared_app,
+    };
     use std::ffi::{CStr, CString, c_void};
+    use std::sync::Mutex;
+
+    /// The current `NSProcessInfo` activity token (retained), as an address.
+    static ACTIVITY: Mutex<usize> = Mutex::new(0);
+
+    /// `NSActivityUserInitiatedAllowingIdleSystemSleep`.
+    const USER_INITIATED_ALLOW_SLEEP: u64 = 0x00FF_FFFF & !(1 << 20);
+
+    pub(super) fn keep_running(on: bool) {
+        let Ok(mut token) = ACTIVITY.lock() else {
+            return;
+        };
+        let info = send_id(class(c"NSProcessInfo"), c"processInfo");
+        if on && *token == 0 {
+            let reason = send_id_cstr(
+                class(c"NSString"),
+                c"stringWithUTF8String:",
+                c"An open vault is watched for auto-lock",
+            );
+            let t = send_id_u64_id(
+                info,
+                c"beginActivityWithOptions:reason:",
+                USER_INITIATED_ALLOW_SLEEP,
+                reason,
+            );
+            let t = send_id(t, c"retain");
+            *token = t as usize;
+        } else if !on && *token != 0 {
+            let t = *token as Id;
+            send_void_id(info, c"endActivity:", t);
+            let _ = send_id(t, c"release");
+            *token = 0;
+        }
+    }
 
     /// `[NSApp <action>:nil]` for `hide:` / `unhide:`.
     pub(super) fn app_action(action: &CStr) {

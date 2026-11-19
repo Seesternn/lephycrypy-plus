@@ -128,6 +128,37 @@ pub(crate) fn send_void_id(obj: Id, s: &CStr, arg: Id) {
     unsafe { f(obj, sel(s), arg) }
 }
 
+/// `[obj sel:ptr]` with one C-string argument, returning an object.
+pub(crate) fn send_id_cstr(obj: Id, s: &CStr, arg: &CStr) -> Id {
+    if obj.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: as in `send_id`; one `const char *` argument, returns an object.
+    let f: unsafe extern "C" fn(Id, Sel, *const c_char) -> Id = unsafe {
+        std::mem::transmute::<
+            unsafe extern "C" fn(),
+            unsafe extern "C" fn(Id, Sel, *const c_char) -> Id,
+        >(objc_msgSend)
+    };
+    // SAFETY: `obj` is a live object; `arg` is NUL-terminated and outlives the call.
+    unsafe { f(obj, sel(s), arg.as_ptr()) }
+}
+
+/// `[obj sel:n arg:o]` with an `NSUInteger`/`uint64_t` and an object, returning an object.
+pub(crate) fn send_id_u64_id(obj: Id, s: &CStr, n: u64, o: Id) -> Id {
+    if obj.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: as in `send_id`; a 64-bit integer and an object argument, returns an object.
+    let f: unsafe extern "C" fn(Id, Sel, u64, Id) -> Id = unsafe {
+        std::mem::transmute::<unsafe extern "C" fn(), unsafe extern "C" fn(Id, Sel, u64, Id) -> Id>(
+            objc_msgSend,
+        )
+    };
+    // SAFETY: `obj` is a live object; the caller names a method of this type.
+    unsafe { f(obj, sel(s), n, o) }
+}
+
 /// `[NSApplication sharedApplication]` (nil if `AppKit` is not loaded).
 pub(crate) fn shared_app() -> Id {
     send_id(class(c"NSApplication"), c"sharedApplication")

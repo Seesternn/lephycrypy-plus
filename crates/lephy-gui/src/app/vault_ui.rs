@@ -7,7 +7,125 @@ use crate::i18n::{Lang, lang, tr};
 use crate::vault::{self, Place, Vault};
 use eframe::egui::{self, CornerRadius, RichText, Stroke, Ui};
 use lephy_core::names::escape_display;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
+
+/// How often the background watch looks.
+const WATCH_EVERY: Duration = Duration::from_secs(2);
+
+/// What the background watch reports.
+enum WatchEvent {
+    /// It saved and locked the vault.
+    Locked(AutoLock),
+    /// Saving failed; the vault stays open (it tries again later).
+    Failed(String),
+}
+
+/// Background watch of an open vault. It runs on its own thread because the window draws
+/// nothing (and so runs no code) while it is hidden or the screen is locked — exactly when the
+/// vault must lock. It holds its own handle on the vault and saves and locks it itself.
+struct Watch {
+    stop: Arc<AtomicBool>,
+    /// The window is saving or closing the vault: the watch waits.
+    ui_busy: Arc<AtomicBool>,
+    /// The watch is saving: the window waits.
+    active: Arc<AtomicBool>,
+    minutes: Arc<AtomicU32>,
+    on_lock: Arc<AtomicBool>,
+    /// Seconds without input at the last look (`u64::MAX`: unknown).
+    idle: Arc<AtomicU64>,
+    event: Arc<Mutex<Option<WatchEvent>>>,
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        lephy_sys::lifecycle::keep_running(false);
+    }
+}
+
+/// What the watch thread shares with the window: stop, window busy, watch saving, minutes,
+/// lock-on-screen-lock, idle seconds, the reported event.
+type WatchHandles = (
+    Arc<AtomicBool>,
+    Arc<AtomicBool>,
+    Arc<AtomicBool>,
+    Arc<AtomicU32>,
+    Arc<AtomicBool>,
+    Arc<AtomicU64>,
+    Arc<Mutex<Option<WatchEvent>>>,
+);
+
+/// Reads the system: seconds without input, screen locked.
+type Probe = fn() -> (Option<u64>, bool);
+
+fn system_probe() -> (Option<u64>, bool) {
+    (
+        lephy_sys::idle::idle_seconds(),
+        lephy_sys::idle::screen_locked(),
+    )
+}
+
+/// The watch loop: every few seconds decide; on a decision save (if changed) and lock.
+#[allow(clippy::needless_pass_by_value, reason = "the thread owns its handles")]
+fn watch_loop(mut v: Vault, w: WatchHandles, ctx: egui::Context, probe: Probe) {
+    let (stop, ui_busy, active, minutes, on_lock, idle, event) = w;
+    let mut last = (Instant::now(), SystemTime::now());
+    loop {
+        std::thread::sleep(WATCH_EVERY);
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let now = (Instant::now(), SystemTime::now());
+        // The monotonic clock stops during sleep; the wall clock does not.
+        let mono_d = now.0.duration_since(last.0);
+        let wall_d = now.1.duration_since(last.1).unwrap_or_default();
+        let woke = wall_d.saturating_sub(mono_d) > Duration::from_secs(30);
+        last = now;
+        let (secs, locked) = probe();
+        idle.store(secs.unwrap_or(u64::MAX), Ordering::Relaxed);
+        if ui_busy.load(Ordering::SeqCst) {
+            continue;
+        }
+        let Some(why) = should_auto_lock(
+            secs,
+            locked,
+            woke,
+            minutes.load(Ordering::Relaxed),
+            on_lock.load(Ordering::Relaxed),
+        ) else {
+            continue;
+        };
+        active.store(true, Ordering::SeqCst);
+        if stop.load(Ordering::SeqCst) || ui_busy.load(Ordering::SeqCst) {
+            active.store(false, Ordering::SeqCst);
+            continue;
+        }
+        let r = if v.changed() { v.save() } else { Ok(()) };
+        let ev = match r {
+            Ok(()) => {
+                // Saved: the open copy goes even if a program still has a file in it open.
+                let _ = v.close(true);
+                lephy_sys::lifecycle::keep_running(false);
+                WatchEvent::Locked(why)
+            }
+            Err(e) => WatchEvent::Failed(logic::describe_error(&e)),
+        };
+        let done = matches!(ev, WatchEvent::Locked(_));
+        if let Ok(mut slot) = event.lock() {
+            *slot = Some(ev);
+        }
+        active.store(false, Ordering::SeqCst);
+        ctx.request_repaint();
+        if done {
+            return;
+        }
+        // Try again a little later.
+        std::thread::sleep(Duration::from_secs(30));
+    }
+}
 
 /// What a finished background step hands back.
 enum Done {
@@ -38,12 +156,8 @@ pub(super) struct VaultUi {
     leftover_confirm: bool,
     /// Vault page: what is being prepared.
     pub(super) page: super::vault_page::PageForm,
-    /// Auto-lock: last check (monotonic and wall clock, to notice sleep).
-    last_check: Option<(std::time::Instant, std::time::SystemTime)>,
-    /// Seconds without input at the last check.
-    pub(super) idle: Option<u64>,
-    /// The last lock happened by itself, and why.
-    auto_reason: Option<AutoLock>,
+    /// Background watch of the open vault (auto-lock).
+    watch: Option<Watch>,
 }
 
 /// Why an open vault is locked by itself.
@@ -174,6 +288,12 @@ impl App {
     }
 
     fn start_vault_save(&mut self, ctx: &egui::Context, after: After) {
+        if self.watch_saving() {
+            return;
+        }
+        if let Some(w) = &self.vault.watch {
+            w.ui_busy.store(true, Ordering::SeqCst);
+        }
         let Some(mut v) = self.vault.open.take() else {
             return;
         };
@@ -194,11 +314,17 @@ impl App {
 
     /// Destroys the open copy; on a busy RAM disk the vault stays open with a note.
     fn close_vault(&mut self, force: bool) -> bool {
+        if self.watch_saving() {
+            return false;
+        }
         let Some(v) = self.vault.open.take() else {
             return true;
         };
         match v.close(force) {
-            Ok(()) => true,
+            Ok(()) => {
+                self.vault.watch = None;
+                true
+            }
             Err(e) => {
                 self.vault.msg = Some(match lang() {
                     Lang::Tr => format!(
@@ -214,43 +340,104 @@ impl App {
         }
     }
 
-    /// Every few seconds while a vault is open: lock it when the user is away, the screen locks
-    /// or the computer woke from sleep (it was asleep with the vault open).
-    pub(super) fn auto_lock_vault(&mut self, ctx: &egui::Context) {
-        if self.vault.open.is_none() || self.vault.busy() {
-            self.vault.last_check = None;
-            return;
-        }
-        ctx.request_repaint_after(std::time::Duration::from_secs(5));
-        let now = (std::time::Instant::now(), std::time::SystemTime::now());
-        let Some((mono, wall)) = self.vault.last_check else {
-            self.vault.last_check = Some(now);
+    /// Starts the background watch for the vault just opened.
+    fn start_watch(&mut self, ctx: &egui::Context) {
+        self.vault.watch = None;
+        let Some(copy) = self.vault.open.as_ref().and_then(Vault::duplicate) else {
             return;
         };
-        let mono_d = now.0.duration_since(mono);
-        if mono_d < std::time::Duration::from_secs(5) {
-            return;
-        }
-        // The monotonic clock stops during sleep; the wall clock does not.
-        let wall_d = now.1.duration_since(wall).unwrap_or_default();
-        let woke = wall_d.saturating_sub(mono_d) > std::time::Duration::from_secs(30);
-        self.vault.last_check = Some(now);
-        self.vault.idle = lephy_sys::idle::idle_seconds();
-        let why = should_auto_lock(
-            self.vault.idle,
-            lephy_sys::idle::screen_locked(),
-            woke,
-            self.prefs.vault_idle_minutes(),
-            !self.prefs.vault_keep_on_lock,
+        let w = Watch {
+            stop: Arc::new(AtomicBool::new(false)),
+            ui_busy: Arc::new(AtomicBool::new(false)),
+            active: Arc::new(AtomicBool::new(false)),
+            minutes: Arc::new(AtomicU32::new(self.prefs.vault_idle_minutes())),
+            on_lock: Arc::new(AtomicBool::new(!self.prefs.vault_keep_on_lock)),
+            idle: Arc::new(AtomicU64::new(u64::MAX)),
+            event: Arc::new(Mutex::new(None)),
+        };
+        let handles = (
+            Arc::clone(&w.stop),
+            Arc::clone(&w.ui_busy),
+            Arc::clone(&w.active),
+            Arc::clone(&w.minutes),
+            Arc::clone(&w.on_lock),
+            Arc::clone(&w.idle),
+            Arc::clone(&w.event),
         );
-        if let Some(w) = why {
-            self.start_vault_save(ctx, After::Close);
-            self.vault.auto_reason = Some(w);
+        let ctx = ctx.clone();
+        // Not napped while hidden: the watch must keep its pace when the screen is locked.
+        lephy_sys::lifecycle::keep_running(true);
+        std::thread::spawn(move || watch_loop(copy, handles, ctx, system_probe));
+        self.vault.watch = Some(w);
+    }
+
+    /// Each frame: pass the settings to the watch and take what it reports.
+    pub(super) fn auto_lock_vault(&mut self, ctx: &egui::Context) {
+        let Some(w) = &self.vault.watch else { return };
+        w.minutes
+            .store(self.prefs.vault_idle_minutes(), Ordering::Relaxed);
+        w.on_lock
+            .store(!self.prefs.vault_keep_on_lock, Ordering::Relaxed);
+        w.ui_busy.store(self.vault.busy(), Ordering::SeqCst);
+        ctx.request_repaint_after(Duration::from_secs(5));
+        let ev = w.event.lock().ok().and_then(|mut e| e.take());
+        match ev {
+            Some(WatchEvent::Locked(why)) => {
+                // The watch saved and locked it; the window's handle is just dropped.
+                self.vault.watch = None;
+                self.vault.open = None;
+                self.vault.confirm_discard = false;
+                self.vault.msg = Some(
+                    match why {
+                        AutoLock::Idle => tr(
+                            "Kasa, hareketsizlik nedeniyle kaydedilip kilitlendi.",
+                            "The vault was saved and locked after a period without input.",
+                        ),
+                        AutoLock::ScreenLocked => tr(
+                            "Ekran kilitlendiği için kasa kaydedilip kilitlendi.",
+                            "The vault was saved and locked because the screen locked.",
+                        ),
+                        AutoLock::Woke => tr(
+                            "Bilgisayar uykudan uyandığı için kasa kaydedilip kilitlendi.",
+                            "The vault was saved and locked because the computer woke from sleep.",
+                        ),
+                    }
+                    .into(),
+                );
+            }
+            Some(WatchEvent::Failed(e)) => {
+                self.vault.msg = Some(match lang() {
+                    Lang::Tr => format!(
+                        "Kasa kendiliğinden kilitlenemedi; açık kalıyor, birazdan yeniden denenecek. ({e})"
+                    ),
+                    Lang::En => format!(
+                        "The vault could not lock itself; it stays open and will try again shortly. ({e})"
+                    ),
+                });
+            }
+            None => {}
         }
     }
 
+    /// Seconds without input seen by the watch.
+    fn watch_idle(&self) -> Option<u64> {
+        self.vault
+            .watch
+            .as_ref()
+            .map(|w| w.idle.load(Ordering::Relaxed))
+            .filter(|s| *s != u64::MAX)
+    }
+
+    /// The watch is saving right now.
+    fn watch_saving(&self) -> bool {
+        self.vault
+            .watch
+            .as_ref()
+            .is_some_and(|w| w.active.load(Ordering::SeqCst))
+    }
+
     /// Finished background steps.
-    pub(super) fn poll_vault(&mut self) {
+    pub(super) fn poll_vault(&mut self, ctx: &egui::Context) {
         let Some((rx, after)) = &self.vault.job else {
             return;
         };
@@ -268,13 +455,13 @@ impl App {
             Done::Opened(Ok(v)) => {
                 let _ = logic::reveal_in_folder(&v.root);
                 self.vault.open = Some(v);
+                self.start_watch(ctx);
                 self.reset();
                 self.go_home();
             }
             Done::Opened(Err(e)) => self.vault.msg = Some(e),
             Done::Saved(v, Err(e)) => {
                 self.vault.open = Some(v);
-                self.vault.auto_reason = None;
                 self.vault.msg = Some(match lang() {
                     Lang::Tr => format!("Kaydedilemedi; şifreli dosya değişmedi, kasa açık. ({e})"),
                     Lang::En => format!(
@@ -287,26 +474,8 @@ impl App {
                 match after {
                     Some(After::Close) => {
                         if self.close_vault(false) {
-                            self.vault.msg = Some(
-                                match self.vault.auto_reason.take() {
-                                    Some(AutoLock::Idle) => tr(
-                                        "Kasa, hareketsizlik nedeniyle kaydedilip kilitlendi.",
-                                        "The vault was saved and locked after a period without input.",
-                                    ),
-                                    Some(AutoLock::ScreenLocked) => tr(
-                                        "Ekran kilitlendiği için kasa kaydedilip kilitlendi.",
-                                        "The vault was saved and locked because the screen locked.",
-                                    ),
-                                    Some(AutoLock::Woke) => tr(
-                                        "Bilgisayar uykudan uyandığı için kasa kaydedilip kilitlendi.",
-                                        "The vault was saved and locked because the computer woke from sleep.",
-                                    ),
-                                    None => tr("Kaydedildi ve kilitlendi.", "Saved and locked."),
-                                }
-                                .into(),
-                            );
-                        } else {
-                            self.vault.auto_reason = None;
+                            self.vault.msg =
+                                Some(tr("Kaydedildi ve kilitlendi.", "Saved and locked.").into());
                         }
                     }
                     Some(After::Quit) => {
@@ -386,7 +555,7 @@ impl App {
             let minutes = self.prefs.vault_idle_minutes();
             if minutes > 0 {
                 let left = (u64::from(minutes) * 60)
-                    .saturating_sub(self.vault.idle.unwrap_or(0))
+                    .saturating_sub(self.watch_idle().unwrap_or(0))
                     .div_ceil(60);
                 ui.label(
                     RichText::new(match lang() {
@@ -573,8 +742,52 @@ impl App {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{AutoLock, should_auto_lock};
+    use super::*;
+
+    /// The watch saves and locks on its own thread, with no window drawing at all (as when the
+    /// screen is locked).
+    #[test]
+    fn watch_locks_without_the_window() {
+        let d = std::env::temp_dir().join(format!("lphy-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let pw = lephy_sys::mem::SecretBytes::from_slice(b"watch pass 12345").unwrap();
+        let dest = d.join("w.lphy");
+        let v = Vault::create(&dest, &pw, None, Some(&d.join("p"))).unwrap();
+        std::fs::write(v.root.join("note.txt"), b"written before the lock").unwrap();
+        let root = v.root.clone();
+        let event = Arc::new(Mutex::new(None));
+        let handles = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU32::new(15)),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicU64::new(u64::MAX)),
+            Arc::clone(&event),
+        );
+        let copy = v.duplicate().unwrap();
+        drop(v);
+        // The screen "locks" (no input seconds known).
+        let t = std::thread::spawn(move || {
+            watch_loop(copy, handles, egui::Context::default(), || (None, true));
+        });
+        t.join().unwrap();
+        assert!(matches!(
+            event.lock().unwrap().take(),
+            Some(WatchEvent::Locked(AutoLock::ScreenLocked))
+        ));
+        assert!(!root.exists(), "the open copy is gone");
+        let v = Vault::open(&dest, &pw, None, Some(&d.join("p"))).unwrap();
+        assert_eq!(
+            std::fs::read(v.root.join("note.txt")).unwrap(),
+            b"written before the lock"
+        );
+        v.close(false).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn auto_lock_decision() {
